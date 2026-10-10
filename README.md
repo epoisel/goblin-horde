@@ -19,7 +19,7 @@ All systems need **Node.js 20 or newer**. There are no packages to install.
 ## Quick start
 
 1. Install [Node.js](https://nodejs.org) 20 or newer. For desktop goblins on Windows or macOS, also have Python 3 with Tkinter.
-2. Download this repository (or a `GoblinHorde-Team.zip` someone shared with you), unzip it, and open a terminal in that folder.
+2. Download [GoblinHorde-Team.zip](https://github.com/epoisel/goblin-horde/releases/download/v0.2.0-preview/GoblinHorde-Team.zip) from the [v0.2.0-preview prerelease](https://github.com/epoisel/goblin-horde/releases/tag/v0.2.0-preview) (or download this repository), unzip it, and open a terminal in that folder. On macOS, the native desktop widget still needs a smoke test on a real Mac (see [On macOS](#on-macos)); the browser viewer is the fallback.
 3. Run:
 
    ```
@@ -41,7 +41,7 @@ node ~/.local/share/goblin-horde/goblin.mjs uninstall                           
 
 This stops Goblin Horde and removes its app files, its manager skills, and its own Claude Code hook entries. Add `--remove-settings` to also delete your layout settings, pairing code, and recorded activity. If you installed with `--install-dir`, use the `goblin.mjs` in that folder instead.
 
-**About the overview video.** The overview video is published separately. It is not part of this repository or the install package, and you do not need it to install or run Goblin Horde.
+**About the overview video.** The [overview video (GoblinHorde-Overview.mp4)](https://github.com/epoisel/goblin-horde/releases/download/v0.2.0-preview/GoblinHorde-Overview.mp4) is published separately as a release asset. It is not tracked in the source tree and is not inside the installer ZIP, and you do not need it to install or run Goblin Horde.
 
 ## Contributing, security, license
 
