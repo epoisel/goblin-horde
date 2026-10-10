@@ -1,0 +1,18 @@
+/* Motion and feedback. Everything here switches off for people who prefer reduced motion. */
+@keyframes gh-glow { 0%, 100% { box-shadow: 0 0 0 1px #e2b65c33, 0 0 14px #e2b65c1c; } 50% { box-shadow: 0 0 0 1px #e2b65c66, 0 0 26px #e2b65c40; } }
+@keyframes gh-rise { from { opacity: 0; transform: translateY(6px); } }
+@keyframes gh-flash { from { background: #e2b65c2e; } to { background: #1f3228; } }
+@keyframes gh-spin { to { transform: rotate(360deg); } }
+@keyframes gh-bob { 0%, 100% { transform: translate(-50%, 0); } 50% { transform: translate(-50%, -3px); } }
+
+.party-card.tone-needs, .lp-pill[data-tone="needs"] { animation: gh-glow 2.4s ease-in-out infinite; }
+.bubble { animation: gh-rise .22s ease-out; }
+.fl-row.fresh { animation: gh-flash 1.2s ease-out; }
+.fl-row[data-glyph="running"] .fl-icon { display: inline-block; animation: gh-spin 1.4s linear infinite; }
+.pill-flag { animation: gh-bob 1.6s ease-in-out infinite; }
+.party-card, .chip, .result, .fl-line, .stream { transition: background-color .15s, border-color .15s, color .15s; }
+.stream-body { transition: height .2s ease; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}

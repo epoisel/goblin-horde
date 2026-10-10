@@ -1,0 +1,57 @@
+# Python and Node
+__pycache__/
+*.py[cod]
+node_modules/
+
+# Build output (node scripts/package.mjs)
+/dist/
+*.zip
+*.tmp
+
+# Secrets and local environment
+.env
+.env.*
+*.pem
+*.key
+
+# Goblin Horde state that could end up here with --state-dir or a test run.
+# Real state lives in your user folder (see README); never commit it.
+pairing-code.txt
+goblins.json
+goblin-horde-install.json
+goblin-horde-skill.json
+settings.local.json
+*.jsonl
+*.ndjson
+*.log
+/run/
+/state/
+
+# Video, reel, screenshots, and review notes are kept outside this repository
+/reel/
+/media/
+/video/
+/recordings/
+*.mp4
+*.mov
+*.webm
+*.mkv
+*.gif
+*REVIEW.md
+*_REVIEW_NOTES.md
+
+# Local tool output
+codex-artifact-scan-report.json
+.claude/settings.local.json
+
+# Editors and OS junk
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/

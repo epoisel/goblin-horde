@@ -1,0 +1,15 @@
+{
+  "name": "goblin-horde",
+  "private": true,
+  "version": "0.2.0",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "goblin": "node goblin.mjs",
+    "doctor": "node goblin.mjs doctor",
+    "package": "node scripts/package.mjs",
+    "test": "node --test"
+  },
+  "engines": { "node": ">=20" }
+}

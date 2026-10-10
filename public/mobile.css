@@ -1,0 +1,60 @@
+/* Narrow windows, phones, and the pop-out: one column, launchpad on top, each stream tabbed. */
+@media (max-width: 1080px) {
+  .stream-body { grid-template-columns: minmax(0, 1fr) minmax(0, .9fr); }
+  .stage { grid-template-columns: 92px minmax(0, 1fr); }
+  .stage .goblin { --px: 3 !important; }
+}
+
+@media (max-width: 820px) {
+  .wide-only { display: none !important; }
+  .topbar { position: static; padding: 8px 12px; gap: 10px; flex-wrap: wrap; }
+  .brand strong { font-size: 15px; }
+  .topbar-actions { gap: 6px; }
+  .layout { grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 12px 10px 24px; }
+  .launchpad { position: static; max-height: none; }
+  .lp-pill { position: sticky; top: 14px; right: auto; bottom: auto; width: 100%; max-width: none; margin: 8px 0 -2px; }
+  body.lp-hidden .layout { padding-top: 14px; }
+  .scope-title h1 { font-size: 20px; }
+  .stream-head { flex-wrap: wrap; row-gap: 6px; }
+  .stream-tools { margin-left: auto; }
+  .stream-latest { flex-basis: 100%; order: 9; white-space: normal; display: none; -webkit-line-clamp: 2; }
+  .stream[data-mode="condensed"] .stream-latest { display: -webkit-box; -webkit-box-orient: vertical; }
+  /* Dialogue and field log share one pane on phones; tabs switch between them. */
+  .stream-tabs { display: flex; gap: 4px; padding: 8px 10px 0; }
+  .stream-tabs button {
+    flex: 1; min-height: 34px; border-radius: 8px 8px 0 0; border: 1.5px solid var(--line-soft); border-bottom: 0; background: transparent;
+    color: var(--muted); font: 700 12px/1 var(--display); letter-spacing: .1em; text-transform: uppercase;
+  }
+  .stream-tabs button[aria-selected="true"] { background: var(--win); color: var(--gold); border-color: var(--line); }
+  .tab-count { color: var(--muted); font-weight: 600; }
+  .stream-body { display: block; height: 360px; padding: 0 10px 10px; }
+  .stream[data-mode="expanded"] .stream-body { height: 70dvh; }
+  .stream .stage, .stream .fieldlog { height: 100%; }
+  .stream[data-tab="talk"] .fieldlog, .stream[data-tab="log"] .stage { display: none; }
+  .stream[data-tab="log"] .fieldlog { padding: 8px; border: 1.5px solid var(--line); border-radius: 0 0 9px 9px; background: var(--win); }
+  .stage { border-radius: 0 0 9px 9px; grid-template-columns: 78px minmax(0, 1fr); }
+  .stage .goblin { --px: 2.5 !important; }
+  .stage-goblin::before { bottom: 22px; }
+  .action-word { font-size: 9.5px; letter-spacing: .08em; }
+  .bubble p { font-size: 15px; }
+  .chip { min-height: 36px; }
+  .chip.small { min-height: 32px; }
+  .reply-dock { bottom: 8px; }
+  .reply-dock textarea { font-size: 16px; } /* No zoom-on-focus on phones. */
+  .drawer { top: auto; left: 8px; right: 8px; bottom: 8px; width: auto; max-height: 78dvh; }
+}
+
+@media (max-width: 460px) {
+  .stream-name { font-size: 16px; }
+  .stream-party { font-size: 13px; max-width: 46%; }
+  .stream-tools .chip { padding: 3px 9px; }
+  .party-card { grid-template-columns: minmax(0, 1fr); }
+  .pc-goblins { justify-content: flex-end; margin-top: -6px; }
+  .scope-actions { width: 100%; }
+}
+
+/* Pop-out window: always the narrow layout, launchpad tucked into its pill by default. */
+body.compact .wide-only { display: none !important; }
+body.compact .layout { grid-template-columns: minmax(0, 1fr); padding: 10px; }
+body.compact .launchpad { position: static; max-height: none; }
+body.compact #demo-toggle { display: none; }

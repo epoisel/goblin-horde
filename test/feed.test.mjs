@@ -1,0 +1,186 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { classifyCodex, classifyOrca, FEED_LIMITS, planCodexReads, pruneCache, selectFeedMembers } from "../lib/feed.mjs";
+
+const NOW = 1_800_000_000_000;
+const HOUR = 3_600_000;
+const summary = (id, ago, extra = {}) => ({ id, updatedAt: NOW - ago, source: "codex", ...extra });
+const saved = (id, updatedAt, attention, checkedAt = NOW - 1000) => ({ id, updatedAt, checkedAt, attention, thread: { id, updatedAt } });
+const actor = (id, attention, ago = 1000) => ({ id, source: "codex", updatedAt: NOW - ago, attention });
+
+test("reads every recent chat, not just five, and never touches dormant ones", () => {
+  const threads = [
+    ...Array.from({ length: 12 }, (_, index) => summary(`recent-${index}`, index * 60_000)),
+    ...Array.from({ length: 300 }, (_, index) => summary(`old-${index}`, 30 * HOUR + index * HOUR)),
+  ];
+  const plan = planCodexReads(threads, { now: NOW });
+  assert.equal(plan.reads.length, 12);
+  assert.ok(plan.reads.every((item) => item.id.startsWith("recent-")));
+  assert.equal(plan.pending, 0);
+  assert.equal(plan.candidates, 12);
+});
+
+test("unchanged quiet chats are reused without a read on the next poll", () => {
+  const threads = Array.from({ length: 40 }, (_, index) => summary(`chat-${index}`, index * 60_000));
+  const cache = new Map(threads.map((thread) => [thread.id, saved(thread.id, thread.updatedAt, "quiet", NOW - 10 * 60_000)]));
+  const plan = planCodexReads(threads, { now: NOW, cache });
+  assert.equal(plan.reads.length, 0);
+  assert.equal(plan.reused.length, 40);
+});
+
+test("a chat seen working is rechecked after a few seconds even with the same timestamp", () => {
+  const thread = summary("busy", 60_000);
+  const cache = new Map([["busy", saved("busy", thread.updatedAt, "working", NOW - FEED_LIMITS.recheckMs - 1)]]);
+  assert.deepEqual(planCodexReads([thread], { now: NOW, cache }).reads.map((item) => item.id), ["busy"]);
+  cache.get("busy").checkedAt = NOW - 1000;
+  assert.equal(planCodexReads([thread], { now: NOW, cache }).reads.length, 0);
+});
+
+test("a burst of changed chats is read within the budget and the rest are counted as pending", () => {
+  const threads = Array.from({ length: 40 }, (_, index) => summary(`chat-${index}`, index * 60_000));
+  const cache = new Map([["chat-39", saved("chat-39", NOW - 99 * HOUR, "working")]]);
+  const plan = planCodexReads(threads, { now: NOW, cache });
+  assert.equal(plan.reads.length, FEED_LIMITS.readBudget);
+  assert.equal(plan.pending, 40 - FEED_LIMITS.readBudget);
+  // A chat last seen working is read before newer quiet ones.
+  assert.equal(plan.reads[0].id, "chat-39");
+  // Saved checks stand in for chats that wait; unseen ones are simply pending.
+  assert.equal(plan.reused.length, 0);
+});
+
+test("a stale saved check stands in for a chat that waits behind the budget", () => {
+  const threads = Array.from({ length: 20 }, (_, index) => summary(`chat-${index}`, index * 60_000));
+  const cache = new Map([["chat-19", saved("chat-19", NOW - 99 * HOUR, "quiet")]]);
+  const plan = planCodexReads(threads, { now: NOW, cache, limits: { ...FEED_LIMITS, readBudget: 4 } });
+  assert.equal(plan.reads.length, 4);
+  assert.equal(plan.pending, 16);
+  assert.deepEqual(plan.reused.map((item) => item.id), ["chat-19"]);
+});
+
+test("pending requests and busy list status are read first, even outside the window or the list", () => {
+  const threads = [
+    summary("fresh", 1000),
+    summary("old-busy", 72 * HOUR, { status: "active" }),
+    summary("old-flagged", 72 * HOUR, { activeFlags: ["waitingOnApproval"] }),
+    summary("old-quiet", 72 * HOUR, { status: "notLoaded" }),
+  ];
+  const plan = planCodexReads(threads, { now: NOW, mustIds: new Set(["subagent-asks"]) });
+  assert.deepEqual(plan.reads.map((item) => item.id).sort(), ["fresh", "old-busy", "old-flagged", "subagent-asks"].sort());
+  assert.equal(plan.reads.at(-1).id, "fresh");
+});
+
+// Run polls a second apart, as the server would, and note when each chat is first read.
+function pollUntilAllRead(threads, { mustIds = new Set(), succeeds = () => true, polls = 20 } = {}) {
+  const cache = new Map();
+  const attempts = new Map();
+  const firstRead = new Map();
+  for (let poll = 0; poll < polls; poll++) {
+    const now = NOW + poll * 1000;
+    const plan = planCodexReads(threads, { now, cache, attempts, mustIds });
+    assert.ok(plan.reads.length <= FEED_LIMITS.readBudget);
+    for (const { id, updatedAt } of plan.reads) {
+      if (!firstRead.has(id)) firstRead.set(id, poll);
+      if (succeeds(id)) cache.set(id, { id, updatedAt, checkedAt: now, attention: "working", thread: { id, updatedAt } });
+    }
+  }
+  return firstRead;
+}
+
+test("more busy chats than the budget each get read within a few polls", () => {
+  const threads = Array.from({ length: 17 }, (_, index) => summary(`busy-${index}`, index * 1000, { status: "active" }));
+  const firstRead = pollUntilAllRead(threads, { polls: 4 });
+  assert.equal(firstRead.size, 17);
+  assert.equal(firstRead.get("busy-16"), 1);
+  // A fortieth pending request still has its turn.
+  const many = Array.from({ length: 40 }, (_, index) => summary(`must-${index}`, index * 1000));
+  const reached = pollUntilAllRead(many, { mustIds: new Set(many.map((item) => item.id)), polls: 3 });
+  assert.equal(reached.size, 40);
+});
+
+test("chats whose reads keep failing do not starve the rest", () => {
+  const threads = Array.from({ length: 20 }, (_, index) => summary(`chat-${index}`, index * 1000, { status: "active" }));
+  const broken = new Set(threads.slice(0, 16).map((item) => item.id));
+  const firstRead = pollUntilAllRead(threads, { succeeds: (id) => !broken.has(id), polls: 4 });
+  assert.equal(firstRead.size, 20);
+  for (const id of ["chat-16", "chat-17", "chat-18", "chat-19"]) assert.ok(firstRead.get(id) <= 1, id);
+});
+
+test("attempts are forgotten once a chat leaves the candidates", () => {
+  const attempts = new Map([["gone", NOW - 1000]]);
+  planCodexReads([summary("here", 1000)], { now: NOW, attempts });
+  assert.deepEqual([...attempts.keys()], ["here"]);
+});
+
+test("classification is honest about questions, failures, and running turns", () => {
+  const base = { updatedAt: NOW - 1000, status: "notLoaded" };
+  assert.equal(classifyCodex({ ...base, turnStates: [] }, { hasRequest: true, now: NOW }), "needs");
+  assert.equal(classifyCodex({ ...base, turnStates: [{ status: "completed", questions: ["Ship it?"] }] }, { now: NOW }), "needs");
+  assert.equal(classifyCodex({ ...base, updatedAt: NOW - 12 * HOUR, turnStates: [{ status: "completed", questions: ["Ship it?"] }] }, { now: NOW }), "quiet");
+  assert.equal(classifyCodex({ ...base, turnStates: [{ status: "failed", questions: [] }] }, { now: NOW }), "failed");
+  assert.equal(classifyCodex({ ...base, status: "systemError", turnStates: [] }, { now: NOW }), "failed");
+  assert.equal(classifyCodex({ ...base, turnStates: [{ status: "inProgress", questions: [] }] }, { now: NOW }), "working");
+  assert.equal(classifyCodex({ ...base, turnStates: [{ status: "completed", questions: [] }] }, { now: NOW }), "quiet");
+  assert.equal(classifyOrca({ status: "working", updatedAt: NOW - 50 * HOUR }, { now: NOW }), "working");
+  assert.equal(classifyOrca({ status: "error", updatedAt: NOW }, { now: NOW }), "failed");
+  assert.equal(classifyOrca({ status: "waiting", updatedAt: NOW - 50 * HOUR }, { now: NOW }), "quiet");
+  assert.equal(classifyOrca({ status: "done", updatedAt: NOW }, { now: NOW }), "quiet");
+});
+
+test("the feed carries every active member beyond five plus a few quiet ones", () => {
+  const codex = [
+    ...Array.from({ length: 9 }, (_, index) => actor(`busy-${index}`, "working", index * 1000)),
+    actor("asks", "needs", 20 * HOUR),
+    ...Array.from({ length: 8 }, (_, index) => actor(`quiet-${index}`, "quiet", index * 1000)),
+  ];
+  const orca = [
+    ...Array.from({ length: 7 }, (_, index) => ({ id: `orca-${index}`, source: "orca", status: "working", updatedAt: NOW - index })),
+    { id: "orca-done", source: "orca", status: "done", updatedAt: NOW },
+  ];
+  const { agents, hotTotal, hotShown } = selectFeedMembers(codex, orca, { now: NOW });
+  const ids = new Set(agents.map((item) => item.id));
+  assert.equal(hotTotal, 17);
+  assert.equal(hotShown, 17);
+  for (let index = 0; index < 9; index++) assert.ok(ids.has(`busy-${index}`));
+  for (let index = 0; index < 7; index++) assert.ok(ids.has(`orca-${index}`));
+  assert.ok(ids.has("asks"));
+  assert.equal(agents.filter((item) => item.id.startsWith("quiet-")).length, FEED_LIMITS.quietLimit);
+  assert.ok(ids.has("orca-done"));
+});
+
+test("a cut over the active limit keeps the members that need the person", () => {
+  const codex = [
+    ...Array.from({ length: 5 }, (_, index) => actor(`busy-${index}`, "working", index)),
+    actor("asks", "needs", 30 * HOUR),
+    actor("broke", "failed", 30 * HOUR),
+  ];
+  const { agents, hotTotal, hotShown } = selectFeedMembers(codex, [], { now: NOW, limits: { ...FEED_LIMITS, hotLimit: 3 } });
+  assert.equal(hotTotal, 7);
+  assert.equal(hotShown, 3);
+  const ids = agents.map((item) => item.id);
+  assert.ok(ids.includes("asks"));
+  assert.ok(ids.includes("broke"));
+});
+
+test("every returned member carries the feed classification the widget groups by", () => {
+  const oldQuestion = actor("old-ask", classifyCodex({ updatedAt: NOW - 12 * HOUR, status: "notLoaded",
+    turnStates: [{ status: "completed", questions: ["Ship it?"] }] }, { now: NOW }), 12 * HOUR);
+  const blocked = { id: "orca-blocked", source: "orca", status: "blocked", updatedAt: NOW - 1000 };
+  const waiting = { id: "orca-wait", source: "orca", status: "waiting", updatedAt: NOW - 1000 };
+  const done = { id: "orca-done", source: "orca", status: "done", updatedAt: NOW };
+  const { agents } = selectFeedMembers([oldQuestion], [blocked, waiting, done], { now: NOW });
+  const byId = Object.fromEntries(agents.map((item) => [item.id, item.attention]));
+  assert.deepEqual(byId, { "old-ask": "quiet", "orca-blocked": "working", "orca-wait": "waiting", "orca-done": "quiet" });
+  // The source snapshot is left untouched.
+  assert.equal(blocked.attention, undefined);
+});
+
+test("remembered checks are pruned to current candidates and capped", () => {
+  const cache = new Map(Array.from({ length: 10 }, (_, index) => [`chat-${index}`, saved(`chat-${index}`, NOW - index, "quiet")]));
+  const ids = new Set([...cache.keys()].filter((id) => id !== "chat-0"));
+  assert.equal(pruneCache(cache, ids, 100), false);
+  assert.equal(cache.has("chat-0"), false);
+  assert.equal(pruneCache(cache, ids, 5), true);
+  assert.equal(cache.size, 5);
+  assert.ok(cache.has("chat-1"));
+  assert.ok(!cache.has("chat-9"));
+});

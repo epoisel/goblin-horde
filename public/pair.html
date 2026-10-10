@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pair your phone · Goblin Horde</title>
+  <link rel="stylesheet" href="/pair.css">
+  <script type="module" src="/pair.js"></script>
+</head>
+<body>
+  <main class="pair-screen">
+    <div class="pixel-mark" aria-hidden="true">◉</div>
+    <div class="eyebrow">GOBLIN HORDE / PHONE LINK</div>
+    <h1>Pair your phone</h1>
+    <p>Find the eight-character code in Goblin Horde on your computer. Your phone and computer should be on the same Wi-Fi.</p>
+    <form id="pair-form">
+      <label for="code">PAIRING CODE</label>
+      <input id="code" name="code" type="text" inputmode="text" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" maxlength="8" placeholder="ABCDEFGH" required>
+      <button type="submit">Open viewer <span aria-hidden="true">›</span></button>
+    </form>
+    <p id="pair-error" class="error" role="alert" hidden></p>
+    <div class="code-help">
+      <strong>Need the code?</strong>
+      <p>Find it in Goblin Horde on your computer. If you emailed yourself the code earlier, you can search Gmail for that message.</p>
+      <button id="code-help" type="button">Look for a code email <span aria-hidden="true">↗</span></button>
+    </div>
+    <div class="foot">Private access · Your code stays the same when the viewer restarts.</div>
+  </main>
+</body>
+</html>

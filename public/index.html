@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#121c16">
+  <title>Goblin Horde</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/interactive.css">
+  <link rel="stylesheet" href="/mobile.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span id="brand-goblin" class="brand-goblin" aria-hidden="true"></span><strong>GOBLIN HORDE</strong></div>
+    <span id="live-badge" class="live-badge" role="status"><span class="dot"></span><span id="live-label">CONNECTING</span></span>
+    <div class="topbar-actions">
+      <button id="alerts-toggle" class="chip" type="button" aria-expanded="false" aria-controls="alerts-drawer">Alerts <span id="alert-count" class="count" hidden>0</span></button>
+      <button id="demo-toggle" class="chip" type="button">Party demo</button>
+      <button id="popout-toggle" class="chip wide-only" type="button" title="Open a small window that keeps the goblins in view">Pop out</button>
+      <button id="compact-exit" class="chip" type="button" hidden>Full view</button>
+      <button id="camp-toggle" class="chip" type="button" aria-expanded="false" aria-controls="camp-drawer" title="Feeds and phone pairing">Camp</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside id="launchpad" class="launchpad" aria-label="All parties">
+      <div class="lp-head">
+        <h2>ALL PARTIES</h2>
+        <button id="lp-find" class="chip small" type="button" aria-expanded="false" aria-controls="lp-search"><span aria-hidden="true">⌕</span> Find</button>
+        <button id="lp-hide" class="chip small" type="button" title="Tuck the launchpad away; urgent parties still show">Hide</button>
+      </div>
+      <div id="lp-search" class="lp-search" hidden>
+        <label class="sr-only" for="lp-query">Search every chat and party</label>
+        <input id="lp-query" type="search" placeholder="Search chats, projects, parties…" autocomplete="off">
+        <small id="lp-search-count">Type at least two letters.</small>
+        <ul id="lp-results" class="lp-results"></ul>
+      </div>
+      <p id="lp-note" class="lp-note" hidden></p>
+      <button id="lp-all" class="lp-allrow" type="button">All parties <span id="lp-all-count"></span></button>
+      <h3 class="lp-section">WORKING NOW</h3>
+      <div id="lp-active" class="lp-active"><div class="lp-loading">Gathering the horde…</div></div>
+      <button id="lp-more" class="lp-more" type="button" hidden></button>
+      <h3 id="lp-recent-title" class="lp-section" hidden>RECENTLY USED</h3>
+      <div id="lp-recent" class="lp-recent"></div>
+      <button id="lp-find-any" class="chip gold centered" type="button"><span aria-hidden="true">⌕</span> Find any chat <span id="lp-older"></span></button>
+    </aside>
+
+    <button id="lp-pill" class="lp-pill" type="button" hidden aria-label="Show the launchpad">
+      <span id="pill-flag" class="pill-flag" hidden></span>
+      <span id="pill-goblin" class="pill-goblin" aria-hidden="true"></span>
+      <span class="pill-text"><strong id="pill-name">ALL PARTIES</strong><span id="pill-signal" class="signal">QUIET</span></span>
+      <span class="chip small">Expand</span>
+    </button>
+
+    <main class="streams" aria-label="Goblin streams">
+      <div class="scope-bar">
+        <button id="scope-back" class="chip small" type="button" hidden><span aria-hidden="true">◂</span> All</button>
+        <div class="scope-title"><h1 id="scope-name">All parties</h1><span id="scope-source" class="source-tag" hidden></span><span id="scope-sub" class="scope-sub"></span></div>
+        <div class="scope-actions">
+          <button id="restore-hidden" class="chip small" type="button" hidden></button>
+          <button id="condense-all" class="chip small" type="button">Condense all</button>
+          <button id="expand-all" class="chip small" type="button">Open all</button>
+        </div>
+      </div>
+      <div id="error" class="banner" role="alert" hidden></div>
+      <section id="requests-panel" class="requests" aria-label="Codex needs your decision" hidden>
+        <h2><span class="bell" aria-hidden="true">!</span> Codex needs a decision</h2>
+        <div id="requests-list" class="requests-list"></div>
+      </section>
+      <div id="stream-list" class="stream-list" aria-live="off"></div>
+      <section id="reply-dock" class="reply-dock" aria-label="Reply" hidden>
+        <form id="reply-form">
+          <label id="reply-label" for="reply-text">Reply to this chat</label>
+          <textarea id="reply-text" rows="2" maxlength="4000" placeholder="Tell Codex what to do next…" required></textarea>
+          <div class="reply-actions"><span id="reply-status" role="status"></span><button id="reply-send" class="button gold" type="submit">Send reply</button></div>
+        </form>
+        <div id="branch-choice" class="branch-choice" hidden><p>Codex has this chat open on your computer. A mobile branch copies the conversation so far and continues separately.</p><button id="branch-send" class="button" type="button">Send in mobile branch</button></div>
+      </section>
+      <p id="watch-note" class="watch-note" hidden></p>
+    </main>
+  </div>
+
+  <aside id="alerts-drawer" class="drawer" aria-label="Alerts" hidden>
+    <div class="drawer-head"><h2>ALERTS</h2><button id="enable-system-alerts" class="chip small" type="button" hidden>System alerts</button><button class="chip small" type="button" data-close="alerts-drawer">Close</button></div>
+    <p id="alert-help" class="drawer-help">Needs-you and failure alerts collect here while this page is open.</p>
+    <div id="alerts-list" class="alerts-list"></div>
+  </aside>
+
+  <aside id="camp-drawer" class="drawer" aria-label="Feeds and phone" hidden>
+    <div class="drawer-head"><h2>CAMP</h2><button class="chip small" type="button" data-close="camp-drawer">Close</button></div>
+    <h3 class="lp-section">FEEDS</h3>
+    <ul id="feeds-list" class="feeds-list"><li class="drawer-help">Checking which sources are connected…</li></ul>
+    <p id="widget-note" class="drawer-help"></p>
+    <div id="mobile-panel" hidden>
+      <h3 class="lp-section">PHONE</h3>
+      <button id="mobile-toggle" class="chip" type="button" aria-expanded="false" aria-controls="mobile-details">Pair a phone</button>
+      <div id="mobile-details" class="mobile-details" hidden>
+        <p class="drawer-help">On the same Wi-Fi, open:</p>
+        <a id="mobile-address" class="mobile-address" href="#"></a>
+        <p class="drawer-help">Then enter this pairing code:</p>
+        <strong id="mobile-code" class="mobile-code"></strong>
+      </div>
+    </div>
+    <p class="drawer-help foot">Runs on your computer. Shows public updates and visible actions only, never private reasoning.</p>
+  </aside>
+
+  <template id="stream-template">
+    <article class="stream" data-mode="normal" data-tab="talk">
+      <header class="stream-head">
+        <button class="chip small party-link" type="button"></button>
+        <span class="stream-goblin-mini" aria-hidden="true"></span>
+        <strong class="stream-name"></strong>
+        <span class="stream-party"></span>
+        <span class="status-pill"></span>
+        <span class="stream-latest"></span>
+        <span class="stream-tools">
+          <button class="chip small act-condense" type="button">Condense</button>
+          <button class="chip small act-expand" type="button">Expand</button>
+          <button class="chip small icon act-hide" type="button" aria-label="Hide this stream">×</button>
+        </span>
+      </header>
+      <div class="stream-tabs" role="tablist">
+        <button type="button" role="tab" data-tab="talk" aria-selected="true">Dialogue</button>
+        <button type="button" role="tab" data-tab="log" aria-selected="false">Field log <span class="tab-count"></span></button>
+      </div>
+      <div class="stream-body">
+        <div class="stage">
+          <button class="older" type="button" hidden>Earlier lines ↑</button>
+          <div class="dialogue" role="log" tabindex="0"></div>
+          <button class="jump" type="button" hidden></button>
+          <div class="stage-goblin"><span class="goblin-slot"></span><span class="action-word"></span></div>
+        </div>
+        <div class="fieldlog">
+          <div class="fl-head"><h3>FIELD LOG</h3><button class="chip small follow" type="button" aria-pressed="true"><span aria-hidden="true">▾</span> Follow new</button></div>
+          <ol class="fl-list" tabindex="0"></ol>
+        </div>
+      </div>
+    </article>
+  </template>
+</body>
+</html>

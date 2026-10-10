@@ -1,0 +1,70 @@
+# Runs the Node and Python unit tests on standard GitHub-hosted runners.
+# It never starts the viewer or the desktop widget, and it is not a GUI smoke test:
+# how the widget looks and behaves on screen still needs a person, and no hosted runner
+# validates on-screen transparency on macOS.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+        node: ["20"]
+        include:
+          - os: ubuntu-latest
+            node: "22"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # setup-python's Linux build needs the system Tk library for `import tkinter`.
+      - name: Install Tk library (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libtk8.6
+
+      - name: Report Python and Tk
+        run: python -c "import sys, tkinter; print(sys.version); print('Tk', tkinter.TkVersion)"
+
+      - name: Node tests
+        run: npm test
+
+      # On macOS and Linux the tests that build real Tk windows skip themselves and the
+      # rest run headless. Required on every OS.
+      - name: Python tests
+        if: runner.os != 'Windows'
+        shell: bash
+        run: python -m unittest discover -s test -p 'test_*.py' -v
+
+      # On Windows some tests also build real (short-lived) Tk windows on the runner's
+      # desktop. Required too; this checks behavior, not how the widget looks on screen.
+      - name: Python tests (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: python -m unittest discover -s test -p 'test_*.py' -v
+
+      - name: Build the team package
+        if: runner.os == 'Linux' && matrix.node == '20'
+        run: node scripts/package.mjs --out "$RUNNER_TEMP/GoblinHorde-Team.zip"

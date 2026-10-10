@@ -1,0 +1,223 @@
+{
+  "about": "Pixel goblins and activity cues. Each layer is a grid of palette keys placed on a 16x16 goblin grid; '.' is transparent.",
+  "origin": [2, 10],
+  "coatDark": 0.72,
+  "size": [26, 28],
+  "colors": {
+    "K": "#15201a", "B": "#4a3324", "b": "#2b211a", "G": "#e2b65c", "T": "#f2e6c6",
+    "E": "#f6d65a", "W": "#fbf3dc", "H": "#c3ccd0", "h": "#6f7d84", "N": "#b07a45",
+    "n": "#7a5230", "O": "#e2b65c", "Q": "#a9dde4", "q": "#62a9b8", "g": "#ffffff",
+    "Y": "#f0c75e", "y": "#b88a2e", "R": "#e0705c", "r": "#8f3a2f", "D": "#8fd3f0",
+    "Z": "#0d1a13", "X": "#ffe28a", "x": "#ff9f4a"
+  },
+  "styleColors": {"S": "skin", "s": "shade", "C": "coat", "c": "coatDark", "L": "light", "A": "accent"},
+  "layers": {
+    "shadow": {"at": [3, 16], "rows": ["ZZZZZZZZZZ"]},
+    "body": {"at": [0, 0], "rows": [
+      "................",
+      "....KKKKKKKK....",
+      "...KSSSSSSSSK...",
+      "KK.KSSSSSSSSK.KK",
+      "KsKSSSSSSSSSSKsK",
+      ".KsSSSSSSSSSSsK.",
+      "..KSSSSSSSSSSK..",
+      "...KSSSssSSSK...",
+      "...KSSTKKTSSK...",
+      "....KKSSSSKK....",
+      "...KcCCLLCCcK...",
+      "..KCKCCLLCCK....",
+      "..KSKCCLLCCK....",
+      "...KBBBGGBBBK...",
+      "...KcCCKKCCcK...",
+      "...KbbK..KbbK..."
+    ]},
+    "eyesFwd": {"at": [5, 5], "rows": ["KE..EK"]},
+    "eyesRight": {"at": [5, 5], "rows": ["EK..EK"]},
+    "eyesShut": {"at": [5, 5], "rows": ["ss..ss"]},
+    "eyesWorry": {"at": [5, 4], "rows": [".K..K.", "KE..EK"]},
+    "eyesLeftOnly": {"at": [5, 5], "rows": ["EK"]},
+    "armRest": {"at": [12, 11], "rows": ["CK", "SK"]},
+
+    "anvil": {"at": [14, 12], "rows": [
+      "KKKKKKK",
+      "KHHHHhK",
+      ".KKhKK.",
+      ".KhhhK."
+    ]},
+    "hammerUp": {"at": [12, 1], "rows": [
+      "KKKKKK",
+      "KHHHHK",
+      "KhhhhK",
+      "KKKNKK",
+      "..KNK.",
+      "..KNK.",
+      "..KSK.",
+      ".CCK..",
+      "CKK..."
+    ]},
+    "hammerDown": {"at": [12, 7], "rows": [
+      "....KKKK",
+      "....KHhK",
+      "....KHhK",
+      "CCSNNHhK",
+      "KKK.KHhK"
+    ]},
+    "sparks": {"at": [20, 8], "rows": [
+      ".X.",
+      "..x",
+      "X..",
+      ".x."
+    ]},
+
+    "lensPeer": {"at": [8, 3], "rows": [
+      ".OOO.",
+      "OEEgO",
+      "OEKKO",
+      "OEKKO",
+      ".OOO.",
+      "....N",
+      ".....N",
+      "....CS"
+    ]},
+    "lensOut": {"at": [12, 3], "rows": [
+      "..OOO.",
+      ".OQQgO",
+      ".OQQQO",
+      ".OqQQO",
+      "..OOO.",
+      ".N....",
+      "N.....",
+      "S....."
+    ]},
+    "lensLow": {"at": [12, 7], "rows": [
+      "...OOO.",
+      "..OQQgO",
+      ".NOQQQO",
+      "SKOqQQO",
+      "...OOO."
+    ]},
+
+    "cloud": {"at": [10, -9], "rows": [
+      "..KKK..KKK..",
+      ".KWWWKKWWWK.",
+      "KWWWWWWWWWWK",
+      "KWWWWWWWWWWK",
+      "KWWWWWWWWWWK",
+      ".KWWWWWWWWK.",
+      "..KKKKKKKK..",
+      ".KWK........",
+      "..K........."
+    ]},
+    "dot1": {"at": [12, -6], "rows": ["KK", "KK"]},
+    "dot2": {"at": [15, -6], "rows": ["KK", "KK"]},
+    "dot3": {"at": [18, -6], "rows": ["KK", "KK"]},
+    "armChin": {"at": [10, 9], "rows": ["SK.", "KCK", ".K."]},
+
+    "alert": {"at": [11, -10], "rows": [
+      ".KKKKKK.",
+      "KYYKKYYK",
+      "KYYKKYYK",
+      "KYYKKYYK",
+      "KYYYYYYK",
+      "KYYKKYYK",
+      ".KKKKKK.",
+      "..KYK...",
+      "..KK...."
+    ]},
+    "waveUp": {"at": [12, 5], "rows": [
+      "..SK",
+      "..SK",
+      ".CK.",
+      ".CK.",
+      ".CK.",
+      "CK.."
+    ]},
+    "waveOut": {"at": [12, 5], "rows": [
+      "...SK",
+      "..SK.",
+      ".CK..",
+      ".CK..",
+      ".CK..",
+      "CK..."
+    ]},
+
+    "burst": {"at": [11, -10], "rows": [
+      "r...r...r",
+      ".rRRRRRr.",
+      ".RWRRRWR.",
+      "rRRWRWRRr",
+      ".RRRWRRR.",
+      "rRRWRWRRr",
+      ".RWRRRWR.",
+      ".rRRRRRr.",
+      "r...r...r"
+    ]},
+    "drop1": {"at": [2, 0], "rows": ["D", "D"]},
+    "drop2": {"at": [2, 1], "rows": ["D", "D"]},
+    "drop3": {"at": [1, 2], "rows": ["D", "D"]},
+
+    "gear.bandana": {"at": [3, 0], "rows": [
+      ".KKKKKKKK....",
+      "KAAAAAAAAKAA.",
+      "KALAALAALKKAK"
+    ]},
+    "gear.hardhat": {"at": [2, -1], "rows": [
+      "...KKKKKK...",
+      "..KYYYYYyK..",
+      ".KYYYyYYYyK.",
+      "KKKKKKKKKKKK"
+    ]},
+    "gear.hood": {"at": [3, -1], "rows": [
+      "..KKKKKK..",
+      ".KCCCCCCK.",
+      "KCCccccCCK",
+      "KCK....KCK"
+    ]},
+    "gear.goggles": {"at": [3, 1], "rows": [
+      "KKKKKKKKKK",
+      "KQgKhhKQgK",
+      ".KK....KK."
+    ]},
+    "gear.cap": {"at": [3, 0], "rows": [
+      ".KKKKKKKK....",
+      "KCCCCCCCCK...",
+      "KcccccccccKKK"
+    ]},
+    "gear.visor": {"at": [2, 1], "rows": [
+      "..KKKKKKKK....",
+      ".KAAAAAAAAKKKK",
+      "KAAAAAAAAAAAAK"
+    ]},
+    "gear.beanie": {"at": [3, -2], "rows": [
+      "....LL....",
+      "..KKKKKK..",
+      ".KAAAAAAK.",
+      "KALALALALK",
+      "KLLLLLLLLK"
+    ]},
+    "gear.scarf": {"at": [3, 9], "rows": [
+      ".KAAAAAAK.",
+      "KALALALAK.",
+      "......KAK.",
+      "......KAK."
+    ]}
+  },
+  "frames": {
+    "idle.rest": ["eyesFwd", "armRest"],
+    "idle.blink": ["eyesShut", "armRest"],
+    "think.dots3": ["eyesRight", "armChin", "cloud", "dot1", "dot2", "dot3"],
+    "think.dots1": ["eyesRight", "armChin", "cloud", "dot1"],
+    "think.dots2": ["eyesRight", "armChin", "cloud", "dot1", "dot2"],
+    "build.raise": ["eyesRight", "anvil", "hammerUp"],
+    "build.strike": ["eyesRight", "anvil", "hammerDown", "sparks"],
+    "build.settle": ["eyesRight", "anvil", "hammerDown"],
+    "search.peer": ["eyesLeftOnly", "lensPeer"],
+    "search.out": ["eyesRight", "lensOut"],
+    "search.low": ["eyesRight", "lensLow"],
+    "waiting.up": ["eyesFwd", "alert", "waveUp"],
+    "waiting.out": ["eyesFwd", "alert", "waveOut"],
+    "trouble.drop1": ["eyesWorry", "armRest", "burst", "drop1"],
+    "trouble.drop2": ["eyesWorry", "armRest", "burst", "drop2"],
+    "trouble.drop3": ["eyesWorry", "armRest", "burst", "drop3"]
+  }
+}
