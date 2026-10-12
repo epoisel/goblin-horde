@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { createReadStream, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,7 +15,8 @@ import { WatchList } from "./lib/watch.mjs";
 import { OrcaReader } from "./lib/orca.mjs";
 import { ClaudeReader, goblinStateDir } from "./lib/claude.mjs";
 import { ExtensionReader, EXTENSION_PARTY, extensionFeedDir } from "./lib/extension.mjs";
-import { claudeHookReport, claudeSettingsPath } from "./lib/claude-hooks.mjs";
+import { claudeHookReport, claudeSettingsPath, installClaudeHooks } from "./lib/claude-hooks.mjs";
+import { diagnosticReport } from "./lib/diagnostics.mjs";
 import { claudeConfigDir } from "./lib/paths.mjs";
 import { codexCommand } from "./lib/codex-bin.mjs";
 import { Pairing, sessionCookie } from "./lib/pairing.mjs";
@@ -86,8 +87,27 @@ class CodexReader {
     this.threadReads = new Map();
     this.threadAttempts = new Map();
     this.threadFailures = new Map();
-    this.problem = "";
     this.process = null;
+    this.generation = 0;
+    this.restarts = 0; // Failed starts in a row; the wait before the next one doubles with each.
+    this.restartTimer = null;
+    this.closing = false;
+    this.health = { state: "starting", since: Date.now(), lastError: "", restartedAt: 0, nextRetryAt: 0 };
+    this.start();
+  }
+
+  /**
+   * Start (or restart) the Codex app-server. A Codex that stops or cannot start is retried on its
+   * own, after 5 seconds and then up to a minute apart, so a crash or an update to the Codex CLI does
+   * not leave the viewer without Codex chats until it is restarted. `reconnect()` retries at once.
+   */
+  start() {
+    const generation = ++this.generation;
+    this.problem = "";
+    this.serverRequests.clear(); // Approvals belonged to the old process; it can no longer answer them.
+    this.resumedThreads.clear();
+    this.process = null;
+    const current = () => generation === this.generation;
     try {
       const codex = codexCommand(["app-server", "--listen", "stdio://"]);
       this.process = spawn(codex.command, codex.args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, ...codex.options,
@@ -97,25 +117,66 @@ class CodexReader {
       this.problem = "Codex could not be started.";
     }
     if (this.process) {
-      this.lines = createInterface({ input: this.process.stdout });
-      this.lines.on("line", (line) => this.onLine(line));
-      this.process.stderr.on("data", () => {});
-      this.process.stdin.on("error", () => {});
-      this.process.on("error", (error) => {
+      const child = this.process;
+      createInterface({ input: child.stdout }).on("line", (line) => { if (current()) this.onLine(line); });
+      child.stderr.on("data", () => {});
+      child.stdin.on("error", () => {});
+      child.on("error", (error) => {
+        if (!current()) return;
         this.problem = error.code === "ENOENT" ? "The Codex CLI was not found." : "Codex could not be started.";
         this.failAll(error);
+        this.scheduleRestart(this.problem);
       });
-      this.process.on("exit", (code) => {
-        this.problem ||= `Codex app-server stopped (${code}).`;
+      child.on("exit", (code) => {
+        if (!current()) return;
+        // Windows reports a killed process as 4294967295; only a small exit code says anything.
+        this.problem ||= code > 0 && code < 256 ? `Codex stopped (exit code ${code}).` : "Codex stopped.";
         this.failAll(new Error(`Codex app-server exited (${code})`));
+        this.scheduleRestart(this.problem);
       });
+    } else {
+      this.scheduleRestart(this.problem);
     }
+    this.health = { ...this.health, state: this.restarts ? "restarting" : "starting", since: Date.now() };
     this.ready = this.request("initialize", {
-      clientInfo: { name: "goblin_horde", title: "Goblin Horde", version: "0.1.0" },
+      clientInfo: { name: "goblin_horde", title: "Goblin Horde", version },
       capabilities: { experimentalApi: true },
-    }).then(() => this.notify("initialized"));
+    }).then(() => {
+      this.notify("initialized");
+      if (!current()) return;
+      this.restarts = 0;
+      this.health = { ...this.health, state: "ready", since: Date.now(), lastError: "", nextRetryAt: 0 };
+    });
     // Codex is optional: callers still await `ready` and see the failure, but nothing else is left holding it.
     this.ready.catch(() => {});
+  }
+
+  scheduleRestart(reason) {
+    if (this.closing || this.restartTimer) return;
+    const wait = Math.min(60_000, 5000 * 2 ** this.restarts);
+    this.restarts++;
+    this.health = { ...this.health, state: "unavailable", since: Date.now(), lastError: reason, nextRetryAt: Date.now() + wait };
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      this.health.restartedAt = Date.now();
+      this.start();
+    }, wait);
+    this.restartTimer.unref?.();
+  }
+
+  /** Retry Codex now: the person pressed reconnect. */
+  reconnect() {
+    if (this.closing) return this.health;
+    clearTimeout(this.restartTimer);
+    this.restartTimer = null;
+    this.restarts = 0;
+    const old = this.process;
+    this.generation++; // The old process's exit is no longer this reader's news.
+    try { old?.kill(); } catch { /* Already gone. */ }
+    this.failAll(new Error("Reconnecting to Codex."));
+    this.health.restartedAt = Date.now();
+    this.start();
+    return this.health;
   }
 
   onLine(line) {
@@ -147,7 +208,7 @@ class CodexReader {
   }
 
   notify(method, params) {
-    this.process.stdin.write(`${JSON.stringify({ method, ...(params ? { params } : {}) })}\n`);
+    this.process?.stdin.write(`${JSON.stringify({ method, ...(params ? { params } : {}) })}\n`);
   }
 
   request(method, params = {}) {
@@ -331,7 +392,11 @@ class CodexReader {
     this.serverRequests.delete(String(requestId));
   }
 
-  close() { this.process?.kill(); }
+  close() {
+    this.closing = true;
+    clearTimeout(this.restartTimer);
+    this.process?.kill();
+  }
 }
 
 const reader = new CodexReader();
@@ -339,6 +404,8 @@ const orca = new OrcaReader();
 const claude = new ClaudeReader();
 const extensions = new ExtensionReader({ dir: extensionFeedDir(stateDir) });
 const watchList = new WatchList({ dir: stateDir });
+// An installed copy has its manager's marker beside it; a copy run from a download folder does not.
+const installed = existsSync(join(here, "goblin-horde-install.json"));
 const CLAUDE_ID = /^claude:[A-Za-z0-9_-]{1,128}$/;
 
 async function listAllSources() {
@@ -348,7 +415,21 @@ async function listAllSources() {
   const workspaces = orcaResult.status === "fulfilled" ? orcaResult.value : [];
   const sessions = claudeResult.status === "fulfilled" ? claudeResult.value : [];
   const parties = extensionResult.status === "fulfilled" ? extensionResult.value : [];
-  return [...codex, ...sessions, ...parties, ...workspaces].sort((a, b) => Number(b.updatedAt) - Number(a.updatedAt));
+  // Name what could not be listed, so a short list is never mistaken for the whole history.
+  const unavailable = [["codex", codexResult], ["orca", orcaResult], ["claude", claudeResult], ["extension", extensionResult]]
+    .filter(([, result]) => result.status === "rejected").map(([name]) => name);
+  return { threads: [...codex, ...sessions, ...parties, ...workspaces].sort((a, b) => Number(b.updatedAt) - Number(a.updatedAt)), unavailable };
+}
+
+/** Codex's connection, in the same shape as the other sources: retried on its own, or by reconnect. */
+function codexSource() {
+  const health = reader.health;
+  const wait = Math.max(0, Math.round((health.nextRetryAt - Date.now()) / 1000));
+  const state = health.state === "ready" ? "ok" : health.state === "unavailable" ? "unavailable" : "starting";
+  const detail = state === "ok" ? "Reading local Codex chats."
+    : state === "starting" ? "Starting Codex…"
+      : `${health.lastError || "Codex stopped."} Retrying${wait ? ` in ${wait}s` : " now"}; reconnect to try at once.`;
+  return { state, detail, replies: true, restarts: reader.restarts, nextRetryAt: health.nextRetryAt || 0 };
 }
 
 /** Which feeds this viewer can see right now, for the viewer's Feeds panel and `goblin status`. */
@@ -366,7 +447,7 @@ async function capabilities() {
         ? { native: true, note: "The transparent desktop goblins run on macOS with python.org or Homebrew Python (Tk 8.6 or newer); \"node goblin.mjs doctor\" shows whether this Mac has it." }
         : { native: false, note: "This computer uses the browser viewer. The transparent desktop goblins run on Windows and macOS." },
     sources: {
-      codex: { state: reader.problem ? "unavailable" : "ok", detail: reader.problem || "Reading local Codex chats." },
+      codex: codexSource(),
       claude: {
         state: hooks.state === "installed" && !hooks.broken && !hooks.disabled ? "ok" : hooks.state === "unreadable" ? "unreadable" : hooks.disabled ? "disabled"
           : hooks.state === "missing" ? "not-connected" : hooks.broken ? "broken" : "partial",
@@ -374,18 +455,23 @@ async function capabilities() {
           ? "Claude Code hooks are not installed. Run: node goblin.mjs hooks install" : hooks.broken
             ? "The Claude Code hook points to a missing Node or receiver. Run: node goblin.mjs hooks install"
             : hooks.state === "partial" ? `Some Claude Code hooks are missing: ${hooks.missing.join(", ")}.` : "Recording public Claude Code activity."),
-        sessions: claudeSnapshot.sessions.length, lastEventAt: lastClaude || 0,
+        sessions: claudeSnapshot.sessions.length, lastEventAt: lastClaude || 0, replies: false,
+        // The widget offers to connect it in one click when this copy is installed (its hook needs a fixed path).
+        canConnect: hooks.state !== "installed" && hooks.state !== "unreadable" && installed,
       },
       orca: orcaResult.status === "fulfilled"
         ? { state: orcaResult.value.missing ? "not-installed" : orcaResult.value.warning ? "unavailable" : "ok",
-          detail: orcaResult.value.missing ? "Optional. Orca is not installed." : orcaResult.value.warning || "Reading Orca workspaces." }
+          detail: orcaResult.value.missing ? "Optional. Orca is not installed." : orcaResult.value.warning || "Reading Orca workspaces.", replies: false }
         : { state: "unavailable", detail: "Orca could not be read." },
-      extensions: { state: extensionSnapshot.feeds.length ? "ok" : "none", detail: extensionSnapshot.feeds.length
+      extensions: { state: extensionSnapshot.feeds.length ? "ok" : "none", replies: false, detail: extensionSnapshot.feeds.length
         ? `${extensionSnapshot.feeds.length} extension ${extensionSnapshot.feeds.length === 1 ? "feed" : "feeds"}.` : "No extension feeds yet. See EXTENSIONS.md.",
         feeds: extensionSnapshot.feeds },
     },
   };
 }
+
+// What the diagnostic report says about this run: counts and timings only, never names or content.
+const stats = { startedAt: Date.now(), sceneBuilds: 0, sceneFailures: 0, lastSceneMs: 0, slowestSceneMs: 0, codexReadFailures: 0 };
 
 async function allScene() {
   const [codexResult, orcaResult, claudeResult, extensionResult] = await Promise.allSettled([reader.listThreads(), orca.snapshot(),
@@ -406,6 +492,20 @@ async function allScene() {
   // Watched parties are always read and kept on the launchpad, whatever their age.
   return { ...scene, watched: [...watchList.ids] };
 }
+async function timedScene() {
+  const started = Date.now();
+  try {
+    const scene = await allScene();
+    stats.sceneBuilds++;
+    stats.lastSceneMs = Date.now() - started;
+    stats.slowestSceneMs = Math.max(stats.slowestSceneMs, stats.lastSceneMs);
+    stats.codexReadFailures += Number(scene.coverage?.codexFailed || 0);
+    return scene;
+  } catch (error) {
+    stats.sceneFailures++;
+    throw error;
+  }
+}
 let allScenePending = null;
 let allSceneCached = null;
 let allSceneCachedAt = 0;
@@ -415,7 +515,7 @@ function recentScene() {
   const age = Date.now() - allSceneCachedAt;
   if (allSceneCached && age < 1500) return Promise.resolve(allSceneCached);
   if (!allScenePending) {
-    allScenePending = allScene().then((scene) => {
+    allScenePending = timedScene().then((scene) => {
       allSceneCached = scene;
       allSceneCachedAt = Date.now();
       return scene;
@@ -522,7 +622,7 @@ async function handleReply(request, response) {
   try { return json(response, 200, { threadId, ...(await reader.sendReply(threadId, message)) }); }
   catch (error) {
     if (/already has an active writer/i.test(error.message))
-      return json(response, 409, { error: "This chat is open in Codex. You can send this message in a linked mobile branch.", requiresBranch: true });
+      return json(response, 409, { error: "This chat is open in Codex. You can send this message in a mobile branch: a separate copy of the chat that does not merge back.", requiresBranch: true });
     throw error;
   }
 }
@@ -567,6 +667,26 @@ const handler = async (request, response) => {
     try { return await handlePair(request, response, origin); }
     catch { return fail(response, 500, "Unable to pair this phone."); }
   }
+  if (["/api/reconnect", "/api/connect-claude"].includes(url.pathname) && request.method === "POST") {
+    // Only this computer may restart a source or change Claude Code's settings; never a paired phone.
+    if (!isLocal(request)) return json(response, 403, { error: "Only this computer can do that." });
+    if (request.headers.origin !== origin || !String(request.headers["content-type"] || "").startsWith("application/json"))
+      return json(response, 403, { error: "Open the viewer first." });
+    try {
+      await readBody(request);
+      if (url.pathname === "/api/reconnect") {
+        reader.reconnect();
+        allSceneCachedAt = 0;
+        return json(response, 200, { codex: codexSource() });
+      }
+      if (!installed) return json(response, 409, { error: "Install Goblin Horde first (node goblin.mjs install), then connect Claude Code." });
+      const result = installClaudeHooks({ settingsPath: claudeSettingsPath(claudeConfigDir()), nodePath: process.execPath,
+        hookPath: join(here, "claude-hook.mjs"), stateDir });
+      return json(response, 200, { changed: result.changed, message: result.changed
+        ? "Connected Claude Code. New sessions appear here; restart sessions that were already open. Undo with: node goblin.mjs hooks remove"
+        : "Claude Code was already connected." });
+    } catch (error) { return fail(response, error.statusCode || 500, error.message || "That did not work."); }
+  }
   if (url.pathname === "/api/watch" && request.method === "POST") {
     if (!isLocal(request) && !hasSession(request)) return json(response, 401, { error: "Pair this phone with the viewer first." });
     if (request.headers.origin !== origin || !String(request.headers["content-type"] || "").startsWith("application/json"))
@@ -608,10 +728,17 @@ const handler = async (request, response) => {
     }
     if (url.pathname === "/api/capabilities") return json(response, 200, await capabilities());
     if (url.pathname === "/api/requests") return json(response, 200, { requests: reader.listRequests(url.searchParams.get("id") || defaultThreadId) });
-    if (url.pathname === "/api/threads") return json(response, 200, { threads: await listAllSources(), watched: [...watchList.ids] });
+    if (url.pathname === "/api/threads") return json(response, 200, { ...(await listAllSources()), watched: [...watchList.ids] });
+    if (url.pathname === "/api/diagnostics") {
+      if (!isLocal(request)) return json(response, 404, { error: "Not found" });
+      const report = diagnosticReport({ version, platform: process.platform, node: process.versions.node, stats, now: Date.now(),
+        capabilities: await capabilities(), scene: allSceneCached, watched: watchList.ids.length, codexRestarts: reader.restarts,
+        phone: { available: Boolean(lanIp), pairedSessions: pairing.sessionCount?.() ?? null } });
+      return json(response, 200, report);
+    }
     if (url.pathname === "/api/scene") {
       const threadId = url.searchParams.get("id") || defaultThreadId;
-      if (threadId === "all") return json(response, 200, await recentScene());
+      if (threadId === "all") return json(response, 200, { ...(await recentScene()), servedAt: Date.now() });
       if (threadId.startsWith("orca:")) {
         const scene = await orca.scene(threadId);
         return scene ? json(response, 200, { ...scene, checkedAt: Date.now() }) : json(response, 404, { error: "That Orca workspace is unavailable." });

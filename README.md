@@ -4,7 +4,7 @@
 
 Goblin Horde shows **public activity only**: the messages agents show you, tool names, file names, and statuses. It does not show and cannot see an agent's private reasoning. A goblin's "thinking" bubble means only that the agent is working quietly.
 
-> **Status: early (0.2).** It works day to day on Windows, but expect rough edges. The macOS desktop widget is implemented but **has not yet been tested on a real Mac**. See [Platform support](#platform-support) and the [macOS smoke check](#on-macos).
+> **Status: early (0.3).** It works day to day on Windows, but expect rough edges. The macOS desktop widget is implemented but **has not yet been tested on a real Mac**. See [Platform support](#platform-support) and the [macOS smoke check](#on-macos).
 
 ## Platform support
 
@@ -19,7 +19,7 @@ All systems need **Node.js 20 or newer**. There are no packages to install.
 ## Quick start
 
 1. Install [Node.js](https://nodejs.org) 20 or newer. For desktop goblins on Windows or macOS, also have Python 3 with Tkinter.
-2. Download [GoblinHorde-Team.zip](https://github.com/epoisel/goblin-horde/releases/download/v0.2.0-preview/GoblinHorde-Team.zip) from the [v0.2.0-preview prerelease](https://github.com/epoisel/goblin-horde/releases/tag/v0.2.0-preview) (or download this repository), unzip it, and open a terminal in that folder. On macOS, the native desktop widget still needs a smoke test on a real Mac (see [On macOS](#on-macos)); the browser viewer is the fallback.
+2. Download [GoblinHorde-Team.zip](https://github.com/epoisel/goblin-horde/releases/download/v0.3.0/GoblinHorde-Team.zip) from the [v0.3.0 release](https://github.com/epoisel/goblin-horde/releases/tag/v0.3.0) (or download this repository), unzip it, and open a terminal in that folder. On macOS, the native desktop widget still needs a smoke test on a real Mac (see [On macOS](#on-macos)); the browser viewer is the fallback.
 3. Run:
 
    ```
@@ -41,7 +41,7 @@ node ~/.local/share/goblin-horde/goblin.mjs uninstall                           
 
 This stops Goblin Horde and removes its app files, its manager skills, and its own Claude Code hook entries. Add `--remove-settings` to also delete your layout settings, pairing code, and recorded activity. If you installed with `--install-dir`, use the `goblin.mjs` in that folder instead.
 
-**About the overview video.** The [overview video (GoblinHorde-Overview.mp4)](https://github.com/epoisel/goblin-horde/releases/download/v0.2.0-preview/GoblinHorde-Overview.mp4) is published separately as a release asset. It is not tracked in the source tree and is not inside the installer ZIP, and you do not need it to install or run Goblin Horde.
+**About the overview video.** The [overview video (GoblinHorde-Overview.mp4)](https://github.com/epoisel/goblin-horde/releases/download/v0.2.0-preview/GoblinHorde-Overview.mp4), recorded with v0.2 before the goblin tribes and model badges, is published separately as a release asset. It is not tracked in the source tree and is not inside the installer ZIP, and you do not need it to install or run Goblin Horde.
 
 ## Contributing, security, license
 
@@ -82,7 +82,8 @@ Use `--install-dir` and `--state-dir` (or `GOBLIN_HORDE_INSTALL_DIR` and `GOBLIN
 **Start, stop, check, remove.** Ask your agent ("Start Goblin Horde", "Stop Goblin Horde", "Is Goblin Horde running?", "Uninstall Goblin Horde"), or run the installed manager, `node <app folder>/goblin.mjs`, with:
 
 - `start` and `stop`. Stop ends only processes in which Node or Python runs this installation's own viewer or widget file directly (a command line that merely mentions the file, for example as an argument to another script, does not count), and checks each one again just before stopping it; never other programs by name or port. Running `start` twice is safe.
-- `status` says what is installed, running, and connected. `doctor` checks prerequisites, the Claude Code connection, extension feeds, and the port.
+- `status` says what is installed, running, and connected. `doctor` checks prerequisites, the Claude Code connection, extension feeds, and the port. `doctor --report` prints a short report that is safe to paste into a bug report: versions, connection states, counts, error categories, and timings, with no chats, names, folder paths, addresses, or pairing codes. The widget menu's **Copy diagnostic report** copies the same report.
+- The launchpad's top row names every feed: **CODEX ✓ · CLAUDE ✕ FIX · ORCA ✓ · FEEDS –**. Hover a feed for what it means and whether it takes replies here. **FIX** acts at once: it reconnects a stopped Codex (which is also retried by itself, after 5 seconds and then up to a minute apart), or connects Claude Code after you confirm (the same change as `hooks install`, with a backup). When the viewer answers with a list it built a while ago, the status line says **UPDATED 45s AGO** instead of LIVE, and search names any chat list it could not read.
 - `open --compact` opens the small browser view.
 - `uninstall` stops Goblin Horde, removes its app files, its manager skills, and only its own Claude Code hook entries (the ones that run this installation's receiver; another Goblin Horde copy's hooks stay). Your layout settings and phone pairing code stay for a later reinstall. `uninstall --remove-settings` also removes those and the recorded activity. Neither deletes the ZIP or the folder you unzipped.
 
