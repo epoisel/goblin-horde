@@ -256,9 +256,15 @@ class StreamWindow:
         self.name_label = tk.Label(header, text="", anchor="w", justify="left", wraplength=350,
                                    bg=DIALOGUE, fg=style["accent"], font=ui_font("Bahnschrift", 12, "bold"))
         self.name_label.pack(fill="x", padx=10)
-        self.state_label = tk.Label(header, text="", anchor="w", bg=DIALOGUE, fg=MUTED,
+        state_row = tk.Frame(header, bg=DIALOGUE)
+        state_row.pack(fill="x", padx=10, pady=(2, 0))
+        # The model this goblin runs, in its tribe's colour, beside its source and status.
+        self.model_label = tk.Label(state_row, text="", anchor="e", bg=DIALOGUE, fg=MUTED,
+                                    font=ui_font("Consolas", 8, "bold"))
+        self.model_label.pack(side="right")
+        self.state_label = tk.Label(state_row, text="", anchor="w", bg=DIALOGUE, fg=MUTED,
                                     font=ui_font("Consolas", 8))
-        self.state_label.pack(fill="x", padx=10, pady=(2, 0))
+        self.state_label.pack(side="left", fill="x", expand=True)
 
         controls = tk.Frame(inner, bg=DIALOGUE)
         controls.pack(fill="x", padx=7, pady=(0, 5))
@@ -765,6 +771,10 @@ class StreamWindow:
         if force or text != self.state_cache:
             self.state_cache = text
             self.state_label.configure(text=text)
+            from party_layout import family_ink, model_badge
+
+            badge = model_badge(self.actor, with_effort=True)
+            self.model_label.configure(text=f"◈ {badge}" if badge else "", fg=family_ink(self.actor))
 
     def state(self) -> dict:
         return {"id": self.actor_id, "source": self.actor.get("source"),

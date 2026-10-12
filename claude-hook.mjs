@@ -23,9 +23,15 @@ async function finish() {
   finished = true;
   try {
     if (size > 0 && size <= MAX_INPUT) {
-      const { appendClaudeRecord, claudeActivityDir, normalizeHookEvent } = await import("./lib/claude.mjs");
+      const { appendClaudeRecord, claudeActivityDir, normalizeHookEvent, transcriptModel } = await import("./lib/claude.mjs");
       const { isAbsolute, join } = await import("node:path");
-      const record = normalizeHookEvent(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      const record = normalizeHookEvent(input);
+      // Only the model id is read from the transcript, so the goblin can name its model.
+      if (record && !record.model) {
+        const model = transcriptModel(input);
+        if (model) record.model = model;
+      }
       const dir = stateDir && isAbsolute(stateDir) ? join(stateDir, "claude") : claudeActivityDir();
       if (record) appendClaudeRecord(record, { dir });
     }

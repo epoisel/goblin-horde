@@ -62,6 +62,7 @@ def motion_stream(owner, action="build", mapped=True):
     stream.motion_clock = ActionClock()
     stream.motion_preview = False
     stream.state_label = Mock()
+    stream.model_label = Mock()
     stream.render_actor = Mock()
     stream.actor = Mock()
     stream.connection = Mock()
@@ -336,11 +337,27 @@ class SharedPulseTests(unittest.TestCase):
         owner.paint_overview_sprite(0, self.after, {})
         self.assertEqual(owner.draw_sprite.call_args.kwargs["action"], "search")
 
+    def test_the_header_names_the_model_in_its_tribe_colour(self):
+        self.show(self.before)
+        self.stream.state_label = Mock()
+        self.stream.model_label = Mock()
+        self.stream.actor = {**self.after, "model": {"id": "gpt-5.6-sol", "label": "GPT-5.6 Sol",
+                                                     "family": "openai", "effort": "xhigh"}}
+        self.stream.refresh_state(force=True)
+        shown = self.stream.model_label.configure.call_args.kwargs
+        self.assertEqual(shown["text"], "◈ GPT-5.6 SOL · XHIGH")
+        self.assertEqual(shown["fg"], "#8fcbd6")
+        # A source that names no model shows no badge.
+        self.stream.actor = {**self.after, "model": None}
+        self.stream.refresh_state(force=True)
+        self.assertEqual(self.stream.model_label.configure.call_args.kwargs["text"], "")
+
     def test_the_header_names_a_replayed_step_in_the_past_tense_until_it_ends(self):
         self.show(self.before)
         self.assertEqual(self.show(self.after)[0], "search")
         self.stream.actor = self.after
         self.stream.state_label = Mock()
+        self.stream.model_label = Mock()
         self.stream.refresh_state()
         text = self.stream.state_label.configure.call_args.kwargs["text"]
         self.assertIn("CHECKED", text)

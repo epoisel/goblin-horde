@@ -1,206 +1,55 @@
 {
-  "about": "Pixel goblins and activity cues. Each layer is a grid of palette keys placed on a 16x16 goblin grid; '.' is transparent.",
+  "about": "Pixel goblins and activity cues. Each layer is a grid of palette keys placed on a 16x16 goblin grid; '.' is transparent. Tribes pick a body, a resting arm, and outfits (palette and gear): Claude models are hooded hexers, OpenAI models are sapper war-machinists, and everything else is a raider.",
   "origin": [2, 10],
   "coatDark": 0.72,
   "size": [26, 28],
-  "colors": {
-    "K": "#15201a", "B": "#4a3324", "b": "#2b211a", "G": "#e2b65c", "T": "#f2e6c6",
-    "E": "#f6d65a", "W": "#fbf3dc", "H": "#c3ccd0", "h": "#6f7d84", "N": "#b07a45",
-    "n": "#7a5230", "O": "#e2b65c", "Q": "#a9dde4", "q": "#62a9b8", "g": "#ffffff",
-    "Y": "#f0c75e", "y": "#b88a2e", "R": "#e0705c", "r": "#8f3a2f", "D": "#8fd3f0",
-    "Z": "#0d1a13", "X": "#ffe28a", "x": "#ff9f4a"
-  },
+  "colors": {"K": "#15201a", "B": "#4a3324", "b": "#2b211a", "G": "#e2b65c", "T": "#f2e6c6", "E": "#f6d65a", "W": "#fbf3dc", "H": "#c3ccd0", "h": "#6f7d84", "N": "#b07a45", "n": "#7a5230", "O": "#e2b65c", "Q": "#a9dde4", "q": "#62a9b8", "g": "#ffffff", "Y": "#f0c75e", "y": "#b88a2e", "R": "#e0705c", "r": "#8f3a2f", "D": "#8fd3f0", "Z": "#0d1a13", "X": "#ffe28a", "x": "#ff9f4a"},
   "styleColors": {"S": "skin", "s": "shade", "C": "coat", "c": "coatDark", "L": "light", "A": "accent"},
   "layers": {
     "shadow": {"at": [3, 16], "rows": ["ZZZZZZZZZZ"]},
-    "body": {"at": [0, 0], "rows": [
-      "................",
-      "....KKKKKKKK....",
-      "...KSSSSSSSSK...",
-      "KK.KSSSSSSSSK.KK",
-      "KsKSSSSSSSSSSKsK",
-      ".KsSSSSSSSSSSsK.",
-      "..KSSSSSSSSSSK..",
-      "...KSSSssSSSK...",
-      "...KSSTKKTSSK...",
-      "....KKSSSSKK....",
-      "...KcCCLLCCcK...",
-      "..KCKCCLLCCK....",
-      "..KSKCCLLCCK....",
-      "...KBBBGGBBBK...",
-      "...KcCCKKCCcK...",
-      "...KbbK..KbbK..."
-    ]},
+    "body": {"at": [0, 0], "rows": ["................", ".....KKKKKK.....", "....KSSSSSSK....", "K..KSSSSSSSSK..K", "KsKKsKKSSKKsKKsK", ".KssSKESSEKSssK.", "..KKSSSssSSSKK..", "...KSSKssKSSK...", "...KSKTKKTKSK...", "....KKSSSSKK....", "...KcTCKTCCcK...", "..KCKCBCCLCK....", "..KSKCCBCLCK....", "...KBBBGBBBBK...", "...KcC.KK.CcK...", "...KbbK..KbbK..."]},
     "eyesFwd": {"at": [5, 5], "rows": ["KE..EK"]},
     "eyesRight": {"at": [5, 5], "rows": ["EK..EK"]},
     "eyesShut": {"at": [5, 5], "rows": ["ss..ss"]},
     "eyesWorry": {"at": [5, 4], "rows": [".K..K.", "KE..EK"]},
     "eyesLeftOnly": {"at": [5, 5], "rows": ["EK"]},
     "armRest": {"at": [12, 11], "rows": ["CK", "SK"]},
-
-    "anvil": {"at": [14, 12], "rows": [
-      "KKKKKKK",
-      "KHHHHhK",
-      ".KKhKK.",
-      ".KhhhK."
-    ]},
-    "hammerUp": {"at": [12, 1], "rows": [
-      "KKKKKK",
-      "KHHHHK",
-      "KhhhhK",
-      "KKKNKK",
-      "..KNK.",
-      "..KNK.",
-      "..KSK.",
-      ".CCK..",
-      "CKK..."
-    ]},
-    "hammerDown": {"at": [12, 7], "rows": [
-      "....KKKK",
-      "....KHhK",
-      "....KHhK",
-      "CCSNNHhK",
-      "KKK.KHhK"
-    ]},
-    "sparks": {"at": [20, 8], "rows": [
-      ".X.",
-      "..x",
-      "X..",
-      ".x."
-    ]},
-
-    "lensPeer": {"at": [8, 3], "rows": [
-      ".OOO.",
-      "OEEgO",
-      "OEKKO",
-      "OEKKO",
-      ".OOO.",
-      "....N",
-      ".....N",
-      "....CS"
-    ]},
-    "lensOut": {"at": [12, 3], "rows": [
-      "..OOO.",
-      ".OQQgO",
-      ".OQQQO",
-      ".OqQQO",
-      "..OOO.",
-      ".N....",
-      "N.....",
-      "S....."
-    ]},
-    "lensLow": {"at": [12, 7], "rows": [
-      "...OOO.",
-      "..OQQgO",
-      ".NOQQQO",
-      "SKOqQQO",
-      "...OOO."
-    ]},
-
-    "cloud": {"at": [10, -9], "rows": [
-      "..KKK..KKK..",
-      ".KWWWKKWWWK.",
-      "KWWWWWWWWWWK",
-      "KWWWWWWWWWWK",
-      "KWWWWWWWWWWK",
-      ".KWWWWWWWWK.",
-      "..KKKKKKKK..",
-      ".KWK........",
-      "..K........."
-    ]},
+    "anvil": {"at": [14, 12], "rows": ["KKKKKKK", "KHHHHhK", ".KKhKK.", ".KhhhK."]},
+    "hammerUp": {"at": [12, 1], "rows": ["KKKKKK", "KHHHHK", "KhhhhK", "KKKNKK", "..KNK.", "..KNK.", "..KSK.", ".CCK..", "CKK..."]},
+    "hammerDown": {"at": [12, 7], "rows": ["....KKKK", "....KHhK", "....KHhK", "CCSNNHhK", "KKK.KHhK"]},
+    "sparks": {"at": [20, 8], "rows": [".X.", "..x", "X..", ".x."]},
+    "lensPeer": {"at": [8, 3], "rows": [".OOO.", "OEEgO", "OEKKO", "OEKKO", ".OOO.", "....N", ".....N", "....CS"]},
+    "lensOut": {"at": [12, 3], "rows": ["..OOO.", ".OQQgO", ".OQQQO", ".OqQQO", "..OOO.", ".N....", "N.....", "S....."]},
+    "lensLow": {"at": [12, 7], "rows": ["...OOO.", "..OQQgO", ".NOQQQO", "SKOqQQO", "...OOO."]},
+    "cloud": {"at": [10, -9], "rows": ["..KKK..KKK..", ".KWWWKKWWWK.", "KWWWWWWWWWWK", "KWWWWWWWWWWK", "KWWWWWWWWWWK", ".KWWWWWWWWK.", "..KKKKKKKK..", ".KWK........", "..K........."]},
     "dot1": {"at": [12, -6], "rows": ["KK", "KK"]},
     "dot2": {"at": [15, -6], "rows": ["KK", "KK"]},
     "dot3": {"at": [18, -6], "rows": ["KK", "KK"]},
     "armChin": {"at": [10, 9], "rows": ["SK.", "KCK", ".K."]},
-
-    "alert": {"at": [11, -10], "rows": [
-      ".KKKKKK.",
-      "KYYKKYYK",
-      "KYYKKYYK",
-      "KYYKKYYK",
-      "KYYYYYYK",
-      "KYYKKYYK",
-      ".KKKKKK.",
-      "..KYK...",
-      "..KK...."
-    ]},
-    "waveUp": {"at": [12, 5], "rows": [
-      "..SK",
-      "..SK",
-      ".CK.",
-      ".CK.",
-      ".CK.",
-      "CK.."
-    ]},
-    "waveOut": {"at": [12, 5], "rows": [
-      "...SK",
-      "..SK.",
-      ".CK..",
-      ".CK..",
-      ".CK..",
-      "CK..."
-    ]},
-
-    "burst": {"at": [11, -10], "rows": [
-      "r...r...r",
-      ".rRRRRRr.",
-      ".RWRRRWR.",
-      "rRRWRWRRr",
-      ".RRRWRRR.",
-      "rRRWRWRRr",
-      ".RWRRRWR.",
-      ".rRRRRRr.",
-      "r...r...r"
-    ]},
+    "alert": {"at": [11, -10], "rows": [".KKKKKK.", "KYYKKYYK", "KYYKKYYK", "KYYKKYYK", "KYYYYYYK", "KYYKKYYK", ".KKKKKK.", "..KYK...", "..KK...."]},
+    "waveUp": {"at": [12, 5], "rows": ["..SK", "..SK", ".CK.", ".CK.", ".CK.", "CK.."]},
+    "waveOut": {"at": [12, 5], "rows": ["...SK", "..SK.", ".CK..", ".CK..", ".CK..", "CK..."]},
+    "burst": {"at": [11, -10], "rows": ["r...r...r", ".rRRRRRr.", ".RWRRRWR.", "rRRWRWRRr", ".RRRWRRR.", "rRRWRWRRr", ".RWRRRWR.", ".rRRRRRr.", "r...r...r"]},
     "drop1": {"at": [2, 0], "rows": ["D", "D"]},
     "drop2": {"at": [2, 1], "rows": ["D", "D"]},
     "drop3": {"at": [1, 2], "rows": ["D", "D"]},
-
-    "gear.bandana": {"at": [3, 0], "rows": [
-      ".KKKKKKKK....",
-      "KAAAAAAAAKAA.",
-      "KALAALAALKKAK"
-    ]},
-    "gear.hardhat": {"at": [2, -1], "rows": [
-      "...KKKKKK...",
-      "..KYYYYYyK..",
-      ".KYYYyYYYyK.",
-      "KKKKKKKKKKKK"
-    ]},
-    "gear.hood": {"at": [3, -1], "rows": [
-      "..KKKKKK..",
-      ".KCCCCCCK.",
-      "KCCccccCCK",
-      "KCK....KCK"
-    ]},
-    "gear.goggles": {"at": [3, 1], "rows": [
-      "KKKKKKKKKK",
-      "KQgKhhKQgK",
-      ".KK....KK."
-    ]},
-    "gear.cap": {"at": [3, 0], "rows": [
-      ".KKKKKKKK....",
-      "KCCCCCCCCK...",
-      "KcccccccccKKK"
-    ]},
-    "gear.visor": {"at": [2, 1], "rows": [
-      "..KKKKKKKK....",
-      ".KAAAAAAAAKKKK",
-      "KAAAAAAAAAAAAK"
-    ]},
-    "gear.beanie": {"at": [3, -2], "rows": [
-      "....LL....",
-      "..KKKKKK..",
-      ".KAAAAAAK.",
-      "KALALALALK",
-      "KLLLLLLLLK"
-    ]},
-    "gear.scarf": {"at": [3, 9], "rows": [
-      ".KAAAAAAK.",
-      "KALALALAK.",
-      "......KAK.",
-      "......KAK."
-    ]}
+    "gear.hood": {"at": [3, -2], "rows": ["...KCCK...", "..KCCCCK..", ".KCcCCcCK.", "KCcKKKKcCK", "KCK....KCK", "KC......CK"]},
+    "body.shaman": {"at": [0, 0], "rows": ["................", ".....KKKKKK.....", "....KSSSSSSK....", "K..KSSSSSSSSK..K", "KsKKsKKSSKKsKKsK", ".KssAKESSEKAssK.", "..KKSSSssSSSKK..", "...KSAKssKASK...", "...KSSKTTKSSK...", "...KCKKSSKKCK...", "..KCCKTKKTKCCK..", "..KCCCCLLCCCCK..", ".KCCcCCLLCCcCCK.", ".KCcCCCLLCCCcCK.", ".KcCcCKLLKCcCcK.", ".K.KbbK..KbbK.K."]},
+    "body.sapper": {"at": [0, 0], "rows": ["................", "................", "....KKKKKKKK....", "KK.KSSSSSSSSK.KK", "KsKKsKKSSKKsKKsK", "KssSSKESSEKSSssK", ".KKSSSSssSSSSKK.", "..KSSKKssKKSSK..", "..KSKTKKKKTKSK..", "...KKSSSSSSKK...", ".KKhHKCCCCKHhKK.", "KHHhKKBCCKxKhHHK", "KhhKSKNBKKKKKhK.", ".KKSKNNNBKKNKKK.", "..KKNnNNNBNnNK..", "..KbbbK..KbbbK.."]},
+    "armShaman": {"at": [12, 2], "rows": [".TTT.", ".KTK.", ".TTT.", "..NA.", "..NA.", "..N..", "..N..", "..N..", "..N..", "CSNK.", "KSNK.", "..N..", "..n.."]},
+    "armSapper": {"at": [12, 10], "rows": ["..x", ".KK", "KhhK", "SKKK", "SK"]},
+    "armRaider": {"at": [12, 11], "rows": ["CKK", "SNK", ".KHK", ".KHK", "..Kh"]},
+    "gear.spikecap": {"at": [4, -2], "rows": ["...KK...", "..KHhK..", ".KHHHhK.", "KhHHHHhK", "KKKKKKKK"]},
+    "gear.skullhelm": {"at": [3, -2], "rows": ["K........K", "TK.TTTT.KT", ".TKTKTTKT.", "..TTTTTT..", ".KKKKKKKK."]},
+    "gear.topknot": {"at": [6, -2], "rows": [".KAK", "KAAK", ".KK."]},
+    "gear.ragwrap": {"at": [4, 1], "rows": ["KAAAAAAK", "KALAAALKAA", "........KA"]},
+    "gear.antlers": {"at": [2, -2], "rows": ["TK.......KT.", ".TK.KKKKKT..", "..KCCCCCCK..", ".KCcCCCCcCK.", ".KCKKKKKKCK.", ".KC......CK."]},
+    "gear.boneheaddress": {"at": [3, -2], "rows": [".T.T..T.T.", "KAKAKKAKAK", "KTTTTTTTTK", ".KKKKKKKK."]},
+    "gear.feathers": {"at": [3, -2], "rows": ["AA.AA.AA..", ".KKKKKKKK.", "KCCCCCCCCK", "KCKKKKKKCK", "KC......CK"]},
+    "gear.pothelm": {"at": [3, -1], "rows": ["..KKKKKK..", ".KHHHHHhK.", "KhHHHHHHhK", "KKQgKKQgKK"]},
+    "gear.weldmask": {"at": [3, -1], "rows": [".KKKKKKKK.", "KhhhhhhhhK", "KhKxxKxxKh", "KhhhhhhhhK"]},
+    "gear.stackhelm": {"at": [3, -2], "rows": ["......Kh..", "..KKKKKhK.", ".KHHHHHHhK", "KhHHHHHHHK", "KKQgKKQgKK"]},
+    "gear.fusetuft": {"at": [5, -2], "rows": ["..xX..", ".KhhK.", "KhHHhK", "KKKKKK"]}
   },
   "frames": {
     "idle.rest": ["eyesFwd", "armRest"],
@@ -219,5 +68,25 @@
     "trouble.drop1": ["eyesWorry", "armRest", "burst", "drop1"],
     "trouble.drop2": ["eyesWorry", "armRest", "burst", "drop2"],
     "trouble.drop3": ["eyesWorry", "armRest", "burst", "drop3"]
+  },
+  "tribes": {
+    "raider": {"label": "Raider", "body": "body", "arm": "armRaider", "outfits": [
+      {"name": "Mudfang", "skin": "#7f9a5a", "shade": "#4e6538", "coat": "#6b4a2e", "light": "#a8865a", "accent": "#b5543c", "gear": "spikecap"},
+      {"name": "Gutrot", "skin": "#8a9a4e", "shade": "#56622e", "coat": "#4f4a3a", "light": "#9b8e6a", "accent": "#7a8c4a", "gear": "skullhelm"},
+      {"name": "Ashknuckle", "skin": "#6f8a5c", "shade": "#45573a", "coat": "#5a3b33", "light": "#9a7a62", "accent": "#c47a3c", "gear": "topknot"},
+      {"name": "Bilgrat", "skin": "#94a368", "shade": "#5e6a3e", "coat": "#3e4a3c", "light": "#8f9a78", "accent": "#a33b2e", "gear": "ragwrap"}
+    ]},
+    "shaman": {"label": "Hexer", "body": "body.shaman", "arm": "armShaman", "outfits": [
+      {"name": "Ochrehex", "skin": "#7d9a62", "shade": "#4b6340", "coat": "#9c4a2c", "light": "#d9b98c", "accent": "#e07a4a", "gear": "hood"},
+      {"name": "Bonecaller", "skin": "#8aa070", "shade": "#566a46", "coat": "#7a3b2a", "light": "#e6d3a8", "accent": "#d6603a", "gear": "antlers"},
+      {"name": "Rustmutter", "skin": "#76925e", "shade": "#475c3a", "coat": "#b0603a", "light": "#e8c99a", "accent": "#f09a5a", "gear": "boneheaddress"},
+      {"name": "Cinderwyrd", "skin": "#829c66", "shade": "#506642", "coat": "#8a3f33", "light": "#d6b78a", "accent": "#e8a24a", "gear": "feathers"}
+    ]},
+    "sapper": {"label": "Sapper", "body": "body.sapper", "arm": "armSapper", "outfits": [
+      {"name": "Sootgrin", "skin": "#7a8f6a", "shade": "#4d5c43", "coat": "#3a3f42", "light": "#6b7378", "accent": "#e07a2a", "gear": "pothelm"},
+      {"name": "Boltjaw", "skin": "#869a70", "shade": "#556647", "coat": "#2f3a3e", "light": "#5f6e74", "accent": "#56c2c9", "gear": "weldmask"},
+      {"name": "Smokestack", "skin": "#71886a", "shade": "#475842", "coat": "#44403a", "light": "#7a7064", "accent": "#f0a83a", "gear": "stackhelm"},
+      {"name": "Fusewick", "skin": "#8e9e6e", "shade": "#5a6644", "coat": "#383c3e", "light": "#6e767a", "accent": "#e8553a", "gear": "fusetuft"}
+    ]}
   }
 }

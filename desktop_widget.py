@@ -25,8 +25,9 @@ from goblin_cues import (HELD, PORTAL_BEATS, PORTAL_CLIP, PORTAL_TOP, ActionCloc
 from goblin_motion import ActionPulse, MemberStatus, goblin_action, member_status, with_pulse
 from goblin_parting import (OUTCOME_COLORS, PartingNotes, RetirementTracker, note_lines, outcome_word,
                             parting_note)
-from party_layout import (age_label, compact_active, coverage_note, launchpad_board, loop_groups, party_scope,
-                          project_for, reachable, search_sources, stable_layout, tile_plan)
+from party_layout import (age_label, compact_active, coverage_note, family_ink, launchpad_board, loop_groups,
+                          model_badge, model_of, party_models, party_scope, project_for, reachable, search_sources,
+                          stable_layout, tile_plan)
 from stream_windows import (StreamWindow, WIDTH as STREAM_WIDTH, HEIGHT as STREAM_HEIGHT, monitor_areas,
                             monitor_work_area, screen_geometry, workflow_for)
 
@@ -101,25 +102,28 @@ class Exit(NamedTuple):
     outcome: str
     actor: dict
     index: int
-KINDS = [
-    {"name": "Moss", "skin": "#78b783", "shade": "#417d58", "coat": "#315b45", "light": "#d3aa69", "accent": "#a7d6b0", "gear": "bandana"},
-    {"name": "Ember", "skin": "#9fb663", "shade": "#677d3c", "coat": "#a84e38", "light": "#e3b56d", "accent": "#f0af89", "gear": "helm"},
-    {"name": "Moon", "skin": "#8ebba6", "shade": "#4f8b7a", "coat": "#665b8c", "light": "#cbb18b", "accent": "#c7b9e2", "gear": "scarf"},
-    {"name": "Cog", "skin": "#a9be74", "shade": "#718946", "coat": "#4c7186", "light": "#d0aa68", "accent": "#a5d5e6", "gear": "goggles"},
-    {"name": "Marsh", "skin": "#78ad86", "shade": "#4c7e5d", "coat": "#986940", "light": "#dec481", "accent": "#e3c48d", "gear": "patch"},
-    {"name": "Frost", "skin": "#a4cabb", "shade": "#6c9a8b", "coat": "#52728f", "light": "#d8bd87", "accent": "#b7dce5", "gear": "visor"},
-    {"name": "Berry", "skin": "#a0bd83", "shade": "#6e8c53", "coat": "#92536e", "light": "#dfad79", "accent": "#e7acca", "gear": "bandana"},
-    {"name": "Sage", "skin": "#a6c17b", "shade": "#668b51", "coat": "#66775b", "light": "#d7b477", "accent": "#cbdab1", "gear": "patch"},
-]
-
-# Goblin bodies, faces, and gear come from goblin_art.json, the sprite file the browser viewer and the
-# product reel draw from, so a goblin looks the same on every surface. Action props stay in goblin_cues.
+# Goblin bodies, faces, gear, and outfits come from goblin_art.json, the sprite file the browser viewer
+# draws from too, so a goblin looks the same on every surface. Action props stay in goblin_cues.
 ART = json.loads(Path(__file__).with_name("goblin_art.json").read_text(encoding="utf-8"))
-ART_GEAR = {"bandana": "gear.bandana", "helm": "gear.hardhat", "scarf": "gear.scarf", "goggles": "gear.goggles",
-            "patch": "gear.cap", "visor": "gear.visor"}
+# Each agent's model picks its tribe: Claude models are hooded hexers, OpenAI models sapper
+# war-machinists, and everything else (Orca, feeds without a model) ragged raiders.
+TRIBES: dict[str, list[dict]] = {
+    name: [{**outfit, "tribe": name, "body": spec["body"], "arm": spec["arm"]} for outfit in spec["outfits"]]
+    for name, spec in ART["tribes"].items()
+}
+KINDS = [outfit for outfits in TRIBES.values() for outfit in outfits]
+FAMILY_TRIBE = {"claude": "shaman", "openai": "sapper"}
+# The action preview shows every tribe in turn, each with an invented model.
+DEMO_KINDS = [outfit for group in zip(*TRIBES.values()) for outfit in group]
+DEMO_IDENTITY = {
+    "shaman": {"source": "claude", "model": {"id": "claude-opus-5-5", "label": "Opus 5.5", "family": "claude"}},
+    "sapper": {"source": "codex", "model": {"id": "gpt-5.6-sol", "label": "GPT-5.6 Sol", "family": "openai", "effort": "high"}},
+    "raider": {"source": "orca"},
+}
+SOURCE_TRIBE = {"claude": "shaman", "codex": "sapper"}
 ART_EYES = {"front": "eyesFwd", "right": "eyesRight", "up": "eyesFwd", "squint": "eyesWorry", "blink": "eyesShut"}
 # The art sits one column right and one row down on the widget grid: its feet stand on the shadow at
-# row 16 and a hard hat's brim (art row -1) still drops fully through the floor portal.
+# row 16 and a tall helm or hood (art rows -1 to -4) still drops fully through the floor portal.
 ART_COL, ART_ROW = 1, 1
 FEET_ROW = ART_ROW + len(ART["layers"]["body"]["rows"]) - 1
 _ART_RUNS: dict[str, tuple[tuple[int, int, int, str], ...]] = {}
@@ -172,6 +176,27 @@ def state_file() -> Path:
     return target
 
 
+def write_settings(target: Path, text: str) -> None:
+    """Replace the settings file in one step, so a crash mid-write never leaves half a file."""
+    temporary = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(text, encoding="utf-8")
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def keep_unreadable_settings(text: str) -> None:
+    """Set an unreadable settings file aside (once) instead of losing its notes and layout to the next save."""
+    try:
+        target = state_file()
+        aside = target.with_name(f"{target.name}.unreadable")
+        if not aside.exists():
+            aside.write_text(text, encoding="utf-8")
+    except OSError:
+        pass
+
+
 def latest_line(actor: dict) -> str:
     activities = actor.get("activities") or []
     if not activities:
@@ -191,10 +216,32 @@ def latest_line(actor: dict) -> str:
 
 
 def stable_style(actor_id: str) -> int:
+    """A stable hash of an actor id; the same agent always wears the same outfit."""
     value = 2166136261
     for byte in actor_id.encode("utf-8"):
         value = ((value ^ byte) * 16777619) & 0xffffffff
-    return value % len(KINDS)
+    return value
+
+
+def tribe_for(actor: dict) -> str:
+    """The goblin tribe for an agent: its model's family first, then the source it came from."""
+    family = str(model_of(actor).get("family") or "")
+    return FAMILY_TRIBE.get(family) or SOURCE_TRIBE.get(str(actor.get("source") or ""), "raider")
+
+
+def tribe_title(actor: dict) -> str:
+    """The tribe's name for tooltips: 'Hexer', 'Sapper', or 'Raider'."""
+    return str(ART["tribes"].get(tribe_for(actor), {}).get("label") or "")
+
+
+def style_for(actor: dict, offset: int = 0, index: int | None = None) -> dict:
+    """The outfit an agent wears: its tribe's outfit by a stable hash of its id (or ``index``)."""
+    outfits = TRIBES.get(tribe_for(actor)) or TRIBES["raider"]
+    named = [index for index, outfit in enumerate(outfits) if outfit["name"] == actor.get("outfit")]
+    if named and index is None:
+        index = named[0]
+    base = stable_style(str(actor.get("id") or "")) if index is None else index
+    return outfits[(base + offset) % len(outfits)]
 
 
 def fit_text(font: tkfont.Font, value: str, max_width: int) -> str:
@@ -279,6 +326,7 @@ class PartyDock:
         self.title_font = tkfont.Font(family=ui_family("Consolas"), size=9, weight="bold")
         self.status_font = tkfont.Font(family=ui_family("Consolas"), size=7)
         self.member_font = tkfont.Font(family=ui_family("Consolas"), size=8, weight="bold")
+        self.model_font = tkfont.Font(family=ui_family("Consolas"), size=7, weight="bold")
         self.note_font = tkfont.Font(family=ui_family("Consolas"), size=8)
         self.tooltip_after: str | None = None
         self.tooltip: tk.Toplevel | None = None
@@ -430,15 +478,16 @@ class PartyDock:
                          if str(item.get("id")) == actor_id), 1)
         prefix = f"{position}/{max(1, len(self.owner.actors))} "
         name = self.owner.display_name(actor)
-        suffix = f" · {status.word}{age}"
+        badge = model_badge(actor, with_effort=True)
+        suffix = f" · {badge}" * bool(badge) + f" · {status.word}{age}"
         available = max(40, (header_width or self.window.winfo_width() - 8) - 16)
         name_width = max(1, available - self.status_font.measure(prefix + suffix))
         shown = prefix + fit_text(self.status_font, name, name_width) + suffix
         if self.status_font.measure(shown) > available:
-            suffix = f" · {status.word}"
+            suffix = f" · {model_badge(actor)}" * bool(badge) + f" · {status.word}"
             name_width = max(1, available - self.status_font.measure(prefix + suffix))
             shown = prefix + fit_text(self.status_font, name, name_width) + suffix
-        self.full_status = prefix + name + f" · {status.word}{age}"
+        self.full_status = prefix + name + f" · {badge}" * bool(badge) + f" · {status.word}{age}"
         self.status_cut = shown != self.full_status
         self.status_strip.configure(text=shown)
 
@@ -583,11 +632,16 @@ class PartyDock:
             self.sprites.append((tag, x + 4, y + 5, style, actor))
             self.paint_sprite(tag, x + 4, y + 5, style, actor)
             short_name = self.owner.aliases.get(actor_id) or str(actor.get("nickname") or actor.get("name") or actor_id)
-            self.body.create_text(x + 54, y + 9,
+            self.body.create_text(x + 54, y + 7,
                                   text=fit_text(self.member_font, f"{index + 1} {short_name}", DOCK_CARD - 60),
                                   anchor="nw", fill="#f6ecd2", font=self.member_font)
-            label = self.body.create_text(x + 54, y + 29, text=f"{status.glyph} {status.word}", anchor="nw",
+            label = self.body.create_text(x + 54, y + 24, text=f"{status.glyph} {status.word}", anchor="nw",
                                           fill=status.color, font=ui_font("Consolas", 7))
+            badge = model_badge(actor)
+            if badge:
+                self.body.create_text(x + 54, y + 36, text=fit_text(self.model_font, badge, DOCK_CARD - 60),
+                                      anchor="nw", font=self.model_font,
+                                      fill=family_ink(actor))
             self.labels.append((label, actor))
             self.member_hitboxes.append((x, y, x + DOCK_CARD, y + 49, actor_id))
         if overflow:
@@ -723,8 +777,11 @@ class PartyDock:
             px, py, x, y = self.drag_start
             self.window.geometry(f"+{x + event.x_root - px}+{y + event.y_root - py}")
 
-    def end_drag(self, _event: tk.Event) -> None:
-        self.drag_start = None
+    def end_drag(self, event: tk.Event) -> None:
+        start, self.drag_start = self.drag_start, None
+        # A plain click on the header is not a move: nothing to remember, nothing to write.
+        if not start or (event.x_root, event.y_root) == start[:2]:
+            return
         self.owner.dock_x = self.window.winfo_x() + self.window.winfo_width()
         self.owner.dock_y = self.window.winfo_y() + self.window.winfo_height()
         self.owner.save_position()
@@ -1203,7 +1260,7 @@ class Launchpad:
                               text="Nothing else used in the past week.")
                 y += 24
             for card in recent:
-                y = self.draw_quiet(card.id, card.name, card.project, card.updated_ms, y, width)
+                y = self.draw_quiet(card.id, card.name, card.project, card.updated_ms, y, width, models=card.models)
             y = self.draw_footer(y + 4, width, older)
         content = self.content = y + 4
         left, top, right, bottom = monitor_work_area(self.owner.root)
@@ -1232,6 +1289,23 @@ class Launchpad:
         self.body.create_text((left + right) // 2, top + 9, text=label, fill=IVORY, font=self.tag_font)
         self.hitboxes.append((left, top, right, top + 17, command, tip))
         return left
+
+    def model_chip(self, left: int, middle: int, models, room: int, effort: bool = False) -> int:
+        """A dark badge naming the party's model (and how many more), tinted by its family; returns its right edge."""
+        if not models or room < 40:
+            return left
+        first = models[0]
+        label = str(first.get("label") or "").upper()
+        if effort and first.get("effort"):
+            label += f" · {str(first['effort']).upper()}"
+        if len(models) > 1:
+            label += f" +{len(models) - 1}"
+        label = fit_text(self.tag_font, label, room - 12)
+        right = left + self.tag_font.measure(label) + 12
+        ink = family_ink({"model": first})
+        self.body.create_rectangle(left, middle - 8, right, middle + 8, fill=PILL_INK, outline=ink)
+        self.body.create_text((left + right) // 2, middle, text=label, fill=ink, font=self.tag_font)
+        return right
 
     def draw_current(self, y: int, width: int) -> int:
         owner = self.owner
@@ -1289,7 +1363,9 @@ class Launchpad:
             self.hitboxes.append((gx + 2, y + 20, gx + GOBLIN_STEP - 2, bottom,
                                   lambda member_id=str(member.get("id")): owner.choose_party(
                                       card.id, card.name, "compact", focus_id=member_id, peek=True),
-                                  f"{owner.display_name(member)} · {status.word} · peek this goblin"))
+                                  " · ".join(part for part in (owner.display_name(member), tribe_title(member),
+                                                               model_badge(member, with_effort=True), status.word)
+                                             if part) + " · peek this goblin"))
         extra = card.agent_count - len(members)
         if extra > 0:
             c.create_text(goblins_left - 4, y + 42, anchor="e", text=f"+{extra}", fill=GOLD, font=self.tag_font)
@@ -1304,10 +1380,13 @@ class Launchpad:
         pill_right = 18 + self.tag_font.measure(label) + 14
         c.create_rectangle(16, y + 33, pill_right, y + 50, fill=PILL_INK, outline=CARD_LINE if stale else PILL_INK)
         c.create_text(23, y + 42, anchor="w", text=label, font=self.tag_font, fill=MUTED if stale else color)
+        # Which model the party runs sits right beside what it is doing.
+        model_right = self.model_chip(pill_right + 6, y + 42, card.models, goblins_left - pill_right - 14)
         meta = " · ".join(part for part in (card.source, age_label(card.updated_ms)) if part)
-        room = goblins_left - pill_right - 14
+        meta_left = model_right + 6 if model_right > pill_right + 6 else pill_right + 6
+        room = goblins_left - meta_left - 8
         if room > 40:
-            c.create_text(pill_right + 6, y + 42, anchor="w", fill=MUTED, font=self.small_font,
+            c.create_text(meta_left, y + 42, anchor="w", fill=MUTED, font=self.small_font,
                           text=fit_text(self.small_font, meta, room))
         return y + ACTIVE_ROW
 
@@ -1324,7 +1403,7 @@ class Launchpad:
         return y + 24
 
     def draw_quiet(self, party_id: str, name: str, project: str, updated_ms: float, y: int, width: int,
-                   highlighted: bool = False, source: dict | None = None) -> int:
+                   highlighted: bool = False, source: dict | None = None, models=()) -> int:
         owner = self.owner
         c = self.body
         selected = party_id == owner.thread_id
@@ -1339,8 +1418,17 @@ class Launchpad:
                               f"Open every stream in {name}")
         age = age_label(updated_ms)
         c.create_text(chip_left - 6, y + 11, anchor="e", text=age, fill=MUTED, font=self.small_font)
-        # Text runs from x=12 to just before the age; the title gets everything the project does not need.
-        room = chip_left - 18 - self.small_font.measure(age) - 12
+        age_left = chip_left - 6 - self.small_font.measure(age)
+        # The model's family colour and short name, quietly, before the age.
+        if models:
+            first = models[0]
+            ink = family_ink({"model": first})
+            tag = fit_text(self.tag_font, str(first.get("label") or "").upper(), 86)
+            age_left -= 8
+            c.create_text(age_left, y + 11, anchor="e", text=tag, fill=ink, font=self.tag_font)
+            age_left -= self.tag_font.measure(tag)
+        # Text runs from x=12 to just before the model and age; the title gets what the project does not need.
+        room = age_left - 18 - 12
         project_room = min(self.small_font.measure(project) + 10, int(room * 0.35)) if project else 0
         shown = fit_text(self.small_font, f"{'◆' if selected else '◷'} {name}", room - project_room)
         c.create_text(12, y + 11, anchor="w", text=shown, fill=IVORY if selected or highlighted else "#d6dfd2",
@@ -1388,7 +1476,7 @@ class Launchpad:
             stamp = float(source.get("updatedAt") or 0)
             y = self.draw_quiet(party_id, str(source.get("name") or party_id), project_for(source)[1],
                                 stamp * 1000 if 0 < stamp < 1e12 else stamp, y, width,
-                                highlighted=index == self.selection, source=source)
+                                highlighted=index == self.selection, source=source, models=party_models([], source))
         if len(self.results) >= 80:
             c.create_text(12, y + 4, anchor="nw", fill=MUTED, font=self.small_font,
                           text="Showing the newest 80 · add words to narrow the list.")
@@ -1662,8 +1750,21 @@ class GoblinWidget:
             self.board_after = self.root.after(120, self.poll_board)
 
     def load_settings(self) -> None:
+        """Restore saved settings. Each group is applied on its own, so one bad value never drops the rest."""
         try:
-            saved = json.loads(state_file().read_text(encoding="utf-8"))
+            text = state_file().read_text(encoding="utf-8")
+        except OSError:
+            return
+        try:
+            saved = json.loads(text)
+        except ValueError:
+            # Keep the unreadable file for recovery; the next save writes fresh settings beside it.
+            keep_unreadable_settings(text)
+            return
+        if not isinstance(saved, dict):
+            return
+
+        def notes() -> None:
             # Each stored note and retirement marker is validated on its own; a bad one is dropped.
             now_ms = time.time() * 1000
             self.notes = PartingNotes.load(saved.get("partingNotes"), now_ms)
@@ -1671,46 +1772,63 @@ class GoblinWidget:
             # Settings from before markers were saved: a note is the only record of a retirement.
             for note in self.notes.items:
                 self.retirement.seed(note["party"], note["id"], note["outcome"], note["at"])
+
+        def line() -> None:
             self.columns = max(1, min(4, int(saved.get("columns", self.columns))))
             self.rotating = bool(saved.get("rotating", True))
             self.hidden_ids = set(map(str, saved.get("hiddenIds", [])))
             self.palette_offset = int(saved.get("paletteOffset", 0)) % len(KINDS)
+
+        def streams() -> None:
             self.saved_streams = [item for item in saved.get("streams", [])
                                   if isinstance(item, dict) and item.get("id")
                                   and not str(item["id"]).startswith("demo-")][:24]
             self.load_dismissed(saved.get("dismissedStreams"))
             self.load_placements(saved.get("placements"))
+
+        def aliases() -> None:
             raw_aliases = saved.get("aliases") or {}
             if isinstance(raw_aliases, dict):
                 self.aliases = {str(actor_id): str(alias).strip()[:40]
                                 for actor_id, alias in raw_aliases.items()
                                 if str(actor_id) and isinstance(alias, str) and alias.strip()}
-            self.party_mode = bool(saved.get("partyMode", False)) and bool(self.saved_streams)
-            mode = str(saved.get("displayMode") or ("expanded" if self.party_mode else "overview"))
+
+        def modes() -> None:
+            legacy_party = bool(saved.get("partyMode", False)) and bool(self.saved_streams)
+            mode = str(saved.get("displayMode") or ("expanded" if legacy_party else "overview"))
             self.display_mode = mode if mode in ("overview", "expanded", "compact", "hidden") else "overview"
-            self.party_mode = self.display_mode == "expanded"
             preferred = str(saved.get("partyView") or (
                 "compact" if self.display_mode == "compact" else "expanded"))
             self.party_view = preferred if preferred in ("expanded", "compact") else "expanded"
             previous = str(saved.get("hiddenFrom") or self.party_view)
             self.hidden_from = previous if previous in ("overview", "expanded", "compact") else self.party_view
-            self.dock_x = int(saved["dockX"]) if saved.get("dockX") is not None else None
-            self.dock_y = int(saved["dockY"]) if saved.get("dockY") is not None else None
             self.home_view = "line" if saved.get("homeView") == "line" else "launchpad"
+
+        def dock() -> None:
+            dock_x, dock_y = saved.get("dockX"), saved.get("dockY")
+            self.dock_x = int(dock_x) if dock_x is not None else None
+            self.dock_y = int(dock_y) if dock_y is not None else None
+
+        def preferences() -> None:
             if isinstance(saved.get("reducedMotion"), bool):
                 self.reduced_motion_choice = saved["reducedMotion"]
             self.focused_stream_id = str(saved.get("focusedStreamId") or "")
             if not self.explicit_thread:
                 self.thread_id = str(saved.get("threadId") or "all")
-            if not self.explicit_thread:
                 self.source_name = str(saved.get("sourceName") or self.thread_id)
-            if self.thread_id == "all":
-                self.source_name = "Recent activity"
-                self.party_mode = False
-                if self.display_mode in ("expanded", "compact"):
-                    self.display_mode = "overview"
-        except (OSError, ValueError, TypeError, AttributeError):
-            pass
+
+        for group in (notes, line, streams, aliases, modes, dock, preferences):
+            try:
+                group()
+            except (ValueError, TypeError, AttributeError, KeyError, OverflowError):
+                pass
+        # Whatever was restored, the modes must agree with each other and with the source.
+        self.party_mode = self.display_mode == "expanded"
+        if self.thread_id == "all":
+            self.source_name = "Recent activity"
+            self.party_mode = False
+            if self.display_mode in ("expanded", "compact"):
+                self.display_mode = "overview"
 
     def load_dismissed(self, raw) -> None:
         """Closed-stream ids per party; anything malformed is dropped."""
@@ -1796,7 +1914,7 @@ class GoblinWidget:
 
     def save_position(self) -> None:
         try:
-            state_file().write_text(json.dumps({
+            write_settings(state_file(), json.dumps({
                 "x": self.root.winfo_x(), "y": self.root.winfo_y(), "columns": self.columns,
                 "rotating": self.rotating, "hiddenIds": sorted(self.hidden_ids),
                 "paletteOffset": self.palette_offset, "threadId": self.thread_id,
@@ -1812,7 +1930,7 @@ class GoblinWidget:
                 "placements": self.placements,
                 "partingNotes": self.notes.to_json(),
                 "retiredMarkers": self.retirement.to_json(),
-            }), encoding="utf-8")
+            }))
             self.retirement.changed = False
         except OSError:
             pass
@@ -2132,7 +2250,7 @@ class GoblinWidget:
         self.menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
 
     def stream_style(self, actor: dict) -> dict:
-        return KINDS[(stable_style(str(actor.get("id") or "")) + self.palette_offset) % len(KINDS)]
+        return style_for(actor, self.palette_offset)
 
     def display_name(self, actor: dict) -> str:
         actor_id = str(actor.get("id") or "")
@@ -2899,7 +3017,7 @@ class GoblinWidget:
 
     def fetch_scene(self, scope: str) -> dict:
         suffix = f"?id={urllib.parse.quote(scope)}"
-        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/api/scene{suffix}", timeout=20) as response:
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/api/scene{suffix}", timeout=12) as response:
             return json.load(response)
 
     def update_party_streams(self, root: dict, agents: list[dict], warning: bool) -> None:
@@ -2923,7 +3041,15 @@ class GoblinWidget:
         self.poll_after = self.root.after(3000, self.poll)
 
     def fetch_now(self) -> None:
-        if not self.closing and not self.paused and not self.demo and self.pending is None:
+        if self.closing or self.paused or self.demo:
+            return
+        if self.pending is not None and self.pending_scope != self.thread_id:
+            # A new party must not wait behind the old one's read; that late answer is simply dropped.
+            if self.receive_after:
+                self.root.after_cancel(self.receive_after)
+                self.receive_after = None
+            self.pending = None
+        if self.pending is None:
             self.pending_scope = self.thread_id
             self.pending = self.executor.submit(self.fetch_scene, self.pending_scope)
             self.receive_after = self.root.after(100, self.receive_scene)
@@ -2941,6 +3067,8 @@ class GoblinWidget:
             scene = future.result()
             root = scene["root"]
         except Exception:
+            if scope == "all":
+                self.board_connection = "STALE" if self.board_success else "OFFLINE"
             if scope == self.thread_id:
                 self.connection = "STALE" if self.last_success else "OFFLINE"
                 self.message = "Connection lost. Retrying…" if self.last_success else "Goblin Horde is unavailable. Retrying…"
@@ -2955,6 +3083,9 @@ class GoblinWidget:
             if scope != self.thread_id or self.demo:
                 self.fetch_now()
                 return
+            if scope == "all":
+                # The all-parties poll already read the launchpad's feed; the board reuses it.
+                self.take_board_scene(scene)
             if scene.get("requests"):
                 root = {**root, "needsInput": True}
             self.root_id = root.get("id", "")
@@ -3022,11 +3153,7 @@ class GoblinWidget:
         if future is not None and future.done():
             self.board_pending = None
             try:
-                scene = future.result()
-                self.board_actors = [actor for actor in scene.get("agents") or [] if actor.get("id")]
-                self.board_coverage = scene.get("coverage") or {}
-                self.board_connection = "PARTIAL" if scene.get("warning") else "LIVE"
-                self.board_success = time.time()
+                self.take_board_scene(future.result())
             except Exception:
                 # Keep the last good rows in place and say how old they are.
                 self.board_connection = "STALE" if self.board_success else "OFFLINE"
@@ -3034,10 +3161,19 @@ class GoblinWidget:
             if self.party_dock.mode == "hidden":
                 self.party_dock.refresh()
         elif (future is None and not self.paused and self.board_wanted()
+              # Following all parties, the main poll reads the same scene and hands it to the board.
+              and (self.thread_id != "all" or self.demo)
               and time.monotonic() - self.board_requested >= BOARD_SECONDS):
             self.board_requested = time.monotonic()
             self.board_pending = self.executor.submit(self.fetch_scene, "all")
         self.board_after = self.root.after(150 if self.board_pending else 1000, self.poll_board)
+
+    def take_board_scene(self, scene: dict) -> None:
+        self.board_actors = [actor for actor in scene.get("agents") or [] if actor.get("id")]
+        self.board_coverage = scene.get("coverage") or {}
+        self.board_connection = "PARTIAL" if scene.get("warning") else "LIVE"
+        self.board_success = time.time()
+        self.board_requested = time.monotonic()
 
     def board_cards(self):
         """Working and recent parties. The selected party uses its fuller focused scene."""
@@ -3066,9 +3202,7 @@ class GoblinWidget:
         if not self.paused and not self.reduced_motion:
             # The goblin-line canvas is withdrawn while the launchpad or a party is home.
             for index, actor in enumerate(self.page_actors() if self.root.winfo_ismapped() else ()):
-                actor_id = str(actor.get("id") or index)
-                style_index = self.page * self.columns + index if self.demo else stable_style(actor_id)
-                style = KINDS[(style_index + self.palette_offset) % len(KINDS)]
+                style = style_for(actor, self.palette_offset)
                 self.paint_overview_sprite(index, actor, style)
             self.launchpad.animate()
             self.party_dock.animate()
@@ -3103,9 +3237,10 @@ class GoblinWidget:
     def visible_actors(self) -> list[dict]:
         if self.demo:
             return [
-                {"id": f"demo-{i}", "nickname": kind["name"], "status": "working", "activities": [
-                    {"kind": "update", "title": "Update", "description": line}
-                ]} for i, (kind, line) in enumerate(zip(KINDS, [
+                {"id": f"demo-{i}", "nickname": kind["name"], "outfit": kind["name"], "status": "working",
+                 **DEMO_IDENTITY[kind["tribe"]],
+                 "activities": [{"kind": "update", "title": "Update", "description": line}]}
+                for i, (kind, line) in enumerate(zip(DEMO_KINDS, [
                     "I’m searching for a fresh trail of clues.", "I’m building the next piece.",
                     "I’m thinking through the layout.", "I’m investigating the signals.",
                     "I’m editing this little scene.", "I’m checking the details.",
@@ -3205,9 +3340,7 @@ class GoblinWidget:
             self.canvas.create_text((left + right) // 2, 40, text=fit_text(self.meta_font, label, right - left - 4),
                                     fill=INK, font=self.meta_font)
         for index, actor in enumerate(actors):
-            actor_id = str(actor.get("id") or index)
-            style_index = self.page * self.columns + index if self.demo else stable_style(actor_id)
-            style = KINDS[(style_index + self.palette_offset) % len(KINDS)]
+            style = style_for(actor, self.palette_offset)
             self.draw_goblin(index, index * COL_WIDTH + 9, actor, style)
 
     def draw_goblin(self, index: int, left: int, actor: dict, style: dict) -> None:
@@ -3228,7 +3361,8 @@ class GoblinWidget:
             age_text = f" · {max(0, int((time.time() * 1000 - float(age)) / 60_000))}m ago" if age else ""
         except (TypeError, ValueError):
             age_text = ""
-        meta = f"{source}{(' · ' + actor_state) if actor_state else ''}{age_text}"
+        badge = model_badge(actor)
+        meta = f"{source}{(' · ' + badge) if badge else ''}{(' · ' + actor_state) if actor_state else ''}{age_text}"
         if not age_text and project:
             meta += f" · {project}"
         # Pixel border, solid paper, and a pointer anchored above the goblin.
@@ -3315,7 +3449,7 @@ class GoblinWidget:
         # a slumped goblin sinks onto planted feet, a hopping one lifts one, and a goblin going
         # through a portal takes its feet with it.
         feet_y = ground_y if pose.dy > 0 and not leaving else y
-        for column, row, length, key in art_layer_runs("body"):
+        for column, row, length, key in art_layer_runs(style.get("body", "body")):
             if row == FEET_ROW:
                 lift = 1 if (pose.step == 1 and column < 8 + ART_COL) or (pose.step == 2 and column >= 8 + ART_COL) else 0
                 block(x, feet_y, column, row - lift, length, 1, art_color(key, style))
@@ -3323,7 +3457,7 @@ class GoblinWidget:
                 rect(column, row, length, 1, art_color(key, style))
         blink = action == "idle" and not still and frame % 12 in (10, 11)
         layer(ART_EYES["blink" if blink else pose.eyes if pose.eyes in ART_EYES else "front"], dy=-1 if pose.eyes == "up" else 0)
-        layer(ART_GEAR.get(style["gear"], "gear.bandana"))
+        layer(f"gear.{style['gear']}")
 
         # Held tools (magnifier, hammer) travel with the body; signs (thought, bell, cross)
         # float beside the head. Idle goblins carry nothing.
@@ -3356,7 +3490,7 @@ class GoblinWidget:
         elif arm == "slump":
             rect(13, 12, 1, 2, sleeve); rect(13, 14, 1, 1, skin); rect(14, 12, 1, 3, ink)
         else:
-            layer("armRest")
+            layer(style.get("arm", "armRest"))
 
     def run(self) -> None:
         self.root.mainloop()

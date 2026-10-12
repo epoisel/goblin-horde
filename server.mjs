@@ -5,9 +5,10 @@ import { stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
 import { transformThread } from "./lib/transform.mjs";
+import { describeModel } from "./lib/models.mjs";
 import { readDescendants } from "./lib/descendants.mjs";
 import { classifyCodex, composeAllScene, planCodexReads, pruneCache } from "./lib/feed.mjs";
 import { OrcaReader } from "./lib/orca.mjs";
@@ -15,6 +16,8 @@ import { ClaudeReader, goblinStateDir } from "./lib/claude.mjs";
 import { ExtensionReader, EXTENSION_PARTY, extensionFeedDir } from "./lib/extension.mjs";
 import { claudeHookReport, claudeSettingsPath } from "./lib/claude-hooks.mjs";
 import { claudeConfigDir } from "./lib/paths.mjs";
+import { codexCommand } from "./lib/codex-bin.mjs";
+import { Pairing, sessionCookie } from "./lib/pairing.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = resolve(here, "public");
@@ -46,8 +49,7 @@ function loadPairingCode() {
   return code;
 }
 const pairingCode = loadPairingCode();
-const sessions = new Map();
-const attempts = new Map();
+const pairing = new Pairing({ code: pairingCode });
 
 function isPrivateIPv4(ip) {
   const parts = String(ip).split(".").map(Number);
@@ -67,7 +69,6 @@ function findLanIp() {
 const lanIp = process.env.LAN_IP || findLanIp();
 if (lanIp && !isPrivateIPv4(lanIp)) throw new Error("LAN_IP must be a private IPv4 address");
 const defaultThreadId = process.env.CODEX_VIEWER_THREAD_ID || "all";
-const codexBin = process.env.CODEX_CLI_PATH || "codex";
 const asMilliseconds = (value) => Number(value) < 1e12 ? Number(value || 0) * 1000 : Number(value || 0);
 
 class CodexReader {
@@ -79,24 +80,36 @@ class CodexReader {
     this.serverRequests = new Map();
     this.threadReads = new Map();
     this.threadAttempts = new Map();
-    this.process = spawn(codexBin, ["app-server", "--listen", "stdio://"], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-    this.lines = createInterface({ input: this.process.stdout });
-    this.lines.on("line", (line) => this.onLine(line));
-    this.process.stderr.on("data", () => {});
-    this.process.stdin.on("error", () => {});
     this.problem = "";
-    this.process.on("error", (error) => {
-      this.problem = error.code === "ENOENT" ? "The Codex CLI was not found." : "Codex could not be started.";
-      this.failAll(error);
-    });
-    this.process.on("exit", (code) => {
-      this.problem ||= `Codex app-server stopped (${code}).`;
-      this.failAll(new Error(`Codex app-server exited (${code})`));
-    });
+    this.process = null;
+    try {
+      const codex = codexCommand(["app-server", "--listen", "stdio://"]);
+      this.process = spawn(codex.command, codex.args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, ...codex.options,
+        ...(Object.keys(codex.env).length ? { env: { ...process.env, ...codex.env } } : {}) });
+    } catch {
+      // Node refuses some programs synchronously (a .cmd it cannot quote); treat that like a missing CLI.
+      this.problem = "Codex could not be started.";
+    }
+    if (this.process) {
+      this.lines = createInterface({ input: this.process.stdout });
+      this.lines.on("line", (line) => this.onLine(line));
+      this.process.stderr.on("data", () => {});
+      this.process.stdin.on("error", () => {});
+      this.process.on("error", (error) => {
+        this.problem = error.code === "ENOENT" ? "The Codex CLI was not found." : "Codex could not be started.";
+        this.failAll(error);
+      });
+      this.process.on("exit", (code) => {
+        this.problem ||= `Codex app-server stopped (${code}).`;
+        this.failAll(new Error(`Codex app-server exited (${code})`));
+      });
+    }
     this.ready = this.request("initialize", {
       clientInfo: { name: "goblin_horde", title: "Goblin Horde", version: "0.1.0" },
       capabilities: { experimentalApi: true },
     }).then(() => this.notify("initialized"));
+    // Codex is optional: callers still await `ready` and see the failure, but nothing else is left holding it.
+    this.ready.catch(() => {});
   }
 
   onLine(line) {
@@ -196,8 +209,9 @@ class CodexReader {
           ...(cursor ? { cursor } : {}),
         });
         // Status is only what this app-server knows; chats running in another Codex process usually read as notLoaded.
-        threads.push(...(result.data || []).map(({ id, name, preview, updatedAt, cwd, status }) => ({
+        threads.push(...(result.data || []).map(({ id, name, preview, updatedAt, cwd, status, model, modelProvider, reasoningEffort }) => ({
           id, name: String(name || preview || "Untitled chat").slice(0, 120), updatedAt: asMilliseconds(updatedAt), cwd, source: "codex",
+          model: describeModel(model, { provider: modelProvider, effort: reasoningEffort }),
           ...(status?.type ? { status: status.type } : {}),
           ...(Array.isArray(status?.activeFlags) && status.activeFlags.length ? { activeFlags: status.activeFlags.map(String) } : {}),
         })));
@@ -280,7 +294,7 @@ class CodexReader {
     this.serverRequests.delete(String(requestId));
   }
 
-  close() { this.process.kill(); }
+  close() { this.process?.kill(); }
 }
 
 const reader = new CodexReader();
@@ -355,15 +369,22 @@ async function allScene() {
 let allScenePending = null;
 let allSceneCached = null;
 let allSceneCachedAt = 0;
+// A scene this old is still served at once while a fresh one is built; older ones wait for the rebuild.
+const ALL_SCENE_STALE_MS = 60_000;
 function recentScene() {
-  if (allSceneCached && Date.now() - allSceneCachedAt < 1500) return Promise.resolve(allSceneCached);
+  const age = Date.now() - allSceneCachedAt;
+  if (allSceneCached && age < 1500) return Promise.resolve(allSceneCached);
   if (!allScenePending) {
     allScenePending = allScene().then((scene) => {
       allSceneCached = scene;
       allSceneCachedAt = Date.now();
       return scene;
     }).finally(() => { allScenePending = null; });
+    // Nobody may await a background rebuild; its failure must not end the process.
+    allScenePending.catch(() => {});
   }
+  // One slow Codex read (a very long chat can take 15 seconds) must not hold every viewer and widget poll.
+  if (allSceneCached && age < ALL_SCENE_STALE_MS) return Promise.resolve(allSceneCached);
   return allScenePending;
 }
 const mime = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8" };
@@ -379,56 +400,68 @@ function isLocal(request) {
 }
 
 function hasSession(request) {
-  const cookie = (request.headers.cookie || "").split(";").map((part) => part.trim())
-    .find((part) => part.startsWith("goblin_horde_session="))?.split("=")[1] || "";
-  if (!/^[a-f0-9]{64}$/.test(cookie)) return false;
-  const expiresAt = sessions.get(cookie);
-  if (!expiresAt) return false;
-  if (Date.now() >= expiresAt) { sessions.delete(cookie); return false; }
-  return true;
+  return pairing.hasSession(sessionCookie(request.headers.cookie));
 }
+
+// The pages load only their own files: no inline script or style, nothing from other sites.
+const pageCsp = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; "
+  + "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
 async function serveFile(response, file, folder = publicDir) {
   const path = join(folder, file);
   const info = await stat(path);
-  response.writeHead(200, { ...commonHeaders, "Content-Type": mime[`.${file.split(".").at(-1)}`], "Content-Length": info.size });
-  createReadStream(path).pipe(response);
+  const type = mime[`.${file.split(".").at(-1)}`];
+  response.writeHead(200, { ...commonHeaders, "Content-Type": type, "Content-Length": info.size,
+    ...(file.endsWith(".html") ? { "Content-Security-Policy": pageCsp } : {}) });
+  // Headers are already out, so a read error can only end the connection.
+  createReadStream(path).on("error", () => response.destroy()).pipe(response);
 }
 
 async function handlePair(request, response, origin) {
   const ip = request.socket.remoteAddress || "unknown";
-  const record = attempts.get(ip) || { count: 0, since: Date.now() };
-  if (Date.now() - record.since > 10 * 60_000) { record.count = 0; record.since = Date.now(); }
-  if (record.count >= 5) return json(response, 429, { error: "Too many attempts. Wait ten minutes and try again." });
+  // Counted before anything is read, so parallel guesses cannot all slip past the limit.
+  if (!pairing.allow(ip)) return json(response, 429, { error: "Too many attempts. Wait ten minutes and try again." });
   if (request.headers.origin !== origin || !String(request.headers["content-type"] || "").startsWith("application/json"))
     return json(response, 403, { error: "Open the pairing page on your phone first." });
   let input = "";
-  for await (const chunk of request) {
-    input += chunk;
-    if (input.length > 256) return json(response, 413, { error: "Invalid pairing request" });
-  }
+  try {
+    for await (const chunk of request) {
+      input += chunk;
+      if (input.length > 256) return json(response, 413, { error: "Invalid pairing request" });
+    }
+  } catch { return response.destroy(); } // The client hung up mid-body; there is no one to answer.
   let code = "";
-  try { code = String(JSON.parse(input).code || "").toUpperCase().replace(/\s/g, ""); } catch { /* handled below */ }
-  const supplied = Buffer.from(code);
-  const expected = Buffer.from(pairingCode);
-  if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
-    record.count++;
-    attempts.set(ip, record);
-    return json(response, 401, { error: "That pairing code did not match." });
-  }
-  attempts.delete(ip);
-  const sessionToken = randomBytes(32).toString("hex");
-  sessions.set(sessionToken, Date.now() + 24 * 60 * 60_000);
+  try { code = String(JSON.parse(input).code || ""); } catch { /* handled below */ }
+  const sessionToken = pairing.pair(ip, code);
+  if (!sessionToken) return json(response, 401, { error: "That pairing code did not match." });
   response.writeHead(200, { ...commonHeaders, "Content-Type": "application/json; charset=utf-8", "Set-Cookie": `goblin_horde_session=${sessionToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400` });
   response.end(JSON.stringify({ paired: true }));
 }
 
+const BODY_LIMIT = 12_000;
+const tooLarge = () => Object.assign(new Error("Request is too large."), { statusCode: 413 });
+
+/**
+ * A small JSON body. An oversized one is answered with 413: the rest is read and dropped rather than
+ * breaking off mid-stream, which would destroy the socket before the answer could be sent.
+ */
 async function readBody(request) {
-  let input = "";
-  for await (const chunk of request) {
-    input += chunk;
-    if (input.length > 12_000) throw Object.assign(new Error("Request is too large."), { statusCode: 413 });
+  if (Number(request.headers["content-length"]) > BODY_LIMIT) {
+    request.resume();
+    throw tooLarge();
   }
+  const input = await new Promise((resolve, reject) => {
+    let text = "";
+    let overflow = false;
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      if (overflow) return;
+      text += chunk;
+      if (text.length > BODY_LIMIT) { overflow = true; text = ""; }
+    });
+    request.on("end", () => (overflow ? reject(tooLarge()) : resolve(text)));
+    request.on("error", reject);
+  });
   try { return JSON.parse(input); } catch { throw Object.assign(new Error("Invalid request."), { statusCode: 400 }); }
 }
 
@@ -490,20 +523,24 @@ const handler = async (request, response) => {
   if (!allowedHosts.has(hostHeader.split(":")[0])) return json(response, 403, { error: "Local network access only" });
   const url = new URL(request.url || "/", `http://${hostHeader}`);
   const origin = `http://${hostHeader}`;
-  if (url.pathname === "/api/pair" && request.method === "POST" && !isLocal(request)) return handlePair(request, response, origin);
+  if (url.pathname === "/api/pair" && request.method === "POST" && !isLocal(request)) {
+    try { return await handlePair(request, response, origin); }
+    catch { return fail(response, 500, "Unable to pair this phone."); }
+  }
   if (["/api/reply", "/api/respond"].includes(url.pathname) && request.method === "POST") {
     if (!isLocal(request) && !hasSession(request)) return json(response, 401, { error: "Pair this phone with the viewer first." });
     if (request.headers.origin !== origin || !String(request.headers["content-type"] || "").startsWith("application/json"))
       return json(response, 403, { error: "Open the viewer before sending a reply." });
     try { return await (url.pathname === "/api/reply" ? handleReply(request, response) : handleRequestAnswer(request, response)); }
-    catch (error) { return json(response, error.statusCode || 500, { error: error.message || "Unable to send reply." }); }
+    catch (error) { return fail(response, error.statusCode || 500, error.message || "Unable to send reply."); }
   }
   if (request.method !== "GET") return json(response, 405, { error: "Read-only viewer" });
 
   try {
-    if (url.pathname === "/pair.css" || url.pathname === "/pair.js") return serveFile(response, url.pathname.slice(1));
+    // Awaited, so a missing file lands in the catch below instead of escaping the handler.
+    if (url.pathname === "/pair.css" || url.pathname === "/pair.js") return await serveFile(response, url.pathname.slice(1));
     if (!isLocal(request) && !hasSession(request)) {
-      if (url.pathname === "/") return serveFile(response, "pair.html");
+      if (url.pathname === "/") return await serveFile(response, "pair.html");
       return json(response, 401, { error: "Pair this phone with the viewer first." });
     }
     if (url.pathname === "/api/mobile") return json(response, 200, {
@@ -547,16 +584,24 @@ const handler = async (request, response) => {
     }
 
     // The pixel goblins share one sprite file with the desktop widget.
-    if (url.pathname === "/goblin_art.json") return serveFile(response, "goblin_art.json", here);
+    if (url.pathname === "/goblin_art.json") return await serveFile(response, "goblin_art.json", here);
     const file = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
     if (!/^(index\.html|app\.js|styles\.css|mobile\.css|interactive\.css|demo\.js|party\.js|goblins\.js)$/.test(file)) return json(response, 404, { error: "Not found" });
-    return serveFile(response, file);
+    return await serveFile(response, file);
   } catch (error) {
-    json(response, 500, { error: error.message || "Unable to read Codex activity" });
+    fail(response, 500, error.message || "Unable to read Codex activity");
   }
 };
 
-const localServer = createServer(handler);
+/** An error answer, unless a reply is already under way; then the connection is simply ended. */
+function fail(response, status, message) {
+  if (response.headersSent) return response.destroy();
+  return json(response, status, { error: message });
+}
+
+// Last line of defence: one bad request must never become an unhandled rejection that ends the server.
+const safeHandler = (request, response) => handler(request, response).catch(() => fail(response, 500, "Unexpected error."));
+const localServer = createServer(safeHandler);
 localServer.on("error", (error) => {
   // Say plainly why the viewer cannot start; the manager reads this from the server log.
   console.error(error.code === "EADDRINUSE" ? `PORT_IN_USE: Port ${port} is already used by another program. Choose another port with --port.`
@@ -567,7 +612,7 @@ localServer.on("error", (error) => {
 localServer.listen(port, host, () => console.log(`Goblin Horde: http://${host}:${port}`));
 let lanServer;
 if (lanIp) {
-  lanServer = createServer(handler);
+  lanServer = createServer(safeHandler);
   lanServer.on("error", (error) => console.error(`Could not start Wi-Fi listener: ${error.message}`));
   lanServer.listen(port, lanIp, () => console.log(`Phone address: http://${lanIp}:${port}`));
 }
