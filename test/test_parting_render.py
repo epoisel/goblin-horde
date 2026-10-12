@@ -664,3 +664,24 @@ class ExpandedRetirementTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(sys.platform == "win32", "Desktop widget requires Windows Tk")
+class StreamHeaderTests(unittest.TestCase):
+    def test_a_long_name_keeps_one_line_so_the_status_and_model_row_stays_visible(self):
+        fixture = Fixture(self)
+        widget = fixture.widget(self)
+        long_name = "Client-facing requirements and flow-map package for the quarterly review"
+        model = {"id": "claude-opus-5-5", "label": "Opus 5.5", "family": "claude"}
+        receive(widget, [member("a", name=long_name, nickname=long_name, model=model), member("b")])
+        widget.open_party("a")
+        settle(widget)
+        stream = widget.streams["a"]
+        stream.window.update_idletasks()
+        text = stream.name_label.cget("text")
+        self.assertTrue(text.endswith("…"), text)
+        self.assertLessEqual(stream.name_font.measure(text), stream.name_label.master.winfo_width())
+        # The status and model row sits fully inside the fixed-height header.
+        row = stream.state_label.master
+        self.assertLessEqual(row.winfo_y() + row.winfo_reqheight(), row.master.winfo_height())
+        self.assertEqual(stream.model_label.cget("text"), "◈ OPUS 5.5")
