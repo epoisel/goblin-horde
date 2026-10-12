@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
-import { transformThread } from "./lib/transform.mjs";
+import { markRunningElsewhere, transformThread } from "./lib/transform.mjs";
 import { describeModel } from "./lib/models.mjs";
 import { readDescendants } from "./lib/descendants.mjs";
 import { classifyCodex, composeAllScene, noteReadFailure, planCodexReads, pruneCache } from "./lib/feed.mjs";
@@ -71,6 +71,10 @@ const lanIp = process.env.LAN_IP || findLanIp();
 if (lanIp && !isPrivateIPv4(lanIp)) throw new Error("LAN_IP must be a private IPv4 address");
 const defaultThreadId = process.env.CODEX_VIEWER_THREAD_ID || "all";
 const asMilliseconds = (value) => Number(value) < 1e12 ? Number(value || 0) * 1000 : Number(value || 0);
+
+// Turns read per chat: the all-parties view needs only the latest work; an opened chat shows more.
+const OVERVIEW_TURNS = 3;
+const SCENE_TURNS = 8;
 
 class CodexReader {
   constructor() {
@@ -156,10 +160,34 @@ class CodexReader {
     });
   }
 
-  async readThread(threadId) {
-    await this.ready;
+  /**
+   * A chat's details and only its newest turns. Long chats can hold hundreds of megabytes of history
+   * (Codex marks them `historyMode: "paginated"`), so the full history is never loaded: a
+   * metadata-only read plus one page of `thread/turns/list`, newest first. A Codex too old for
+   * `thread/turns/list` falls back to the full read.
+   */
+  async latestTurns(threadId, limit) {
+    if (this.pagedTurns !== false) {
+      const [meta, page] = await Promise.allSettled([
+        this.request("thread/read", { threadId, includeTurns: false }),
+        this.request("thread/turns/list", { threadId, limit, itemsView: "full", sortDirection: "desc" }),
+      ]);
+      if (meta.status === "rejected") throw meta.reason;
+      if (page.status === "fulfilled") {
+        this.pagedTurns = true;
+        return { ...meta.value.thread, turns: [...(page.value.data || [])].reverse() };
+      }
+      // Only a Codex that has never answered a page and does not know the method gets the old full read.
+      if (this.pagedTurns || !/method|unknown variant|not supported|unsupported/i.test(page.reason.message)) throw page.reason;
+      this.pagedTurns = false;
+    }
     const result = await this.request("thread/read", { threadId, includeTurns: true });
-    return transformThread(result.thread);
+    return { ...result.thread, turns: (result.thread?.turns || []).slice(-limit) };
+  }
+
+  async readThread(threadId, { turns = SCENE_TURNS } = {}) {
+    await this.ready;
+    return markRunningElsewhere(transformThread(await this.latestTurns(threadId, turns)));
   }
 
   /** Check the chats in use or watched; reuse saved checks for the rest. */
@@ -172,7 +200,7 @@ class CodexReader {
     let failed = 0;
     for (let offset = 0; offset < plan.reads.length; offset += 8) {
       const batch = plan.reads.slice(offset, offset + 8);
-      const settled = await Promise.allSettled(batch.map((summary) => this.readThread(summary.id)));
+      const settled = await Promise.allSettled(batch.map((summary) => this.readThread(summary.id, { turns: OVERVIEW_TURNS })));
       settled.forEach((entry, index) => {
         const summary = batch[index];
         if (entry.status === "rejected") {
@@ -216,8 +244,10 @@ class CodexReader {
           ...(cursor ? { cursor } : {}),
         });
         // Status is only what this app-server knows; chats running in another Codex process usually read as notLoaded.
-        threads.push(...(result.data || []).map(({ id, name, preview, updatedAt, cwd, status, model, modelProvider, reasoningEffort }) => ({
-          id, name: String(name || preview || "Untitled chat").slice(0, 120), updatedAt: asMilliseconds(updatedAt), cwd, source: "codex",
+        threads.push(...(result.data || []).map(({ id, name, preview, updatedAt, recencyAt, cwd, status, model, modelProvider, reasoningEffort }) => ({
+          // A turn that just started moves recencyAt before updatedAt catches up.
+          id, name: String(name || preview || "Untitled chat").slice(0, 120),
+          updatedAt: Math.max(asMilliseconds(updatedAt) || 0, asMilliseconds(recencyAt) || 0), cwd, source: "codex",
           model: describeModel(model, { provider: modelProvider, effort: reasoningEffort }),
           ...(status?.type ? { status: status.type } : {}),
           ...(Array.isArray(status?.activeFlags) && status.activeFlags.length ? { activeFlags: status.activeFlags.map(String) } : {}),
@@ -245,8 +275,8 @@ class CodexReader {
     this.sending.add(threadId);
     try {
       await this.ready;
-      const saved = await this.request("thread/read", { threadId, includeTurns: true });
-      if (saved.thread?.turns?.at(-1)?.status === "inProgress")
+      const saved = await this.latestTurns(threadId, 1);
+      if (saved.turns?.at(-1)?.status === "inProgress")
         throw Object.assign(new Error("This chat is still working. Wait for the turn to finish before replying."), { statusCode: 409 });
       if (!this.resumedThreads.has(threadId)) {
         const resumed = await this.request("thread/resume", { threadId, excludeTurns: true });
@@ -266,8 +296,8 @@ class CodexReader {
     let forkId = "";
     try {
       await this.ready;
-      const saved = await this.request("thread/read", { threadId: sourceThreadId, includeTurns: true });
-      if (saved.thread?.turns?.at(-1)?.status === "inProgress")
+      const saved = await this.latestTurns(sourceThreadId, 1);
+      if (saved.turns?.at(-1)?.status === "inProgress")
         throw Object.assign(new Error("Wait for this chat to finish before creating a mobile branch."), { statusCode: 409 });
       const forked = await this.request("thread/fork", { threadId: sourceThreadId });
       forkId = forked.thread?.id || "";
