@@ -10,7 +10,8 @@ import { networkInterfaces } from "node:os";
 import { transformThread } from "./lib/transform.mjs";
 import { describeModel } from "./lib/models.mjs";
 import { readDescendants } from "./lib/descendants.mjs";
-import { classifyCodex, composeAllScene, planCodexReads, pruneCache } from "./lib/feed.mjs";
+import { classifyCodex, composeAllScene, noteReadFailure, planCodexReads, pruneCache } from "./lib/feed.mjs";
+import { WatchList } from "./lib/watch.mjs";
 import { OrcaReader } from "./lib/orca.mjs";
 import { ClaudeReader, goblinStateDir } from "./lib/claude.mjs";
 import { ExtensionReader, EXTENSION_PARTY, extensionFeedDir } from "./lib/extension.mjs";
@@ -80,6 +81,7 @@ class CodexReader {
     this.serverRequests = new Map();
     this.threadReads = new Map();
     this.threadAttempts = new Map();
+    this.threadFailures = new Map();
     this.problem = "";
     this.process = null;
     try {
@@ -160,11 +162,12 @@ class CodexReader {
     return transformThread(result.thread);
   }
 
-  /** Check the chats the feed plan asks for; reuse saved checks for the rest. */
-  async checkThreadsForOverview(threads) {
+  /** Check the chats in use or watched; reuse saved checks for the rest. */
+  async checkThreadsForOverview(threads, watched = new Set()) {
     const now = Date.now();
     const mustIds = new Set([...this.serverRequests.values()].map((item) => String(item.params.threadId || "")).filter(Boolean));
-    const plan = planCodexReads(threads, { now, cache: this.threadReads, attempts: this.threadAttempts, mustIds });
+    const plan = planCodexReads(threads, { now, cache: this.threadReads, attempts: this.threadAttempts, mustIds, watched,
+      failures: this.threadFailures });
     const fresh = [];
     let failed = 0;
     for (let offset = 0; offset < plan.reads.length; offset += 8) {
@@ -174,11 +177,14 @@ class CodexReader {
         const summary = batch[index];
         if (entry.status === "rejected") {
           failed++;
+          // A chat that cannot be read (a very long one can time out) waits before the next try.
+          noteReadFailure(this.threadFailures, summary.id, { now });
           const saved = this.threadReads.get(summary.id);
           if (saved) fresh.push(saved);
           return;
         }
         const actor = entry.value;
+        this.threadFailures.delete(summary.id);
         const hasRequest = this.listRequests(actor.id).length > 0;
         const record = {
           id: actor.id, updatedAt: summary.updatedAt, checkedAt: now,
@@ -190,7 +196,8 @@ class CodexReader {
       });
     }
     const capped = pruneCache(this.threadReads, plan.ids);
-    return { records: [...plan.reused, ...fresh], pending: plan.pending, failed, candidates: plan.candidates, capped };
+    return { records: [...plan.reused, ...fresh], pending: plan.pending, failed, backingOff: plan.backingOff,
+      candidates: plan.candidates, capped };
   }
 
   async listThreads() {
@@ -301,6 +308,7 @@ const reader = new CodexReader();
 const orca = new OrcaReader();
 const claude = new ClaudeReader();
 const extensions = new ExtensionReader({ dir: extensionFeedDir(stateDir) });
+const watchList = new WatchList({ dir: stateDir });
 const CLAUDE_ID = /^claude:[A-Za-z0-9_-]{1,128}$/;
 
 async function listAllSources() {
@@ -354,10 +362,10 @@ async function allScene() {
     Promise.resolve().then(() => claude.snapshot()), Promise.resolve().then(() => extensions.snapshot())]);
   const codex = { ok: codexResult.status === "fulfilled", threads: codexResult.value || [], listComplete: reader.threadListComplete, checkFailed: false };
   if (codex.ok) {
-    try { codex.checked = await reader.checkThreadsForOverview(codex.threads); }
+    try { codex.checked = await reader.checkThreadsForOverview(codex.threads, new Set(watchList.ids)); }
     catch { codex.checkFailed = true; }
   }
-  return composeAllScene({
+  const scene = composeAllScene({
     codex,
     orca: { ok: orcaResult.status === "fulfilled", snapshot: orcaResult.value },
     claude: { ok: claudeResult.status === "fulfilled", snapshot: claudeResult.value },
@@ -365,6 +373,8 @@ async function allScene() {
     listRequests: (id) => reader.listRequests(id),
     now: Date.now(),
   });
+  // Watched parties are always read and kept on the launchpad, whatever their age.
+  return { ...scene, watched: [...watchList.ids] };
 }
 let allScenePending = null;
 let allSceneCached = null;
@@ -527,6 +537,18 @@ const handler = async (request, response) => {
     try { return await handlePair(request, response, origin); }
     catch { return fail(response, 500, "Unable to pair this phone."); }
   }
+  if (url.pathname === "/api/watch" && request.method === "POST") {
+    if (!isLocal(request) && !hasSession(request)) return json(response, 401, { error: "Pair this phone with the viewer first." });
+    if (request.headers.origin !== origin || !String(request.headers["content-type"] || "").startsWith("application/json"))
+      return json(response, 403, { error: "Open the viewer before changing what is watched." });
+    try {
+      const data = await readBody(request);
+      if (typeof data.watched !== "boolean") throw Object.assign(new Error("Say whether to watch it."), { statusCode: 400 });
+      const ids = watchList.set(String(data.id || ""), data.watched);
+      allSceneCachedAt = 0; // The next poll reads the newly watched chat or drops the unwatched one.
+      return json(response, 200, { watched: ids });
+    } catch (error) { return fail(response, error.statusCode || 500, error.message || "Unable to change what is watched."); }
+  }
   if (["/api/reply", "/api/respond"].includes(url.pathname) && request.method === "POST") {
     if (!isLocal(request) && !hasSession(request)) return json(response, 401, { error: "Pair this phone with the viewer first." });
     if (request.headers.origin !== origin || !String(request.headers["content-type"] || "").startsWith("application/json"))
@@ -556,7 +578,7 @@ const handler = async (request, response) => {
     }
     if (url.pathname === "/api/capabilities") return json(response, 200, await capabilities());
     if (url.pathname === "/api/requests") return json(response, 200, { requests: reader.listRequests(url.searchParams.get("id") || defaultThreadId) });
-    if (url.pathname === "/api/threads") return json(response, 200, { threads: await listAllSources() });
+    if (url.pathname === "/api/threads") return json(response, 200, { threads: await listAllSources(), watched: [...watchList.ids] });
     if (url.pathname === "/api/scene") {
       const threadId = url.searchParams.get("id") || defaultThreadId;
       if (threadId === "all") return json(response, 200, await recentScene());

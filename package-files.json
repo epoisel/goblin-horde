@@ -35,6 +35,7 @@
   "lib/paths.mjs",
   "lib/processes.mjs",
   "lib/transform.mjs",
+  "lib/watch.mjs",
   "lib/zip.mjs",
   "public/app.js",
   "public/demo.js",

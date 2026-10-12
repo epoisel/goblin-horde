@@ -27,7 +27,7 @@ from goblin_parting import (OUTCOME_COLORS, PartingNotes, RetirementTracker, not
                             parting_note)
 from party_layout import (age_label, compact_active, coverage_note, family_ink, launchpad_board, loop_groups,
                           model_badge, model_of, party_models, party_scope, project_for, reachable, search_sources,
-                          stable_layout, tile_plan)
+                          stable_layout, tile_plan, watched_cards)
 from stream_windows import (StreamWindow, WIDTH as STREAM_WIDTH, HEIGHT as STREAM_HEIGHT, monitor_areas,
                             monitor_work_area, screen_geometry, workflow_for)
 
@@ -1254,6 +1254,12 @@ class Launchpad:
                 y = self.draw_active(card, y, width)
             if folded:
                 y = self.draw_fold(y, width, 0 if self.show_all_working else folded)
+            watching = self.owner.board_watching
+            if watching:
+                y = self.section(y + 2, width, f"★ WATCHING · {len(watching)}", GOLD)
+                for card in watching:
+                    y = self.draw_quiet(card.id, card.name, card.project, card.updated_ms, y, width,
+                                        models=card.models)
             y = self.section(y + 2, width, f"◷ RECENTLY USED · {len(recent)}", MUTED)
             if not recent:
                 c.create_text(14, y + 4, anchor="nw", fill=MUTED, font=self.small_font,
@@ -1289,6 +1295,17 @@ class Launchpad:
         self.body.create_text((left + right) // 2, top + 9, text=label, fill=IVORY, font=self.tag_font)
         self.hitboxes.append((left, top, right, top + 17, command, tip))
         return left
+
+    def watch_chip(self, right: int, top: int, party_id: str, name: str) -> int:
+        """☆ watches a party: the server always reads it and it stays on the launchpad. ★ stops."""
+        owner = self.owner
+        if not party_id or party_id == "all" or owner.demo:
+            return right + 4
+        watched = owner.is_watched(party_id)
+        tip = (f"Stop watching {name}: read it only while in use or when opened" if watched
+               else f"Watch {name}: always read it and keep it on the launchpad")
+        return self.chip(right, top, "★" if watched else "☆", lambda: owner.set_watched(party_id, not watched), tip,
+                         strong=watched)
 
     def model_chip(self, left: int, middle: int, models, room: int, effort: bool = False) -> int:
         """A dark badge naming the party's model (and how many more), tinted by its family; returns its right edge."""
@@ -1372,7 +1389,8 @@ class Launchpad:
             goblins_left -= 4 + self.tag_font.measure(f"+{extra}")
         chip_left = self.chip(width - 10, y + 3, "EXPAND", lambda: owner.choose_party(card.id, card.name, "expanded"),
                               f"Open every stream in {card.name}", strong=True)
-        title = ("◆ " if selected else "") + card.name
+        chip_left = self.watch_chip(chip_left - 4, y + 3, card.id, card.name)
+        title = ("◆ " if selected else "★ " if owner.is_watched(card.id) else "") + card.name
         c.create_text(18, y + 5, anchor="nw", fill=IVORY, font=self.row_font,
                       text=fit_text(self.row_font, title, min(chip_left, goblins_left) - 26))
         # The signal pill: what is most urgent, in a few plain words, on dark ink.
@@ -1416,6 +1434,7 @@ class Launchpad:
                               f"{name} · {project} · {age_label(updated_ms)} · open roster"))
         chip_left = self.chip(width - 8, y + 3, "EXPAND", lambda: self.open_source(target, "expanded"),
                               f"Open every stream in {name}")
+        chip_left = self.watch_chip(chip_left - 4, y + 3, party_id, name)
         age = age_label(updated_ms)
         c.create_text(chip_left - 6, y + 11, anchor="e", text=age, fill=MUTED, font=self.small_font)
         age_left = chip_left - 6 - self.small_font.measure(age)
@@ -1430,7 +1449,8 @@ class Launchpad:
         # Text runs from x=12 to just before the model and age; the title gets what the project does not need.
         room = age_left - 18 - 12
         project_room = min(self.small_font.measure(project) + 10, int(room * 0.35)) if project else 0
-        shown = fit_text(self.small_font, f"{'◆' if selected else '◷'} {name}", room - project_room)
+        mark = "◆" if selected else "★" if owner.is_watched(party_id) else "◷"
+        shown = fit_text(self.small_font, f"{mark} {name}", room - project_room)
         c.create_text(12, y + 11, anchor="w", text=shown, fill=IVORY if selected or highlighted else "#d6dfd2",
                       font=self.small_font)
         project_left = 12 + self.small_font.measure(shown) + 10
@@ -1618,6 +1638,10 @@ class GoblinWidget:
         self.text_lines: dict[str, list[str]] = {}
         self.text_advanced_at: dict[str, float] = {}
         self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="goblin-horde")
+        # Parties the person watches: always read by the server and kept on the launchpad.
+        self.watched_ids: list[str] = []
+        self.watch_pending = None
+        self.board_watching: list = []
         self.pending = None
         self.pending_scope = ""
         self.closing = False
@@ -2100,9 +2124,9 @@ class GoblinWidget:
             return
         self.condense_party() if self.party_view == "compact" else self.expand_party()
 
-    def fetch_catalog(self) -> list[dict]:
+    def fetch_catalog(self) -> dict:
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/api/threads", timeout=20) as response:
-            return json.load(response).get("threads") or []
+            return json.load(response)
 
     def load_catalog(self) -> None:
         self.catalog_after = None
@@ -2114,7 +2138,9 @@ class GoblinWidget:
             self.catalog_after = self.root.after(150, self.load_catalog)
             return
         try:
-            self.source_catalog = self.catalog_pending.result()
+            catalog = self.catalog_pending.result()
+            self.source_catalog = catalog.get("threads") or []
+            self.take_watched(catalog.get("watched"))
             self.catalog_failed = False
         except Exception:
             self.catalog_failed = not self.source_catalog
@@ -2122,6 +2148,50 @@ class GoblinWidget:
         self.catalog_at = time.monotonic()
         self.launchpad.refresh()
         self.catalog_after = self.root.after(60_000, self.load_catalog)
+
+    # Watching --------------------------------------------------------------
+    def take_watched(self, ids) -> None:
+        """The server's watch list, unless a change made here is still on its way there."""
+        if isinstance(ids, list) and self.watch_pending is None:
+            self.watched_ids = [str(item) for item in ids if isinstance(item, str)]
+
+    def is_watched(self, party_id: str) -> bool:
+        return party_id in self.watched_ids
+
+    def set_watched(self, party_id: str, watched: bool) -> None:
+        """Watch a party (always read, always on the launchpad) or stop; shown at once, saved by the server."""
+        if not party_id or party_id == "all" or self.demo:
+            return
+        previous = list(self.watched_ids)
+        rest = [item for item in self.watched_ids if item != party_id]
+        self.watched_ids = [party_id, *rest] if watched else rest
+        self.launchpad.refresh(force=True)
+        future = self.executor.submit(self.post_watch, party_id, watched)
+        self.watch_pending = future
+
+        def settle() -> None:
+            if self.closing:
+                return
+            if not future.done():
+                self.root.after(150, settle)
+                return
+            if self.watch_pending is future:
+                self.watch_pending = None
+            try:
+                self.watched_ids = list(future.result())
+            except Exception:
+                self.watched_ids = previous  # Not saved: show the list as it really is.
+            self.launchpad.refresh(force=True)
+            self.kick_board()
+        self.root.after(150, settle)
+
+    def post_watch(self, party_id: str, watched: bool) -> list[str]:
+        origin = f"http://127.0.0.1:{self.port}"
+        request = urllib.request.Request(f"{origin}/api/watch", method="POST",
+                                         data=json.dumps({"id": party_id, "watched": watched}).encode("utf-8"),
+                                         headers={"Content-Type": "application/json", "Origin": origin})
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return [str(item) for item in json.load(response).get("watched") or []]
 
     def refresh_catalog(self) -> None:
         """Reload the full chat list when someone starts looking through it."""
@@ -3169,6 +3239,7 @@ class GoblinWidget:
         self.board_after = self.root.after(150 if self.board_pending else 1000, self.poll_board)
 
     def take_board_scene(self, scene: dict) -> None:
+        self.take_watched(scene.get("watched"))
         self.board_actors = [actor for actor in scene.get("agents") or [] if actor.get("id")]
         self.board_coverage = scene.get("coverage") or {}
         self.board_connection = "PARTIAL" if scene.get("warning") else "LIVE"
@@ -3187,8 +3258,11 @@ class GoblinWidget:
             ids = {str(actor["id"]) for actor in focused}
             actors = [actor for actor in actors
                       if str(actor.get("id")) not in ids and party_scope(actor) != self.thread_id] + focused
-        active, recent, older = launchpad_board(actors, self.source_catalog, self.board_order)
+        active, recent, older = launchpad_board(actors, self.source_catalog, self.board_order,
+                                                watched=self.watched_ids)
         self.board_order = [card.id for card in active]
+        self.board_watching = watched_cards(actors, self.source_catalog, self.watched_ids,
+                                            {card.id for card in active})
         return active, recent, older
 
     def animate(self) -> None:

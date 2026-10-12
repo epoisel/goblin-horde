@@ -668,6 +668,8 @@ class LaunchpadNavigationTests(unittest.TestCase):
         widget.actors = [{"id": "party"}, {"id": "helper", "parentThreadId": "party"}]
         widget.party_view = "expanded"
         widget.focused_stream_id = ""
+        widget.watched_ids = []
+        widget.watch_pending = None
         for name in ("condense_party", "open_party", "follow_source", "peek_member"):
             setattr(widget, name, Mock())
         return widget
