@@ -5,16 +5,20 @@ import { stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
-import { transformThread } from "./lib/transform.mjs";
+import { markRunningElsewhere, transformThread } from "./lib/transform.mjs";
+import { describeModel } from "./lib/models.mjs";
 import { readDescendants } from "./lib/descendants.mjs";
-import { classifyCodex, composeAllScene, planCodexReads, pruneCache } from "./lib/feed.mjs";
+import { classifyCodex, composeAllScene, noteReadFailure, planCodexReads, pruneCache } from "./lib/feed.mjs";
+import { WatchList } from "./lib/watch.mjs";
 import { OrcaReader } from "./lib/orca.mjs";
 import { ClaudeReader, goblinStateDir } from "./lib/claude.mjs";
 import { ExtensionReader, EXTENSION_PARTY, extensionFeedDir } from "./lib/extension.mjs";
 import { claudeHookReport, claudeSettingsPath } from "./lib/claude-hooks.mjs";
 import { claudeConfigDir } from "./lib/paths.mjs";
+import { codexCommand } from "./lib/codex-bin.mjs";
+import { Pairing, sessionCookie } from "./lib/pairing.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = resolve(here, "public");
@@ -46,8 +50,7 @@ function loadPairingCode() {
   return code;
 }
 const pairingCode = loadPairingCode();
-const sessions = new Map();
-const attempts = new Map();
+const pairing = new Pairing({ code: pairingCode });
 
 function isPrivateIPv4(ip) {
   const parts = String(ip).split(".").map(Number);
@@ -67,8 +70,11 @@ function findLanIp() {
 const lanIp = process.env.LAN_IP || findLanIp();
 if (lanIp && !isPrivateIPv4(lanIp)) throw new Error("LAN_IP must be a private IPv4 address");
 const defaultThreadId = process.env.CODEX_VIEWER_THREAD_ID || "all";
-const codexBin = process.env.CODEX_CLI_PATH || "codex";
 const asMilliseconds = (value) => Number(value) < 1e12 ? Number(value || 0) * 1000 : Number(value || 0);
+
+// Turns read per chat: the all-parties view needs only the latest work; an opened chat shows more.
+const OVERVIEW_TURNS = 3;
+const SCENE_TURNS = 8;
 
 class CodexReader {
   constructor() {
@@ -79,24 +85,37 @@ class CodexReader {
     this.serverRequests = new Map();
     this.threadReads = new Map();
     this.threadAttempts = new Map();
-    this.process = spawn(codexBin, ["app-server", "--listen", "stdio://"], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-    this.lines = createInterface({ input: this.process.stdout });
-    this.lines.on("line", (line) => this.onLine(line));
-    this.process.stderr.on("data", () => {});
-    this.process.stdin.on("error", () => {});
+    this.threadFailures = new Map();
     this.problem = "";
-    this.process.on("error", (error) => {
-      this.problem = error.code === "ENOENT" ? "The Codex CLI was not found." : "Codex could not be started.";
-      this.failAll(error);
-    });
-    this.process.on("exit", (code) => {
-      this.problem ||= `Codex app-server stopped (${code}).`;
-      this.failAll(new Error(`Codex app-server exited (${code})`));
-    });
+    this.process = null;
+    try {
+      const codex = codexCommand(["app-server", "--listen", "stdio://"]);
+      this.process = spawn(codex.command, codex.args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, ...codex.options,
+        ...(Object.keys(codex.env).length ? { env: { ...process.env, ...codex.env } } : {}) });
+    } catch {
+      // Node refuses some programs synchronously (a .cmd it cannot quote); treat that like a missing CLI.
+      this.problem = "Codex could not be started.";
+    }
+    if (this.process) {
+      this.lines = createInterface({ input: this.process.stdout });
+      this.lines.on("line", (line) => this.onLine(line));
+      this.process.stderr.on("data", () => {});
+      this.process.stdin.on("error", () => {});
+      this.process.on("error", (error) => {
+        this.problem = error.code === "ENOENT" ? "The Codex CLI was not found." : "Codex could not be started.";
+        this.failAll(error);
+      });
+      this.process.on("exit", (code) => {
+        this.problem ||= `Codex app-server stopped (${code}).`;
+        this.failAll(new Error(`Codex app-server exited (${code})`));
+      });
+    }
     this.ready = this.request("initialize", {
       clientInfo: { name: "goblin_horde", title: "Goblin Horde", version: "0.1.0" },
       capabilities: { experimentalApi: true },
     }).then(() => this.notify("initialized"));
+    // Codex is optional: callers still await `ready` and see the failure, but nothing else is left holding it.
+    this.ready.catch(() => {});
   }
 
   onLine(line) {
@@ -141,31 +160,59 @@ class CodexReader {
     });
   }
 
-  async readThread(threadId) {
-    await this.ready;
+  /**
+   * A chat's details and only its newest turns. Long chats can hold hundreds of megabytes of history
+   * (Codex marks them `historyMode: "paginated"`), so the full history is never loaded: a
+   * metadata-only read plus one page of `thread/turns/list`, newest first. A Codex too old for
+   * `thread/turns/list` falls back to the full read.
+   */
+  async latestTurns(threadId, limit) {
+    if (this.pagedTurns !== false) {
+      const [meta, page] = await Promise.allSettled([
+        this.request("thread/read", { threadId, includeTurns: false }),
+        this.request("thread/turns/list", { threadId, limit, itemsView: "full", sortDirection: "desc" }),
+      ]);
+      if (meta.status === "rejected") throw meta.reason;
+      if (page.status === "fulfilled") {
+        this.pagedTurns = true;
+        return { ...meta.value.thread, turns: [...(page.value.data || [])].reverse() };
+      }
+      // Only a Codex that has never answered a page and does not know the method gets the old full read.
+      if (this.pagedTurns || !/method|unknown variant|not supported|unsupported/i.test(page.reason.message)) throw page.reason;
+      this.pagedTurns = false;
+    }
     const result = await this.request("thread/read", { threadId, includeTurns: true });
-    return transformThread(result.thread);
+    return { ...result.thread, turns: (result.thread?.turns || []).slice(-limit) };
   }
 
-  /** Check the chats the feed plan asks for; reuse saved checks for the rest. */
-  async checkThreadsForOverview(threads) {
+  async readThread(threadId, { turns = SCENE_TURNS } = {}) {
+    await this.ready;
+    return markRunningElsewhere(transformThread(await this.latestTurns(threadId, turns)));
+  }
+
+  /** Check the chats in use or watched; reuse saved checks for the rest. */
+  async checkThreadsForOverview(threads, watched = new Set()) {
     const now = Date.now();
     const mustIds = new Set([...this.serverRequests.values()].map((item) => String(item.params.threadId || "")).filter(Boolean));
-    const plan = planCodexReads(threads, { now, cache: this.threadReads, attempts: this.threadAttempts, mustIds });
+    const plan = planCodexReads(threads, { now, cache: this.threadReads, attempts: this.threadAttempts, mustIds, watched,
+      failures: this.threadFailures });
     const fresh = [];
     let failed = 0;
     for (let offset = 0; offset < plan.reads.length; offset += 8) {
       const batch = plan.reads.slice(offset, offset + 8);
-      const settled = await Promise.allSettled(batch.map((summary) => this.readThread(summary.id)));
+      const settled = await Promise.allSettled(batch.map((summary) => this.readThread(summary.id, { turns: OVERVIEW_TURNS })));
       settled.forEach((entry, index) => {
         const summary = batch[index];
         if (entry.status === "rejected") {
           failed++;
+          // A chat that cannot be read (a very long one can time out) waits before the next try.
+          noteReadFailure(this.threadFailures, summary.id, { now });
           const saved = this.threadReads.get(summary.id);
           if (saved) fresh.push(saved);
           return;
         }
         const actor = entry.value;
+        this.threadFailures.delete(summary.id);
         const hasRequest = this.listRequests(actor.id).length > 0;
         const record = {
           id: actor.id, updatedAt: summary.updatedAt, checkedAt: now,
@@ -177,7 +224,8 @@ class CodexReader {
       });
     }
     const capped = pruneCache(this.threadReads, plan.ids);
-    return { records: [...plan.reused, ...fresh], pending: plan.pending, failed, candidates: plan.candidates, capped };
+    return { records: [...plan.reused, ...fresh], pending: plan.pending, failed, backingOff: plan.backingOff,
+      candidates: plan.candidates, capped };
   }
 
   async listThreads() {
@@ -196,8 +244,11 @@ class CodexReader {
           ...(cursor ? { cursor } : {}),
         });
         // Status is only what this app-server knows; chats running in another Codex process usually read as notLoaded.
-        threads.push(...(result.data || []).map(({ id, name, preview, updatedAt, cwd, status }) => ({
-          id, name: String(name || preview || "Untitled chat").slice(0, 120), updatedAt: asMilliseconds(updatedAt), cwd, source: "codex",
+        threads.push(...(result.data || []).map(({ id, name, preview, updatedAt, recencyAt, cwd, status, model, modelProvider, reasoningEffort }) => ({
+          // A turn that just started moves recencyAt before updatedAt catches up.
+          id, name: String(name || preview || "Untitled chat").slice(0, 120),
+          updatedAt: Math.max(asMilliseconds(updatedAt) || 0, asMilliseconds(recencyAt) || 0), cwd, source: "codex",
+          model: describeModel(model, { provider: modelProvider, effort: reasoningEffort }),
           ...(status?.type ? { status: status.type } : {}),
           ...(Array.isArray(status?.activeFlags) && status.activeFlags.length ? { activeFlags: status.activeFlags.map(String) } : {}),
         })));
@@ -224,8 +275,8 @@ class CodexReader {
     this.sending.add(threadId);
     try {
       await this.ready;
-      const saved = await this.request("thread/read", { threadId, includeTurns: true });
-      if (saved.thread?.turns?.at(-1)?.status === "inProgress")
+      const saved = await this.latestTurns(threadId, 1);
+      if (saved.turns?.at(-1)?.status === "inProgress")
         throw Object.assign(new Error("This chat is still working. Wait for the turn to finish before replying."), { statusCode: 409 });
       if (!this.resumedThreads.has(threadId)) {
         const resumed = await this.request("thread/resume", { threadId, excludeTurns: true });
@@ -245,8 +296,8 @@ class CodexReader {
     let forkId = "";
     try {
       await this.ready;
-      const saved = await this.request("thread/read", { threadId: sourceThreadId, includeTurns: true });
-      if (saved.thread?.turns?.at(-1)?.status === "inProgress")
+      const saved = await this.latestTurns(sourceThreadId, 1);
+      if (saved.turns?.at(-1)?.status === "inProgress")
         throw Object.assign(new Error("Wait for this chat to finish before creating a mobile branch."), { statusCode: 409 });
       const forked = await this.request("thread/fork", { threadId: sourceThreadId });
       forkId = forked.thread?.id || "";
@@ -280,13 +331,14 @@ class CodexReader {
     this.serverRequests.delete(String(requestId));
   }
 
-  close() { this.process.kill(); }
+  close() { this.process?.kill(); }
 }
 
 const reader = new CodexReader();
 const orca = new OrcaReader();
 const claude = new ClaudeReader();
 const extensions = new ExtensionReader({ dir: extensionFeedDir(stateDir) });
+const watchList = new WatchList({ dir: stateDir });
 const CLAUDE_ID = /^claude:[A-Za-z0-9_-]{1,128}$/;
 
 async function listAllSources() {
@@ -340,10 +392,10 @@ async function allScene() {
     Promise.resolve().then(() => claude.snapshot()), Promise.resolve().then(() => extensions.snapshot())]);
   const codex = { ok: codexResult.status === "fulfilled", threads: codexResult.value || [], listComplete: reader.threadListComplete, checkFailed: false };
   if (codex.ok) {
-    try { codex.checked = await reader.checkThreadsForOverview(codex.threads); }
+    try { codex.checked = await reader.checkThreadsForOverview(codex.threads, new Set(watchList.ids)); }
     catch { codex.checkFailed = true; }
   }
-  return composeAllScene({
+  const scene = composeAllScene({
     codex,
     orca: { ok: orcaResult.status === "fulfilled", snapshot: orcaResult.value },
     claude: { ok: claudeResult.status === "fulfilled", snapshot: claudeResult.value },
@@ -351,19 +403,28 @@ async function allScene() {
     listRequests: (id) => reader.listRequests(id),
     now: Date.now(),
   });
+  // Watched parties are always read and kept on the launchpad, whatever their age.
+  return { ...scene, watched: [...watchList.ids] };
 }
 let allScenePending = null;
 let allSceneCached = null;
 let allSceneCachedAt = 0;
+// A scene this old is still served at once while a fresh one is built; older ones wait for the rebuild.
+const ALL_SCENE_STALE_MS = 60_000;
 function recentScene() {
-  if (allSceneCached && Date.now() - allSceneCachedAt < 1500) return Promise.resolve(allSceneCached);
+  const age = Date.now() - allSceneCachedAt;
+  if (allSceneCached && age < 1500) return Promise.resolve(allSceneCached);
   if (!allScenePending) {
     allScenePending = allScene().then((scene) => {
       allSceneCached = scene;
       allSceneCachedAt = Date.now();
       return scene;
     }).finally(() => { allScenePending = null; });
+    // Nobody may await a background rebuild; its failure must not end the process.
+    allScenePending.catch(() => {});
   }
+  // One slow Codex read (a very long chat can take 15 seconds) must not hold every viewer and widget poll.
+  if (allSceneCached && age < ALL_SCENE_STALE_MS) return Promise.resolve(allSceneCached);
   return allScenePending;
 }
 const mime = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8" };
@@ -379,56 +440,68 @@ function isLocal(request) {
 }
 
 function hasSession(request) {
-  const cookie = (request.headers.cookie || "").split(";").map((part) => part.trim())
-    .find((part) => part.startsWith("goblin_horde_session="))?.split("=")[1] || "";
-  if (!/^[a-f0-9]{64}$/.test(cookie)) return false;
-  const expiresAt = sessions.get(cookie);
-  if (!expiresAt) return false;
-  if (Date.now() >= expiresAt) { sessions.delete(cookie); return false; }
-  return true;
+  return pairing.hasSession(sessionCookie(request.headers.cookie));
 }
+
+// The pages load only their own files: no inline script or style, nothing from other sites.
+const pageCsp = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; "
+  + "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
 async function serveFile(response, file, folder = publicDir) {
   const path = join(folder, file);
   const info = await stat(path);
-  response.writeHead(200, { ...commonHeaders, "Content-Type": mime[`.${file.split(".").at(-1)}`], "Content-Length": info.size });
-  createReadStream(path).pipe(response);
+  const type = mime[`.${file.split(".").at(-1)}`];
+  response.writeHead(200, { ...commonHeaders, "Content-Type": type, "Content-Length": info.size,
+    ...(file.endsWith(".html") ? { "Content-Security-Policy": pageCsp } : {}) });
+  // Headers are already out, so a read error can only end the connection.
+  createReadStream(path).on("error", () => response.destroy()).pipe(response);
 }
 
 async function handlePair(request, response, origin) {
   const ip = request.socket.remoteAddress || "unknown";
-  const record = attempts.get(ip) || { count: 0, since: Date.now() };
-  if (Date.now() - record.since > 10 * 60_000) { record.count = 0; record.since = Date.now(); }
-  if (record.count >= 5) return json(response, 429, { error: "Too many attempts. Wait ten minutes and try again." });
+  // Counted before anything is read, so parallel guesses cannot all slip past the limit.
+  if (!pairing.allow(ip)) return json(response, 429, { error: "Too many attempts. Wait ten minutes and try again." });
   if (request.headers.origin !== origin || !String(request.headers["content-type"] || "").startsWith("application/json"))
     return json(response, 403, { error: "Open the pairing page on your phone first." });
   let input = "";
-  for await (const chunk of request) {
-    input += chunk;
-    if (input.length > 256) return json(response, 413, { error: "Invalid pairing request" });
-  }
+  try {
+    for await (const chunk of request) {
+      input += chunk;
+      if (input.length > 256) return json(response, 413, { error: "Invalid pairing request" });
+    }
+  } catch { return response.destroy(); } // The client hung up mid-body; there is no one to answer.
   let code = "";
-  try { code = String(JSON.parse(input).code || "").toUpperCase().replace(/\s/g, ""); } catch { /* handled below */ }
-  const supplied = Buffer.from(code);
-  const expected = Buffer.from(pairingCode);
-  if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
-    record.count++;
-    attempts.set(ip, record);
-    return json(response, 401, { error: "That pairing code did not match." });
-  }
-  attempts.delete(ip);
-  const sessionToken = randomBytes(32).toString("hex");
-  sessions.set(sessionToken, Date.now() + 24 * 60 * 60_000);
+  try { code = String(JSON.parse(input).code || ""); } catch { /* handled below */ }
+  const sessionToken = pairing.pair(ip, code);
+  if (!sessionToken) return json(response, 401, { error: "That pairing code did not match." });
   response.writeHead(200, { ...commonHeaders, "Content-Type": "application/json; charset=utf-8", "Set-Cookie": `goblin_horde_session=${sessionToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400` });
   response.end(JSON.stringify({ paired: true }));
 }
 
+const BODY_LIMIT = 12_000;
+const tooLarge = () => Object.assign(new Error("Request is too large."), { statusCode: 413 });
+
+/**
+ * A small JSON body. An oversized one is answered with 413: the rest is read and dropped rather than
+ * breaking off mid-stream, which would destroy the socket before the answer could be sent.
+ */
 async function readBody(request) {
-  let input = "";
-  for await (const chunk of request) {
-    input += chunk;
-    if (input.length > 12_000) throw Object.assign(new Error("Request is too large."), { statusCode: 413 });
+  if (Number(request.headers["content-length"]) > BODY_LIMIT) {
+    request.resume();
+    throw tooLarge();
   }
+  const input = await new Promise((resolve, reject) => {
+    let text = "";
+    let overflow = false;
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      if (overflow) return;
+      text += chunk;
+      if (text.length > BODY_LIMIT) { overflow = true; text = ""; }
+    });
+    request.on("end", () => (overflow ? reject(tooLarge()) : resolve(text)));
+    request.on("error", reject);
+  });
   try { return JSON.parse(input); } catch { throw Object.assign(new Error("Invalid request."), { statusCode: 400 }); }
 }
 
@@ -490,20 +563,36 @@ const handler = async (request, response) => {
   if (!allowedHosts.has(hostHeader.split(":")[0])) return json(response, 403, { error: "Local network access only" });
   const url = new URL(request.url || "/", `http://${hostHeader}`);
   const origin = `http://${hostHeader}`;
-  if (url.pathname === "/api/pair" && request.method === "POST" && !isLocal(request)) return handlePair(request, response, origin);
+  if (url.pathname === "/api/pair" && request.method === "POST" && !isLocal(request)) {
+    try { return await handlePair(request, response, origin); }
+    catch { return fail(response, 500, "Unable to pair this phone."); }
+  }
+  if (url.pathname === "/api/watch" && request.method === "POST") {
+    if (!isLocal(request) && !hasSession(request)) return json(response, 401, { error: "Pair this phone with the viewer first." });
+    if (request.headers.origin !== origin || !String(request.headers["content-type"] || "").startsWith("application/json"))
+      return json(response, 403, { error: "Open the viewer before changing what is watched." });
+    try {
+      const data = await readBody(request);
+      if (typeof data.watched !== "boolean") throw Object.assign(new Error("Say whether to watch it."), { statusCode: 400 });
+      const ids = watchList.set(String(data.id || ""), data.watched);
+      allSceneCachedAt = 0; // The next poll reads the newly watched chat or drops the unwatched one.
+      return json(response, 200, { watched: ids });
+    } catch (error) { return fail(response, error.statusCode || 500, error.message || "Unable to change what is watched."); }
+  }
   if (["/api/reply", "/api/respond"].includes(url.pathname) && request.method === "POST") {
     if (!isLocal(request) && !hasSession(request)) return json(response, 401, { error: "Pair this phone with the viewer first." });
     if (request.headers.origin !== origin || !String(request.headers["content-type"] || "").startsWith("application/json"))
       return json(response, 403, { error: "Open the viewer before sending a reply." });
     try { return await (url.pathname === "/api/reply" ? handleReply(request, response) : handleRequestAnswer(request, response)); }
-    catch (error) { return json(response, error.statusCode || 500, { error: error.message || "Unable to send reply." }); }
+    catch (error) { return fail(response, error.statusCode || 500, error.message || "Unable to send reply."); }
   }
   if (request.method !== "GET") return json(response, 405, { error: "Read-only viewer" });
 
   try {
-    if (url.pathname === "/pair.css" || url.pathname === "/pair.js") return serveFile(response, url.pathname.slice(1));
+    // Awaited, so a missing file lands in the catch below instead of escaping the handler.
+    if (url.pathname === "/pair.css" || url.pathname === "/pair.js") return await serveFile(response, url.pathname.slice(1));
     if (!isLocal(request) && !hasSession(request)) {
-      if (url.pathname === "/") return serveFile(response, "pair.html");
+      if (url.pathname === "/") return await serveFile(response, "pair.html");
       return json(response, 401, { error: "Pair this phone with the viewer first." });
     }
     if (url.pathname === "/api/mobile") return json(response, 200, {
@@ -519,7 +608,7 @@ const handler = async (request, response) => {
     }
     if (url.pathname === "/api/capabilities") return json(response, 200, await capabilities());
     if (url.pathname === "/api/requests") return json(response, 200, { requests: reader.listRequests(url.searchParams.get("id") || defaultThreadId) });
-    if (url.pathname === "/api/threads") return json(response, 200, { threads: await listAllSources() });
+    if (url.pathname === "/api/threads") return json(response, 200, { threads: await listAllSources(), watched: [...watchList.ids] });
     if (url.pathname === "/api/scene") {
       const threadId = url.searchParams.get("id") || defaultThreadId;
       if (threadId === "all") return json(response, 200, await recentScene());
@@ -547,16 +636,24 @@ const handler = async (request, response) => {
     }
 
     // The pixel goblins share one sprite file with the desktop widget.
-    if (url.pathname === "/goblin_art.json") return serveFile(response, "goblin_art.json", here);
+    if (url.pathname === "/goblin_art.json") return await serveFile(response, "goblin_art.json", here);
     const file = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
     if (!/^(index\.html|app\.js|styles\.css|mobile\.css|interactive\.css|demo\.js|party\.js|goblins\.js)$/.test(file)) return json(response, 404, { error: "Not found" });
-    return serveFile(response, file);
+    return await serveFile(response, file);
   } catch (error) {
-    json(response, 500, { error: error.message || "Unable to read Codex activity" });
+    fail(response, 500, error.message || "Unable to read Codex activity");
   }
 };
 
-const localServer = createServer(handler);
+/** An error answer, unless a reply is already under way; then the connection is simply ended. */
+function fail(response, status, message) {
+  if (response.headersSent) return response.destroy();
+  return json(response, status, { error: message });
+}
+
+// Last line of defence: one bad request must never become an unhandled rejection that ends the server.
+const safeHandler = (request, response) => handler(request, response).catch(() => fail(response, 500, "Unexpected error."));
+const localServer = createServer(safeHandler);
 localServer.on("error", (error) => {
   // Say plainly why the viewer cannot start; the manager reads this from the server log.
   console.error(error.code === "EADDRINUSE" ? `PORT_IN_USE: Port ${port} is already used by another program. Choose another port with --port.`
@@ -567,7 +664,7 @@ localServer.on("error", (error) => {
 localServer.listen(port, host, () => console.log(`Goblin Horde: http://${host}:${port}`));
 let lanServer;
 if (lanIp) {
-  lanServer = createServer(handler);
+  lanServer = createServer(safeHandler);
   lanServer.on("error", (error) => console.error(`Could not start Wi-Fi listener: ${error.message}`));
   lanServer.listen(port, lanIp, () => console.log(`Phone address: http://${lanIp}:${port}`));
 }

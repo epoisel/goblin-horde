@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { transformThread, toMilliseconds } from "../lib/transform.mjs";
+import { markRunningElsewhere, RUNNING_ELSEWHERE_MS, transformThread, toMilliseconds } from "../lib/transform.mjs";
 
 test("normalizes Codex timestamps for ordering beside Orca actors", () => {
   assert.equal(toMilliseconds(1791545642), 1791545642000);
@@ -65,8 +65,8 @@ test("keeps turn outcomes and explicit user questions for alerts", () => {
     { id: "failed", status: "failed", error: { message: "Connection lost" }, items: [] },
   ] });
   assert.deepEqual(result.turnStates, [
-    { id: "done", status: "completed", questions: ["Which layout?"], error: "" },
-    { id: "failed", status: "failed", questions: [], error: "Connection lost" },
+    { id: "done", status: "completed", questions: ["Which layout?"], error: "", open: true },
+    { id: "failed", status: "failed", questions: [], error: "Connection lost", open: true },
   ]);
 });
 
@@ -75,4 +75,24 @@ test("recognizes a final answer that asks the user to choose", () => {
     { type: "agentMessage", id: "ask", phase: "final_answer", text: "Which layout should I use?\n- Compact\n- Spacious" },
   ] }] });
   assert.deepEqual(result.turnStates[0].questions, ["Which layout should I use?"]);
+});
+
+test("a turn still running in another Codex process counts as working while its chat is active", () => {
+  const NOW = 1_800_000_000_000;
+  const chat = (turn, updatedAt) => transformThread({ id: "t", updatedAt: updatedAt / 1000, turns: [turn] });
+  const open = { id: "open", status: "interrupted", startedAt: (NOW - 60_000) / 1000, completedAt: null, items: [] };
+  const running = markRunningElsewhere(chat(open, NOW - 5000), { now: NOW });
+  assert.equal(running.turnStates.at(-1).status, "inProgress");
+  assert.equal(running.runningElsewhere, true);
+  // Quiet for longer than the window: an abandoned turn, left as it is.
+  const stale = markRunningElsewhere(chat(open, NOW - RUNNING_ELSEWHERE_MS - 1000), { now: NOW });
+  assert.equal(stale.turnStates.at(-1).status, "interrupted");
+  // A turn someone actually stopped has a completion time.
+  const stopped = markRunningElsewhere(chat({ ...open, completedAt: (NOW - 2000) / 1000 }, NOW - 2000), { now: NOW });
+  assert.equal(stopped.turnStates.at(-1).status, "interrupted");
+});
+
+test("a chat's activity time is when its newest turn started, when that is later than its update time", () => {
+  const result = transformThread({ id: "t", updatedAt: 1_700_000_000, recencyAt: 1_700_000_900, turns: [] });
+  assert.equal(result.updatedAt, 1_700_000_900_000);
 });

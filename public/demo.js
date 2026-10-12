@@ -83,6 +83,14 @@ const MEMBERS = [
   ]],
 ];
 
+// Invented models so the demo shows every tribe: a feed that names a Claude model gets hexers too.
+const DEMO_MODELS = {
+  codex: [{ id: "gpt-5.6-sol", label: "GPT-5.6 Sol", family: "openai", effort: "high" }, { id: "gpt-5-codex", label: "GPT-5 Codex", family: "openai", effort: "medium" }],
+  claude: [{ id: "claude-opus-5-5", label: "Opus 5.5", family: "claude" }, { id: "claude-sonnet-5-5", label: "Sonnet 5.5", family: "claude" }],
+  extension: [{ id: "claude-haiku-5-5", label: "Haiku 5.5", family: "claude" }, null],
+  orca: [null],
+};
+
 function member([partyId, id, name, role, lead, end, script], step) {
   const party = PARTIES.find((item) => item.id === partyId);
   const shown = Math.min(script.length, 2 + Math.floor(step / 2) + (id.length % 2));
@@ -97,6 +105,7 @@ function member([partyId, id, name, role, lead, end, script], step) {
   const lastQuestion = state === "needs" ? script.at(-1).description : "";
   return {
     id, name, nickname: name, role, source: party.source, cwd: party.cwd, parentThreadId: lead ? "" : partyId,
+    model: (DEMO_MODELS[party.source] || [null])[lead ? 0 : (DEMO_MODELS[party.source] || [null]).length - 1],
     status: state === "failed" ? "failed" : state === "needs" ? "waiting" : "running",
     attention: state === "needs" ? "needs" : state, needsInput: state === "needs",
     updatedAt: now - 4000, turns: 1, activities, latest: activities.at(-1) || null,

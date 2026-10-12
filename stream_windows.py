@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import time
 import tkinter as tk
+from tkinter import font as tkfont
 
 from desktop_platform import WINDOWS_KEY, bind_context, float_window, make_transparent, menu_bar_inset, ui_font
 from goblin_cues import ActionClock
@@ -236,7 +237,7 @@ class StreamWindow:
         inner.place(x=2, y=2, width=WIDTH - 119, height=HEIGHT - 24)
         self.inner = inner
 
-        header = tk.Frame(inner, bg=DIALOGUE, height=72)
+        header = tk.Frame(inner, bg=DIALOGUE, height=80)
         header.pack(fill="x")
         header.pack_propagate(False)
         header_top = tk.Frame(header, bg=DIALOGUE)
@@ -253,12 +254,21 @@ class StreamWindow:
         self.group_label = tk.Label(header_top, text="", anchor="w", bg=DIALOGUE, fg=IVORY,
                                     font=ui_font("Consolas", 8, "bold"), padx=7)
         self.group_label.pack(side="left", fill="x", expand=True)
-        self.name_label = tk.Label(header, text="", anchor="w", justify="left", wraplength=350,
-                                   bg=DIALOGUE, fg=style["accent"], font=ui_font("Bahnschrift", 12, "bold"))
+        # One line only: the header is a fixed height, and a wrapped name would push the status and
+        # model row out of sight. A long name ends in "…"; the window title keeps it whole.
+        self.name_font = tkfont.Font(font=ui_font("Bahnschrift", 12, "bold"))
+        self.name_label = tk.Label(header, text="", anchor="w", justify="left",
+                                   bg=DIALOGUE, fg=style["accent"], font=self.name_font)
         self.name_label.pack(fill="x", padx=10)
-        self.state_label = tk.Label(header, text="", anchor="w", bg=DIALOGUE, fg=MUTED,
+        state_row = tk.Frame(header, bg=DIALOGUE)
+        state_row.pack(fill="x", padx=10, pady=(2, 0))
+        # The model this goblin runs, in its tribe's colour, beside its source and status.
+        self.model_label = tk.Label(state_row, text="", anchor="e", bg=DIALOGUE, fg=MUTED,
+                                    font=ui_font("Consolas", 8, "bold"))
+        self.model_label.pack(side="right")
+        self.state_label = tk.Label(state_row, text="", anchor="w", bg=DIALOGUE, fg=MUTED,
                                     font=ui_font("Consolas", 8))
-        self.state_label.pack(fill="x", padx=10, pady=(2, 0))
+        self.state_label.pack(side="left", fill="x", expand=True)
 
         controls = tk.Frame(inner, bg=DIALOGUE)
         controls.pack(fill="x", padx=7, pady=(0, 5))
@@ -377,7 +387,7 @@ class StreamWindow:
         count = min(self.flow_visible, len(self.party)) if self.flow_visible else len(self.party)
         self.roster_hint.configure(text=f"{count}/{len(self.party)} TILES" + (" ↕" if rows > ROSTER_ROWS else ""))
         if hasattr(self, "name_label"):
-            self.name_label.configure(text=f"{self.position_text()}  {self.owner.display_name(self.actor)}")
+            self.name_label.configure(text=self.name_line(self.owner.display_name(self.actor)))
 
     def position_text(self) -> str:
         """'2/5' for a party member; a retired member's stream is marked by its note instead."""
@@ -765,6 +775,10 @@ class StreamWindow:
         if force or text != self.state_cache:
             self.state_cache = text
             self.state_label.configure(text=text)
+            from party_layout import family_ink, model_badge
+
+            badge = model_badge(self.actor, with_effort=True)
+            self.model_label.configure(text=f"◈ {badge}" if badge else "", fg=family_ink(self.actor))
 
     def state(self) -> dict:
         return {"id": self.actor_id, "source": self.actor.get("source"),
@@ -842,6 +856,19 @@ class StreamWindow:
         self.render_actor(self.actor, self.connection)
         self.text.yview_moveto(0)
 
+    def name_line(self, name: str) -> str:
+        """The position and name, cut with an ellipsis to the header's single line."""
+        text = f"{self.position_text()}  {name}"
+        name_font = getattr(self, "name_font", None)
+        if name_font is None:
+            return text[:90]
+        room = WIDTH - 119 - 24
+        if name_font.measure(text) <= room:
+            return text
+        while text and name_font.measure(text + "…") > room:
+            text = text[:-1]
+        return text.rstrip() + "…"
+
     def render_actor(self, actor: dict, connection: str = "CONNECTING") -> None:
         for key in ("workflowName", "workflowGroupId"):
             if not actor.get(key) and self.actor.get(key):
@@ -850,7 +877,7 @@ class StreamWindow:
         self.connection = connection
         name = self.owner.display_name(actor)
         self.refresh_group_label()
-        self.name_label.configure(text=f"{self.position_text()}  {name[:83]}")
+        self.name_label.configure(text=self.name_line(name))
         self.window.title(f"Goblin Horde · {name}")
         self.render_sprite()
         self.paint_roster()

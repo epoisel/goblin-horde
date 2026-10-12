@@ -5,18 +5,22 @@
  */
 import { outfitIndex } from "./party.js";
 
-// The widget's eight outfits (desktop_widget.py KINDS), so a goblin looks the same everywhere.
-export const OUTFITS = [
-  { name: "Moss", skin: "#78b783", shade: "#417d58", coat: "#315b45", light: "#d3aa69", accent: "#a7d6b0", gear: "bandana" },
-  { name: "Ember", skin: "#9fb663", shade: "#677d3c", coat: "#a84e38", light: "#e3b56d", accent: "#f0af89", gear: "helm" },
-  { name: "Moon", skin: "#8ebba6", shade: "#4f8b7a", coat: "#665b8c", light: "#cbb18b", accent: "#c7b9e2", gear: "scarf" },
-  { name: "Cog", skin: "#a9be74", shade: "#718946", coat: "#4c7186", light: "#d0aa68", accent: "#a5d5e6", gear: "goggles" },
-  { name: "Marsh", skin: "#78ad86", shade: "#4c7e5d", coat: "#986940", light: "#dec481", accent: "#e3c48d", gear: "patch" },
-  { name: "Frost", skin: "#a4cabb", shade: "#6c9a8b", coat: "#52728f", light: "#d8bd87", accent: "#b7dce5", gear: "visor" },
-  { name: "Berry", skin: "#a0bd83", shade: "#6e8c53", coat: "#92536e", light: "#dfad79", accent: "#e7acca", gear: "bandana" },
-  { name: "Sage", skin: "#a6c17b", shade: "#668b51", coat: "#66775b", light: "#d7b477", accent: "#cbdab1", gear: "patch" },
-];
-const GEAR_LAYER = { bandana: "gear.bandana", helm: "gear.hardhat", scarf: "gear.scarf", goggles: "gear.goggles", patch: "gear.cap", visor: "gear.visor" };
+// Each agent's model picks its goblin tribe, as in the widget (desktop_widget.py tribe_for): Claude
+// models are hooded hexers, OpenAI models sapper war-machinists, everything else ragged raiders.
+// Outfits (palette and gear) per tribe live in goblin_art.json.
+const FAMILY_TRIBE = { claude: "shaman", openai: "sapper" };
+const SOURCE_TRIBE = { claude: "shaman", codex: "sapper" };
+
+export function tribeFor(actor) {
+  return FAMILY_TRIBE[actor?.model?.family] || SOURCE_TRIBE[actor?.source] || "raider";
+}
+
+/** The short model label a goblin wears ("Opus 5.5", "GPT-5.6 Sol · xhigh"), or "". */
+export function modelBadge(actor, { effort = false } = {}) {
+  const label = String(actor?.model?.label || "").trim();
+  if (!label) return "";
+  return effort && actor.model.effort ? `${label} · ${actor.model.effort}` : label;
+}
 const BODY_DY = { "build.strike": 1, "build.settle": 1, "trouble.drop1": 1, "trouble.drop2": 1, "trouble.drop3": 1 };
 // action -> [frame cycle, ms per frame]; the same timing as the reel.
 const CYCLES = {
@@ -48,10 +52,11 @@ function shade(hex, factor) {
   return `rgb(${channel(16)},${channel(8)},${channel(0)})`;
 }
 
-function frameImage(outfit, frame) {
-  const key = `${outfit}:${frame}`;
+function frameImage(tribeName, outfit, frame) {
+  const key = `${tribeName}:${outfit}:${frame}`;
   if (frames.has(key)) return frames.get(key);
-  const style = OUTFITS[outfit % OUTFITS.length];
+  const tribe = art.tribes[tribeName] || art.tribes.raider;
+  const style = tribe.outfits[outfit % tribe.outfits.length];
   const [width, height] = art.size;
   const [ox, oy] = art.origin;
   const palette = { ...art.colors };
@@ -61,7 +66,8 @@ function frameImage(outfit, frame) {
   image.height = height;
   const ctx = image.getContext("2d");
   const dy = BODY_DY[frame] || 0;
-  for (const name of ["shadow", "body", GEAR_LAYER[style.gear], ...(art.frames[frame] || [])]) {
+  const layers = (art.frames[frame] || []).map((name) => (name === "armRest" ? tribe.arm : name));
+  for (const name of ["shadow", tribe.body, `gear.${style.gear}`, ...layers]) {
     const layer = name && art.layers[name];
     if (!layer) continue;
     const [lx, ly] = layer.at;
@@ -93,17 +99,19 @@ function paint(canvas, force = false) {
   canvas.dataset.frame = frame;
   const ctx = canvas.getContext("2d");
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(frameImage(Number(canvas.dataset.outfit), frame), 0, 0);
+  ctx.drawImage(frameImage(canvas.dataset.tribe || "raider", Number(canvas.dataset.outfit), frame), 0, 0);
 }
 
-/** A goblin canvas for this member id; size is CSS pixels per sprite pixel. */
-export function createGoblin(id, action = "idle", { size = 3, label = "", still = false } = {}) {
+/** A goblin canvas for this member id; size is CSS pixels per sprite pixel; tribe comes from tribeFor(actor). */
+export function createGoblin(id, action = "idle", { size = 3, label = "", still = false, tribe = "raider" } = {}) {
   const canvas = document.createElement("canvas");
   canvas.width = 26;
   canvas.height = 28;
   canvas.className = "goblin";
   canvas.style.setProperty("--px", String(size));
-  canvas.dataset.outfit = String(outfitIndex(id, OUTFITS.length));
+  canvas.dataset.tribe = tribe;
+  // Every tribe has the same number of outfits; the hash picks one within the tribe.
+  canvas.dataset.outfit = String(outfitIndex(id, 4096));
   canvas.dataset.phase = String(outfitIndex(`${id}:phase`, 997));
   if (still) canvas.dataset.still = "1";
   canvas.setAttribute("role", "img");

@@ -3,7 +3,7 @@ import {
   ActionPulse, ACTION_WORDS, SOURCE_LABELS, ageLabel, feedRank, fieldGlyph, foldActive, launchpadBoard, memberStatus,
   needsYou, partySignal, partyScope, projectName, replyMode, searchSources, sourceOf, splitStream, stampMs, streamOrder,
 } from "./party.js";
-import { createGoblin, loadArt, setGoblinAction } from "./goblins.js";
+import { createGoblin, loadArt, modelBadge, setGoblinAction, tribeFor } from "./goblins.js";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const params = new URLSearchParams(location.search);
@@ -110,7 +110,7 @@ function goblinRow(card, limit = 4) {
   const members = [...card.members].sort((a, b) => feedRank(a) - feedRank(b)).slice(0, limit);
   for (const member of members) {
     const action = pulse.action(member);
-    row.append(createGoblin(member.id, action, { size: 1.5, label: `${memberName(member, card.name)}, ${ACTION_WORDS[action].toLowerCase()}` }));
+    row.append(createGoblin(member.id, action, { size: 1.5, tribe: tribeFor(member), label: `${memberName(member, card.name)}${modelBadge(member) ? ` (${modelBadge(member)})` : ""}, ${ACTION_WORDS[action].toLowerCase()}` }));
   }
   if (card.members.length > limit) row.append(el("span", "pc-more", `+${card.members.length - limit}`));
   return row;
@@ -204,7 +204,7 @@ function renderPill(top) {
   const action = lead ? pulse.action(lead) : "idle";
   let goblin = slot.firstChild;
   if (!goblin || goblin.dataset.member !== id) {
-    goblin = createGoblin(id, action, { size: 1.5 });
+    goblin = createGoblin(id, action, { size: 1.5, tribe: tribeFor(lead) });
     goblin.dataset.member = id;
     slot.replaceChildren(goblin);
   } else setGoblinAction(goblin, action);
@@ -266,7 +266,7 @@ function createStream(actor) {
   const node = $("#stream-template").content.firstElementChild.cloneNode(true);
   const state = {
     id: actor.id, node, bubbles: new Map(), rows: new Map(), dialogueStart: -1, newTalk: 0, newLog: 0, followLog: true,
-    goblin: createGoblin(actor.id, "idle", { size: 4 }), mini: createGoblin(actor.id, "idle", { size: 1 }), dialogue: [],
+    goblin: createGoblin(actor.id, "idle", { size: 4, tribe: tribeFor(actor) }), mini: createGoblin(actor.id, "idle", { size: 1, tribe: tribeFor(actor) }), dialogue: [],
   };
   $(".goblin-slot", node).append(state.goblin);
   $(".stream-goblin-mini", node).append(state.mini);
@@ -465,7 +465,10 @@ function updateStream(state, actor, context) {
   node.dataset.party = context.partyId;
   const name = memberName(actor, context.partyName);
   $(".stream-name", node).textContent = name;
-  $(".stream-party", node).replaceChildren(el("span", "", `· ${clip(context.partyName, 40)}`), ...(scope === "all" ? [sourceTag(context.source)] : []));
+  const model = modelBadge(actor, { effort: true });
+  const modelTag = model ? [Object.assign(el("span", "model-tag", model), { title: actor.model.id })] : [];
+  if (model) modelTag[0].dataset.family = actor.model.family;
+  $(".stream-party", node).replaceChildren(el("span", "", `· ${clip(context.partyName, 40)}`), ...(scope === "all" ? [sourceTag(context.source)] : []), ...modelTag);
   const link = $(".party-link", node);
   link.innerHTML = scope === "all" ? 'Party <span aria-hidden="true">▸</span>' : '<span aria-hidden="true">◂</span> All';
   link.setAttribute("aria-label", scope === "all" ? `Open the ${context.partyName} party` : "Back to all parties");

@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  BACKUP_SUFFIX, HOOK_EVENTS, HOOK_MARKER, HookSettingsError, addGoblinHooks, claudeHookReport, goblinHookStatus, hookHandler,
+  BACKUP_SUFFIX, HOOK_EVENTS, HOOK_MARKER, HookSettingsError, LAST_BACKUP_SUFFIX, addGoblinHooks, claudeHookReport, goblinHookStatus, hookHandler,
   installClaudeHooks, removeGoblinHooks, uninstallClaudeHooks,
 } from "../lib/claude-hooks.mjs";
 
@@ -148,6 +148,24 @@ test("file install and uninstall round-trip, with a backup and without touching 
     assert.equal(removed.removed, HOOK_EVENTS.length);
     assert.deepEqual(JSON.parse(readFileSync(settingsPath, "utf8")), existing());
     assert.equal(uninstallClaudeHooks({ settingsPath, hookPath: "/opt/app/claude-hook.mjs" }).changed, false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("install, remove, install keeps the original backup and refreshes only the latest one", () => {
+  const dir = mkdtempSync(join(tmpdir(), "goblin-hooks-"));
+  try {
+    const settingsPath = join(dir, "settings.json");
+    const options = { settingsPath, nodePath: "/opt/node", hookPath: "/opt/app/claude-hook.mjs" };
+    writeFileSync(settingsPath, JSON.stringify(existing()));
+    installClaudeHooks(options);
+    const installed = readFileSync(settingsPath, "utf8");
+    uninstallClaudeHooks(options);
+    // The person edits their settings between runs; the original backup must still be the first file.
+    writeFileSync(settingsPath, JSON.stringify({ ...existing(), model: "sonnet" }));
+    installClaudeHooks(options);
+    assert.deepEqual(JSON.parse(readFileSync(`${settingsPath}${BACKUP_SUFFIX}`, "utf8")), existing());
+    assert.equal(JSON.parse(readFileSync(`${settingsPath}${LAST_BACKUP_SUFFIX}`, "utf8")).model, "sonnet");
+    assert.notEqual(readFileSync(`${settingsPath}${LAST_BACKUP_SUFFIX}`, "utf8"), installed);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

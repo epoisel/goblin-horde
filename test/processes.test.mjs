@@ -3,7 +3,24 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { commandBelongsTo, interpreterBefore, ownedProcesses, ownedScript, sameProcess, splitWindowsCommandLine } from "../lib/processes.mjs";
+import {
+  WINDOWS_PROCESS_FILTER, commandBelongsTo, interpreterBefore, ownedProcesses, ownedScript, sameProcess, splitWindowsCommandLine,
+} from "../lib/processes.mjs";
+
+test("the Windows process query lists every interpreter name ownership accepts, including Store Python", () => {
+  // WQL: `=` is exact and case-insensitive; LIKE's % is any run of characters.
+  const clauses = WINDOWS_PROCESS_FILTER.split(/\s+or\s+/i).map((clause) => {
+    const [, op, value] = /^name\s*(=|like)\s*'([^']*)'$/i.exec(clause.trim());
+    const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`^${op === "=" ? escaped : escaped.replace(/%/g, ".*")}$`, "i");
+  });
+  const listed = (name) => clauses.some((pattern) => pattern.test(name));
+  for (const name of ["node.exe", "python.exe", "pythonw.exe", "python3.12.exe", "pythonw3.12.exe", "PythonW3.13.exe"]) {
+    assert.ok(listed(name), name);
+    assert.ok(commandBelongsTo(`"C:\\Py\\${name}" "C:\\App\\desktop_widget.py"`, "C:\\App", { platform: "win32" }), name);
+  }
+  assert.equal(listed("code.exe"), false);
+});
 
 test("Windows command lines split the way the C runtime splits them", () => {
   assert.deepEqual(splitWindowsCommandLine('"C:\\Program Files\\node.exe" "a b" c\\"d "e\\\\" f'),

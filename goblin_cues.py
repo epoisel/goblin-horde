@@ -291,8 +291,9 @@ EXIT_FRAMES = (
     ExitFrame(RING_WIDE, 3, "wave_high", None),
     ExitFrame(RING_WIDE, 7, "wave_high", None),
     ExitFrame(RING_WIDE, 12, "wave_low", CueFrame(SPARKLE)),
-    ExitFrame(RING_MID, 17, "rest", NOTE_ON_GROUND),
-    ExitFrame(None, 17, "rest", NOTE_ON_GROUND),
+    # 21 rows takes the tallest headgear (antlers, art row -4) fully through the portal.
+    ExitFrame(RING_MID, 21, "rest", NOTE_ON_GROUND),
+    ExitFrame(None, 21, "rest", NOTE_ON_GROUND),
 )
 PORTAL_BEATS = len(EXIT_FRAMES)
 # A goblin that stopped or left the list sinks without waving or sparkles: only a finished

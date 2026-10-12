@@ -47,6 +47,7 @@ to the file yourself, roll it over the same way.
 | `partyName` |     | Display name for the party (80 characters). |
 | `agentName` |     | Display name for the agent (60 characters). |
 | `role`      |     | Short role, such as `Reviewer` (60 characters). |
+| `model`     |     | The model this agent runs, such as `claude-sonnet-4-5` or `gpt-5-codex` (80 characters). The goblin shows it on a badge and Claude and OpenAI models get their own goblin tribe. |
 | `lead`      |     | `true` marks the party's lead goblin. |
 | `cwd`       |     | The project folder; its last part labels the party's project. |
 | `step`      | for `step` | One of `read`, `edit`, `search`, `command`, `test`, `research`, `tool`, `plan`. |

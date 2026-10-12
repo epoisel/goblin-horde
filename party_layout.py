@@ -34,6 +34,7 @@ class PartyCard:
     working: int
     updated_ms: float
     agent_count: int
+    models: tuple[dict, ...] = ()  # Distinct models in the party, the lead's first.
 
     @property
     def active(self) -> bool:
@@ -42,6 +43,31 @@ class PartyCard:
     @property
     def attention(self) -> bool:
         return self.rank <= 2
+
+
+# Model badges (widget launchpad, roster, and streams) take their tribe's colour: Claude's hexers in ochre, OpenAI's sappers in forge steel.
+FAMILY_INK = {"claude": "#eba27a", "openai": "#8fcbd6"}
+FAMILY_INK_OTHER = "#c9b991"
+
+
+def model_of(actor: dict) -> dict:
+    """The model an actor reports ({id, label, family, effort}), or {} when its source did not say."""
+    model = actor.get("model")
+    return model if isinstance(model, dict) else {}
+
+
+def model_badge(actor: dict, with_effort: bool = False) -> str:
+    """The short model label a goblin wears, e.g. 'OPUS 5.5' or 'GPT-5.6 SOL · XHIGH'; '' when unknown."""
+    model = model_of(actor)
+    label = str(model.get("label") or "").strip()
+    if not label:
+        return ""
+    effort = str(model.get("effort") or "") if with_effort else ""
+    return f"{label} · {effort}".upper() if effort else label.upper()
+
+
+def family_ink(actor: dict) -> str:
+    return FAMILY_INK.get(str(model_of(actor).get("family") or ""), FAMILY_INK_OTHER)
 
 
 def party_scope(actor: dict) -> str:
@@ -309,6 +335,16 @@ def source_label(origin: dict, party_id: str = "") -> str:
     return "CODEX"
 
 
+def party_models(members: list[dict] | tuple[dict, ...], source: dict | None = None) -> tuple[dict, ...]:
+    """The distinct models a party runs, by label: its members' first (lead first), then the catalog's."""
+    seen: dict[str, dict] = {}
+    for item in [*members, source or {}]:
+        model = item.get("model")
+        if isinstance(model, dict) and model.get("label") and str(model["label"]) not in seen:
+            seen[str(model["label"])] = model
+    return tuple(seen.values())
+
+
 def _card(party_id: str, source: dict | None, members: list[dict]) -> PartyCard:
     origin = source or (members[0] if members else {"id": party_id})
     ranks = [feed_rank(member) for member in members]
@@ -321,13 +357,17 @@ def _card(party_id: str, source: dict | None, members: list[dict]) -> PartyCard:
         needs=sum(rank == 1 for rank in ranks),
         failed=sum(rank == 2 for rank in ranks),
         working=sum(rank == 4 for rank in ranks),
-        updated_ms=updated, agent_count=max(len(members), int(origin.get("agentCount") or 0)))
+        updated_ms=updated, agent_count=max(len(members), int(origin.get("agentCount") or 0)),
+        models=party_models(members, source))
 
 
 def launchpad_board(actors: list[dict], catalog: list[dict], previous_order: tuple[str, ...] | list[str] = (),
-                    now_ms: float | None = None, recent_limit: int = 4,
-                    recent_days: int = 7) -> tuple[list[PartyCard], list[PartyCard], int]:
+                    now_ms: float | None = None, recent_limit: int = 4, recent_days: int = 7,
+                    watched: tuple[str, ...] | list[str] = ()) -> tuple[list[PartyCard], list[PartyCard], int]:
     """Split parties into working-now and recently-used rows; count the rest for search.
+
+    Watched parties that are not working get their own rows (watched_cards), so they are left out
+    of the recent rows and the search count here.
 
     Working parties keep their previous order so rows do not jump on every poll; a party that
     needs input or reports a failure rises to the top.
@@ -343,7 +383,7 @@ def launchpad_board(actors: list[dict], catalog: list[dict], previous_order: tup
     order = {party_id: index for index, party_id in enumerate(previous_order)}
     active = sorted((card for card in cards if card.active),
                     key=lambda card: (0 if card.attention else 1, order.get(card.id, len(order)), -card.updated_ms))
-    shown = {card.id for card in active}
+    shown = {card.id for card in active} | set(watched)
     observed = {card.id: card for card in cards}
     cutoff = clock - recent_days * 86_400_000
     pool = sorted(catalog or [{"id": card.id, "name": card.name, "updatedAt": card.updated_ms} for card in cards],
@@ -360,6 +400,24 @@ def launchpad_board(actors: list[dict], catalog: list[dict], previous_order: tup
             break
     older = sum(1 for source in catalog if str(source.get("id") or "") not in shown)
     return active, recent, older
+
+
+def watched_cards(actors: list[dict], catalog: list[dict], watched: tuple[str, ...] | list[str],
+                  active_ids: set[str] | frozenset[str] = frozenset()) -> list[PartyCard]:
+    """Rows for watched parties that are not working now, in the order they were watched (newest first)."""
+    sources = {str(source.get("id")): source for source in catalog if source.get("id")}
+    grouped: dict[str, list[dict]] = {}
+    for actor in actors:
+        grouped.setdefault(party_scope(actor), []).append(actor)
+    cards = []
+    for party_id in watched:
+        if party_id in active_ids:
+            continue
+        source = sources.get(party_id)
+        members = grouped.get(party_id, [])
+        if source or members:
+            cards.append(_card(party_id, source, members))
+    return cards
 
 
 def compact_active(active: list[PartyCard], limit: int = 6) -> tuple[list[PartyCard], int]:

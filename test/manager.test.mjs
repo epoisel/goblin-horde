@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 import { HOOK_EVENTS, HOOK_MARKER, claudeHookReport, claudeSettingsPath } from "../lib/claude-hooks.mjs";
 import { claudeConfigDir } from "../lib/paths.mjs";
 import { MARKER, SKILL_MARKER, childEnv, install, locate, makeContext, readManifest, start, status, stop, uninstall } from "../lib/manager.mjs";
-import { isAlive, listProcesses } from "../lib/processes.mjs";
+import { isAlive, listProcesses, stopPid } from "../lib/processes.mjs";
 import { main, parseArgs } from "../goblin.mjs";
 
 const sourceDir = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -80,6 +80,23 @@ test("install copies exactly the manifest, writes skills, and merges Claude hook
     // Installing again changes nothing about the hooks.
     await install(box.ctx, { ...box.flags });
     assert.deepEqual(settingsOf(box), settings);
+  } finally { box.cleanup(); }
+});
+
+test("updating removes files an older version listed, but never a listed path that climbs out of the app", async () => {
+  const box = sandbox();
+  try {
+    await install(box.ctx, box.flags);
+    const markerPath = join(box.flags.installDir, MARKER);
+    const marker = JSON.parse(readFileSync(markerPath, "utf8"));
+    writeFileSync(join(box.flags.installDir, "retired.txt"), "old");
+    const victim = join(box.root, "victim.txt");
+    writeFileSync(victim, "not ours");
+    // A tampered or corrupted marker: both slash styles, which Windows treats alike.
+    writeFileSync(markerPath, JSON.stringify({ ...marker, files: [...marker.files, "retired.txt", "..\\victim.txt", "../victim.txt", "sub/..\\..\\victim.txt"] }));
+    await install(box.ctx, box.flags);
+    assert.equal(existsSync(join(box.flags.installDir, "retired.txt")), false, "a file the new version dropped is removed");
+    assert.equal(readFileSync(victim, "utf8"), "not ours");
   } finally { box.cleanup(); }
 });
 
@@ -306,4 +323,15 @@ test("stop ends only processes started from this installation", { timeout: 60_00
     other.kill();
     box.cleanup();
   }
+});
+
+test("a process id that now runs another program is not reported as stopped, and is not killed", { timeout: 20_000 }, async (t) => {
+  // Windows ends a process on the first signal, so only POSIX reaches the check before insisting.
+  if (process.platform === "win32") { t.skip("Windows has no signal a process can ignore."); return; }
+  const child = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);"], { stdio: "ignore" });
+  try {
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 300));
+    assert.equal(await stopPid(child.pid, { waitMs: 300, verify: () => false }), false);
+    assert.equal(isAlive(child.pid), true, "the other program was left running");
+  } finally { child.kill("SIGKILL"); }
 });

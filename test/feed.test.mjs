@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyCodex, classifyOrca, FEED_LIMITS, planCodexReads, pruneCache, selectFeedMembers } from "../lib/feed.mjs";
+import { classifyCodex, classifyOrca, FEED_LIMITS, noteReadFailure, planCodexReads, pruneCache, selectFeedMembers } from "../lib/feed.mjs";
 
 const NOW = 1_800_000_000_000;
 const HOUR = 3_600_000;
@@ -21,7 +21,7 @@ test("reads every recent chat, not just five, and never touches dormant ones", (
 });
 
 test("unchanged quiet chats are reused without a read on the next poll", () => {
-  const threads = Array.from({ length: 40 }, (_, index) => summary(`chat-${index}`, index * 60_000));
+  const threads = Array.from({ length: 40 }, (_, index) => summary(`chat-${index}`, index * 20_000));
   const cache = new Map(threads.map((thread) => [thread.id, saved(thread.id, thread.updatedAt, "quiet", NOW - 10 * 60_000)]));
   const plan = planCodexReads(threads, { now: NOW, cache });
   assert.equal(plan.reads.length, 0);
@@ -37,7 +37,7 @@ test("a chat seen working is rechecked after a few seconds even with the same ti
 });
 
 test("a burst of changed chats is read within the budget and the rest are counted as pending", () => {
-  const threads = Array.from({ length: 40 }, (_, index) => summary(`chat-${index}`, index * 60_000));
+  const threads = Array.from({ length: 40 }, (_, index) => summary(`chat-${index}`, index * 20_000));
   const cache = new Map([["chat-39", saved("chat-39", NOW - 99 * HOUR, "working")]]);
   const plan = planCodexReads(threads, { now: NOW, cache });
   assert.equal(plan.reads.length, FEED_LIMITS.readBudget);
@@ -49,7 +49,7 @@ test("a burst of changed chats is read within the budget and the rest are counte
 });
 
 test("a stale saved check stands in for a chat that waits behind the budget", () => {
-  const threads = Array.from({ length: 20 }, (_, index) => summary(`chat-${index}`, index * 60_000));
+  const threads = Array.from({ length: 20 }, (_, index) => summary(`chat-${index}`, index * 20_000));
   const cache = new Map([["chat-19", saved("chat-19", NOW - 99 * HOUR, "quiet")]]);
   const plan = planCodexReads(threads, { now: NOW, cache, limits: { ...FEED_LIMITS, readBudget: 4 } });
   assert.equal(plan.reads.length, 4);
@@ -67,6 +67,40 @@ test("pending requests and busy list status are read first, even outside the win
   const plan = planCodexReads(threads, { now: NOW, mustIds: new Set(["subagent-asks"]) });
   assert.deepEqual(plan.reads.map((item) => item.id).sort(), ["fresh", "old-busy", "old-flagged", "subagent-asks"].sort());
   assert.equal(plan.reads.at(-1).id, "fresh");
+});
+
+test("only chats in use are read; older ones wait until watched or opened", () => {
+  const threads = [
+    summary("in-use", 5 * 60_000),
+    summary("earlier-today", 3 * HOUR),
+    summary("watched-old", 9 * 24 * HOUR),
+    summary("old-asked", 2 * HOUR),
+  ];
+  const cache = new Map([["old-asked", saved("old-asked", NOW - 2 * HOUR, "needs", NOW - HOUR)]]);
+  const plan = planCodexReads(threads, { now: NOW, cache, watched: new Set(["watched-old"]) });
+  assert.deepEqual(plan.reads.map((item) => item.id).sort(), ["in-use", "watched-old"]);
+  // A chat last seen waiting on the person stays followed, from its saved check while unchanged.
+  assert.deepEqual(plan.reused.map((item) => item.id), ["old-asked"]);
+  assert.ok(!plan.ids.has("earlier-today"));
+  assert.equal(plan.candidates, 3);
+});
+
+test("a chat that fails to read backs off, doubling, instead of costing a read every poll", () => {
+  const failures = new Map();
+  noteReadFailure(failures, "slow", { now: NOW });
+  assert.equal(failures.get("slow").until, NOW + FEED_LIMITS.retryMs);
+  noteReadFailure(failures, "slow", { now: NOW });
+  assert.equal(failures.get("slow").until, NOW + 2 * FEED_LIMITS.retryMs);
+  for (let index = 0; index < 10; index++) noteReadFailure(failures, "slow", { now: NOW });
+  assert.equal(failures.get("slow").until, NOW + FEED_LIMITS.maxRetryMs);
+
+  const thread = summary("slow", 60_000);
+  const waiting = planCodexReads([thread], { now: NOW, failures });
+  assert.equal(waiting.reads.length, 0);
+  assert.equal(waiting.backingOff, 1);
+  // A pending request still forces the read, and the backoff ends on time.
+  assert.equal(planCodexReads([thread], { now: NOW, failures, mustIds: new Set(["slow"]) }).reads.length, 1);
+  assert.equal(planCodexReads([thread], { now: NOW + FEED_LIMITS.maxRetryMs, failures }).reads.length, 1);
 });
 
 // Run polls a second apart, as the server would, and note when each chat is first read.

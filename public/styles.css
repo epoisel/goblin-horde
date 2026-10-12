@@ -59,6 +59,13 @@ button:disabled { cursor: default; opacity: .55; }
 .source-claude { color: var(--claude); }
 .source-orca { color: var(--lav); }
 .source-extension { color: var(--teal); }
+/* The model an agent runs; the family tints it like the tribe's goblins. */
+.model-tag {
+  display: inline-block; padding: 1px 6px; border-radius: 4px; background: rgba(0, 0, 0, .28); color: var(--soft);
+  font: 700 9.5px/1.4 var(--display); letter-spacing: .06em; white-space: nowrap;
+}
+.model-tag[data-family="claude"] { color: var(--claude); }
+.model-tag[data-family="openai"] { color: var(--codex); }
 .button {
   min-height: 38px; padding: 8px 16px; border-radius: 8px; border: 1.5px solid var(--line); background: var(--panel-2); color: var(--parch);
   font: 600 13px/1 var(--display); letter-spacing: .06em; text-transform: uppercase;
