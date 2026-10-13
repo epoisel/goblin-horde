@@ -101,3 +101,34 @@ class WatchToggleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JoinedPartyTests(unittest.TestCase):
+    def test_a_party_joined_to_a_chat_is_not_listed_again_under_recently_used(self):
+        orca_party = {"id": "orca:wt1", "name": "Orca · INT-122", "updatedAt": NOW - 120_000, "joinedTo": "chat-new"}
+        _active, recent, _older = launchpad_board([], catalog + [orca_party], now_ms=NOW)
+        self.assertNotIn("orca:wt1", [card.id for card in recent])
+
+    def test_a_joined_goblin_says_why_it_is_in_the_party(self):
+        from party_layout import join_reason
+        self.assertEqual(join_reason({"joined": {"reason": "drives", "verb": "orchestration worker-start"}}),
+                         "This chat drives it (orca orchestration worker-start).")
+        self.assertEqual(join_reason({"joined": {"reason": "worker"}}), "A worker started by this chat's Orca coordinator.")
+        self.assertEqual(join_reason({}), "")
+
+    def test_join_choices_go_to_the_server_and_refresh_the_board(self):
+        widget = GoblinWidget.__new__(GoblinWidget)
+        widget.closing = False
+        widget.thread_id = "all"
+        widget.root = Mock()
+        widget.kick_board = Mock()
+        widget.manual_links = {}
+        future = Future()
+        widget.executor = Mock(submit=Mock(return_value=future))
+        widget.post_local = Mock()
+        widget.set_join("orca:wt1", "")
+        widget.executor.submit.assert_called_once_with(widget.post_local, "/api/join", {"party": "orca:wt1", "chat": ""})
+        future.set_result({"manualLinks": {"orca:wt1": ""}})
+        widget.root.after.call_args.args[1]()
+        self.assertEqual(widget.manual_links, {"orca:wt1": ""})
+        widget.kick_board.assert_called_once_with()

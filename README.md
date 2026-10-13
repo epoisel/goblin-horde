@@ -105,6 +105,12 @@ This adds Goblin Horde entries to your Claude Code user settings (`~/.claude/set
 
 To disconnect, run `node goblin.mjs hooks remove` (or uninstall). It removes only this installation's Goblin Horde entries; if another Goblin Horde copy is connected to the same Claude Code settings, its entries stay. Claude Code sessions that were already open pick up the change after a restart. Replies to Claude Code sessions are made in Claude Code; the viewer is watch-only for them.
 
+### Codex chats that drive Orca
+
+If you run your work from a Codex chat that starts and steers an Orca coordinator (for example a Claude Opus engineer and its workers), Goblin Horde shows them as **one party**: the chat's row holds your Codex goblin and the Orca agents it drives, and the Orca workspace and Claude Code session rows they came from step aside. The link is made when one of the chat's own commands drives an Orca terminal (`orca orchestration worker-start`, `run-create`, `send`, `check`, `terminal send`, and the like; reading or showing a terminal does not count). Workers the coordinator starts follow it, as does anything else working in the same Orca worktree (never the main checkout, where much else runs), and the Orca pane and the Claude Code session that are the same agent become one goblin. Only command lines are read, never their output or your messages. Hover a joined goblin to see why it joined.
+
+When the guess is wrong or missing, right-click a party on the launchpad: **Join … to a Codex chat** picks the chat, **Separate** keeps it apart, and **Back to automatic joining** undoes your choice. Choices and links are kept in `links.json` in the state folder.
+
 ### Other orchestrators
 
 Orca is read directly when it is installed and running. Any other tool can appear by writing the small NDJSON format in [EXTENSIONS.md](EXTENSIONS.md), for example with `node goblin.mjs emit --feed my-tool`. Feeds carry public progress only; raw commands and output are refused. The **Feeds** list in the viewer's **Camp** panel and `node goblin.mjs status` show which feeds are connected and what is missing.

@@ -31,6 +31,7 @@
   "lib/diagnostics.mjs",
   "lib/extension.mjs",
   "lib/feed.mjs",
+  "lib/links.mjs",
   "lib/manager.mjs",
   "lib/models.mjs",
   "lib/orca.mjs",

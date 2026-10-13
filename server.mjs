@@ -13,6 +13,7 @@ import { describeModel } from "./lib/models.mjs";
 import { readDescendants } from "./lib/descendants.mjs";
 import { classifyCodex, composeAllScene, noteReadFailure, planCodexReads, pruneCache } from "./lib/feed.mjs";
 import { WatchList } from "./lib/watch.mjs";
+import { LinkStore, drivenTerminals, joinParties } from "./lib/links.mjs";
 import { OrcaReader } from "./lib/orca.mjs";
 import { ClaudeReader, goblinStateDir } from "./lib/claude.mjs";
 import { ExtensionReader, EXTENSION_PARTY, extensionFeedDir } from "./lib/extension.mjs";
@@ -261,9 +262,31 @@ class CodexReader {
   async readThread(threadId, { turns = SCENE_TURNS } = {}) {
     await this.ready;
     const thread = await this.latestTurns(threadId, turns);
+    links.observe(threadId, drivenTerminals(thread.turns));
     const actor = markRunningElsewhere(transformThread(thread));
     // A turn running in the Codex app may be held on an approval this reader never sees; its session file can tell.
     return actor.runningElsewhere && rolloutAwaitsApproval(thread.path) ? markAwaitingApproval(actor) : actor;
+  }
+
+  /**
+   * Learn which chat drives an Orca pane nobody is known to drive yet. A chat is only read while in
+   * use, so one that started Opus and is now quiet would never be noticed: scan recently updated
+   * chats (their newest turns, command lines only), a few per refresh, each at most every 10 minutes.
+   */
+  async discoverLinks(threads, unlinked, { now = Date.now(), budget = 4 } = {}) {
+    if (!unlinked) return 0;
+    this.linkScans ||= new Map();
+    const due = threads.filter((thread) => now - Number(thread.updatedAt) < 24 * 60 * 60_000
+      && now - (this.linkScans.get(thread.id) || 0) > 10 * 60_000).slice(0, budget);
+    for (const thread of due) {
+      this.linkScans.set(thread.id, now);
+      try {
+        const page = await this.latestTurns(thread.id, 6);
+        links.observe(thread.id, drivenTerminals(page.turns));
+      } catch { /* A chat that cannot be read is tried again later. */ }
+    }
+    for (const id of this.linkScans.keys()) if (!threads.some((thread) => thread.id === id)) this.linkScans.delete(id);
+    return due.length;
   }
 
   /** Check the chats in use or watched; reuse saved checks for the rest. */
@@ -419,6 +442,17 @@ const orca = new OrcaReader();
 const claude = new ClaudeReader();
 const extensions = new ExtensionReader({ dir: extensionFeedDir(stateDir) });
 const watchList = new WatchList({ dir: stateDir });
+// Which Codex chat drives which Orca terminals, and the person's own join or keep-separate choices.
+const links = new LinkStore({ dir: stateDir });
+
+/** Every Orca and Claude Code member, joined to the chats that drive them. */
+async function joinedMembers() {
+  const [orcaResult] = await Promise.allSettled([orca.snapshot()]);
+  const orcaAgents = orcaResult.status === "fulfilled" ? orcaResult.value.workspaces.flatMap((workspace) => workspace.agents) : [];
+  let claudeAgents = [];
+  try { claudeAgents = claude.snapshot().sessions.flatMap((session) => session.agents); } catch { /* Claude Code feed unavailable. */ }
+  return joinParties([...orcaAgents, ...claudeAgents], links);
+}
 // An installed copy has its manager's marker beside it; a copy run from a download folder does not.
 const installed = existsSync(join(here, "goblin-horde-install.json"));
 const CLAUDE_ID = /^claude:[A-Za-z0-9_-]{1,128}$/;
@@ -433,7 +467,10 @@ async function listAllSources() {
   // Name what could not be listed, so a short list is never mistaken for the whole history.
   const unavailable = [["codex", codexResult], ["orca", orcaResult], ["claude", claudeResult], ["extension", extensionResult]]
     .filter(([, result]) => result.status === "rejected").map(([name]) => name);
-  return { threads: [...codex, ...sessions, ...parties, ...workspaces].sort((a, b) => Number(b.updatedAt) - Number(a.updatedAt)), unavailable };
+  let joined = new Map();
+  try { ({ joined } = await joinedMembers()); } catch { /* Without links every party stands alone. */ }
+  const mark = (source) => (joined.has(source.id) ? { ...source, joinedTo: joined.get(source.id) } : source);
+  return { threads: [...codex, ...sessions.map(mark), ...parties, ...workspaces.map(mark)].sort((a, b) => Number(b.updatedAt) - Number(a.updatedAt)), unavailable };
 }
 
 /** Whether this installed copy can start at Windows sign-in, and whether it does. */
@@ -502,6 +539,11 @@ async function allScene() {
   if (codex.ok) {
     try { codex.checked = await reader.checkThreadsForOverview(codex.threads, new Set(watchList.ids)); }
     catch { codex.checkFailed = true; }
+    // Recently active Orca panes with no known driver: look for the chat that drives them.
+    const orcaAgents = orcaResult.status === "fulfilled" ? orcaResult.value.workspaces.flatMap((workspace) => workspace.agents) : [];
+    const unlinked = orcaAgents.filter((agent) => agent.terminal && !links.auto.has(agent.terminal)
+      && Date.now() - Number(agent.updatedAt) < 24 * 60 * 60_000).length;
+    try { await reader.discoverLinks(codex.threads, unlinked); } catch { /* Links are a bonus, never a failure. */ }
   }
   const scene = composeAllScene({
     codex,
@@ -511,8 +553,11 @@ async function allScene() {
     listRequests: (id) => reader.listRequests(id),
     now: Date.now(),
   });
+  // Members a chat drives join its party; the person's own choices are sent so the widget can offer undo.
+  const { agents, joined } = joinParties(scene.agents, links);
   // Watched parties are always read and kept on the launchpad, whatever their age.
-  return { ...scene, watched: [...watchList.ids] };
+  return { ...scene, agents, joinedParties: Object.fromEntries(joined), manualLinks: Object.fromEntries(links.manual),
+    watched: [...watchList.ids] };
 }
 async function timedScene() {
   const started = Date.now();
@@ -719,6 +764,19 @@ const handler = async (request, response) => {
         : "Claude Code was already connected." });
     } catch (error) { return fail(response, error.statusCode || 500, error.message || "That did not work."); }
   }
+  if (url.pathname === "/api/join" && request.method === "POST") {
+    if (!isLocal(request) && !hasSession(request)) return json(response, 401, { error: "Pair this phone with the viewer first." });
+    if (request.headers.origin !== origin || !String(request.headers["content-type"] || "").startsWith("application/json"))
+      return json(response, 403, { error: "Open the viewer before changing a party." });
+    try {
+      const data = await readBody(request);
+      // chat: a Codex chat id joins the party to it; "" keeps it separate; null goes back to automatic.
+      if (!(data.chat === null || typeof data.chat === "string")) throw Object.assign(new Error("Say which chat to join."), { statusCode: 400 });
+      links.setManual(String(data.party || ""), data.chat);
+      allSceneDirty = true;
+      return json(response, 200, { manualLinks: Object.fromEntries(links.manual) });
+    } catch (error) { return fail(response, error.statusCode || 500, error.message || "Unable to change the party."); }
+  }
   if (url.pathname === "/api/watch" && request.method === "POST") {
     if (!isLocal(request) && !hasSession(request)) return json(response, 401, { error: "Pair this phone with the viewer first." });
     if (request.headers.origin !== origin || !String(request.headers["content-type"] || "").startsWith("application/json"))
@@ -786,7 +844,11 @@ const handler = async (request, response) => {
       }
       if (!/^[a-zA-Z0-9_-]{8,100}$/.test(threadId)) return json(response, 400, { error: "Choose a valid thread" });
       if (!(await canViewThread(threadId))) return json(response, 403, { error: "That chat is not available in this viewer." });
-      return json(response, 200, { ...(await reader.readScene(threadId)), requests: reader.listRequests(threadId), checkedAt: Date.now() });
+      const scene = await reader.readScene(threadId);
+      const { agents: everyone } = await joinedMembers();
+      const joinedHere = everyone.filter((agent) => agent.joined && agent.parentThreadId === threadId);
+      return json(response, 200, { ...scene, agents: [...(scene.agents || []), ...joinedHere], requests: reader.listRequests(threadId),
+        checkedAt: Date.now() });
     }
     if (url.pathname === "/api/thread") {
       const threadId = url.searchParams.get("id") || defaultThreadId;

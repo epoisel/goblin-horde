@@ -66,6 +66,22 @@ def model_badge(actor: dict, with_effort: bool = False) -> str:
     return f"{label} · {effort}".upper() if effort else label.upper()
 
 
+def join_reason(actor: dict) -> str:
+    """Why a member is in this party when it joined from elsewhere (see lib/links.mjs), or ''."""
+    joined = actor.get("joined")
+    if not isinstance(joined, dict):
+        return ""
+    reason = joined.get("reason")
+    if reason == "manual":
+        return "Joined to this chat by you."
+    if reason == "worker":
+        return "A worker started by this chat's Orca coordinator."
+    if reason == "worktree":
+        return "Works in the Orca worktree this chat drives."
+    verb = str(joined.get("verb") or "")
+    return f"This chat drives it{f' (orca {verb})' if verb else ''}."
+
+
 def family_ink(actor: dict) -> str:
     return FAMILY_INK.get(str(model_of(actor).get("family") or ""), FAMILY_INK_OTHER)
 
@@ -391,7 +407,7 @@ def launchpad_board(actors: list[dict], catalog: list[dict], previous_order: tup
     recent: list[PartyCard] = []
     for source in pool:
         party_id = str(source.get("id") or "")
-        if not party_id or party_id in shown or _stamp_ms(source.get("updatedAt")) < cutoff:
+        if not party_id or party_id in shown or _stamp_ms(source.get("updatedAt")) < cutoff or source.get("joinedTo"):
             continue
         recent.append(_card(party_id, sources.get(party_id, source),
                             list(observed[party_id].members) if party_id in observed else []))

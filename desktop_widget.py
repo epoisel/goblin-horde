@@ -26,7 +26,7 @@ from goblin_motion import ActionPulse, MemberStatus, goblin_action, member_statu
 from goblin_parting import (OUTCOME_COLORS, PartingNotes, RetirementTracker, note_lines, outcome_word,
                             parting_note)
 from party_layout import (age_label, compact_active, coverage_note, family_ink, launchpad_board, loop_groups,
-                          model_badge, model_of, party_models, party_scope, priority_for, project_for, reachable,
+                          join_reason, model_badge, model_of, party_models, party_scope, priority_for, project_for, reachable,
                           search_sources, stable_layout, tile_plan, watched_cards)
 from stream_windows import (StreamWindow, WIDTH as STREAM_WIDTH, HEIGHT as STREAM_HEIGHT, monitor_areas,
                             monitor_work_area, screen_geometry, workflow_for)
@@ -1078,8 +1078,10 @@ class Launchpad:
             surface.bind("<ButtonPress-1>", self.start_drag)
             surface.bind("<B1-Motion>", self.drag)
             surface.bind("<ButtonRelease-1>", self.end_drag)
-        for surface in (self.header, self.title, self.status, self.body):
+        for surface in (self.header, self.title, self.status):
             bind_context(surface, lambda _event: self.show_menu())
+        # On a party row the menu offers joining or separating it; elsewhere it is the launchpad menu.
+        bind_context(self.body, self.show_row_menu)
         self.body.bind("<Button-1>", self.on_click)
         self.body.bind("<Motion>", self.on_hover)
         self.body.bind("<Leave>", lambda _event: self.clear_hover())
@@ -1240,6 +1242,7 @@ class Launchpad:
         c = self.body
         c.delete("all")
         self.hitboxes = []
+        self.row_parties = []
         self.sprites = []
         self.row_tops = []
         width = LAUNCHPAD_WIDTH - 12
@@ -1447,7 +1450,8 @@ class Launchpad:
         c.create_rectangle(4, y, 10, bottom, fill=color, outline="")
         self.hitboxes.append((4, y, width - 4, bottom,
                               lambda: owner.choose_party(card.id, card.name, "compact"),
-                              f"{card.name} · {card.project} · open roster"))
+                              f"{card.name} · {card.project} · open roster · right-click to join or separate"))
+        self.row_parties.append((4, y, width - 4, bottom, card.id, card.name))
         members = card.members[:4]
         goblins_left = width - 10 - len(members) * GOBLIN_STEP
         for index, member in enumerate(members):
@@ -1460,7 +1464,8 @@ class Launchpad:
                                   lambda member_id=str(member.get("id")): owner.choose_party(
                                       card.id, card.name, "compact", focus_id=member_id, peek=True),
                                   " · ".join(part for part in (owner.display_name(member), tribe_title(member),
-                                                               model_badge(member, with_effort=True), status.word)
+                                                               model_badge(member, with_effort=True), status.word,
+                                                               join_reason(member))
                                              if part) + " · peek this goblin"))
         extra = card.agent_count - len(members)
         if extra > 0:
@@ -1509,6 +1514,7 @@ class Launchpad:
         c.create_rectangle(4, y, width - 4, bottom, fill="#2b4a39" if highlighted else "#1a3026",
                            outline=GOLD if selected or highlighted else "#2a4436")
         target = source or {"id": party_id, "name": name}
+        self.row_parties.append((4, y, width - 4, bottom, party_id, name))
         self.hitboxes.append((4, y, width - 4, bottom, lambda: self.open_source(target, "compact"),
                               f"{name} · {project} · {age_label(updated_ms)} · open roster"))
         chip_left = self.chip(width - 8, y + 3, "EXPAND", lambda: self.open_source(target, "expanded"),
@@ -1647,6 +1653,45 @@ class Launchpad:
             self.owner.dock_y = self.window.winfo_y() + self.window.winfo_height()
             self.owner.save_position()
 
+    def show_row_menu(self, event: tk.Event) -> None:
+        x, y = self.body.canvasx(event.x), self.body.canvasy(event.y)
+        row = next((item for item in reversed(getattr(self, "row_parties", [])) if item[0] <= x <= item[2] and item[1] <= y <= item[3]), None)
+        if not row or self.owner.demo:
+            self.show_menu()
+            return
+        _l, _t, _r, _b, party_id, name = row
+        owner = self.owner
+        menu = tk.Menu(self.window, tearoff=False)
+        separable = [(party, owner.source_label_for(party)) for party, chat in owner.joined_parties.items() if chat == party_id]
+        is_chat = not party_id.startswith(("orca:", "claude:", "ext:"))
+        if is_chat:
+            for party, label in separable:
+                menu.add_command(label=f"Separate {label[:40]} from this chat",
+                                 command=lambda party=party: owner.set_join(party, ""))
+            if not separable:
+                menu.add_command(label="Nothing is joined to this chat", state="disabled")
+        else:
+            joined_to = owner.joined_parties.get(party_id)
+            if joined_to:
+                menu.add_command(label="Separate from its Codex chat", command=lambda: owner.set_join(party_id, ""))
+            chats = tk.Menu(menu, tearoff=False)
+            for chat in owner.recent_chats(12):
+                chat_id = str(chat.get("id"))
+                chats.add_command(label=fit_text(self.small_font, str(chat.get("name") or chat_id), 320),
+                                  command=lambda chat_id=chat_id: owner.set_join(party_id, chat_id))
+            if not owner.recent_chats(1):
+                chats.add_command(label="No Codex chats yet", state="disabled")
+            menu.add_cascade(label=f"Join {name[:32]} to a Codex chat", menu=chats)
+        if party_id in owner.manual_links or any(party in owner.manual_links for party, _ in separable):
+            menu.add_separator()
+            for party in [party_id, *(party for party, _ in separable)]:
+                if party in owner.manual_links:
+                    menu.add_command(label="Back to automatic joining" + ("" if party == party_id else f" ({owner.source_label_for(party)[:30]})"),
+                                     command=lambda party=party: owner.set_join(party, None))
+        menu.add_separator()
+        menu.add_command(label="More…", command=self.show_menu)
+        menu.tk_popup(self.window.winfo_pointerx(), self.window.winfo_pointery())
+
     def show_menu(self) -> None:
         owner = self.owner
         menu = tk.Menu(self.window, tearoff=False)
@@ -1730,6 +1775,8 @@ class GoblinWidget:
         self.text_advanced_at: dict[str, float] = {}
         self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="goblin-horde")
         self.roster_only: set[str] = set()  # Members left on the roster when a party opened calmly.
+        self.joined_parties: dict[str, str] = {}  # Orca or Claude party -> the Codex chat it joined.
+        self.manual_links: dict[str, str] = {}  # The person's own choices: party -> chat, or "" for separate.
         # Parties the person watches: always read by the server and kept on the launchpad.
         self.watched_ids: list[str] = []
         self.watch_pending = None
@@ -2252,6 +2299,28 @@ class GoblinWidget:
         self.catalog_at = time.monotonic()
         self.launchpad.refresh()
         self.catalog_after = self.root.after(60_000, self.load_catalog)
+
+    # Party links -------------------------------------------------------------
+    def recent_chats(self, limit: int) -> list[dict]:
+        """The newest Codex chats in the catalog, for "Join to a Codex chat"."""
+        chats = [source for source in self.source_catalog if source.get("source") == "codex" and source.get("id")]
+        return sorted(chats, key=lambda source: -float(source.get("updatedAt") or 0))[:limit]
+
+    def source_label_for(self, party_id: str) -> str:
+        source = next((item for item in self.source_catalog if str(item.get("id")) == party_id), None)
+        return str((source or {}).get("name") or party_id)
+
+    def set_join(self, party_id: str, chat_id: str | None) -> None:
+        """Join a party to a chat, keep it separate (""), or go back to automatic (None); the server remembers."""
+        def done(result, error) -> None:
+            if error:
+                messagebox.showwarning("Goblin Horde", f"That did not change: {error}", parent=self.root)
+                return
+            self.manual_links = {str(key): str(value) for key, value in (result.get("manualLinks") or {}).items()}
+            self.kick_board()
+            if self.thread_id != "all":
+                self.fetch_now()
+        self.when_done(self.executor.submit(self.post_local, "/api/join", {"party": party_id, "chat": chat_id}), done)
 
     # Sources -----------------------------------------------------------------
     def poll_sources(self) -> None:
@@ -3485,6 +3554,10 @@ class GoblinWidget:
 
     def take_board_scene(self, scene: dict) -> None:
         self.take_watched(scene.get("watched"))
+        if isinstance(scene.get("joinedParties"), dict):
+            self.joined_parties = {str(key): str(value) for key, value in scene["joinedParties"].items()}
+        if isinstance(scene.get("manualLinks"), dict):
+            self.manual_links = {str(key): str(value) for key, value in scene["manualLinks"].items()}
         self.board_actors = [actor for actor in scene.get("agents") or [] if actor.get("id")]
         self.board_coverage = scene.get("coverage") or {}
         self.board_connection = "PARTIAL" if scene.get("warning") else "LIVE"
