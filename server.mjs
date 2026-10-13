@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
-import { markRunningElsewhere, transformThread } from "./lib/transform.mjs";
+import { markAwaitingApproval, markRunningElsewhere, transformThread } from "./lib/transform.mjs";
+import { rolloutAwaitsApproval } from "./lib/rollout.mjs";
 import { describeModel } from "./lib/models.mjs";
 import { readDescendants } from "./lib/descendants.mjs";
 import { classifyCodex, composeAllScene, noteReadFailure, planCodexReads, pruneCache } from "./lib/feed.mjs";
@@ -248,7 +249,10 @@ class CodexReader {
 
   async readThread(threadId, { turns = SCENE_TURNS } = {}) {
     await this.ready;
-    return markRunningElsewhere(transformThread(await this.latestTurns(threadId, turns)));
+    const thread = await this.latestTurns(threadId, turns);
+    const actor = markRunningElsewhere(transformThread(thread));
+    // A turn running in the Codex app may be held on an approval this reader never sees; its session file can tell.
+    return actor.runningElsewhere && rolloutAwaitsApproval(thread.path) ? markAwaitingApproval(actor) : actor;
   }
 
   /** Check the chats in use or watched; reuse saved checks for the rest. */
@@ -274,7 +278,7 @@ class CodexReader {
         }
         const actor = entry.value;
         this.threadFailures.delete(summary.id);
-        const hasRequest = this.listRequests(actor.id).length > 0;
+        const hasRequest = this.listRequests(actor.id).length > 0 || Boolean(actor.awaitingApproval);
         const record = {
           id: actor.id, updatedAt: summary.updatedAt, checkedAt: now,
           attention: classifyCodex(actor, { hasRequest, now }),
