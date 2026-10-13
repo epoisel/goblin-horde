@@ -35,6 +35,7 @@
   "lib/pairing.mjs",
   "lib/paths.mjs",
   "lib/processes.mjs",
+  "lib/rollout.mjs",
   "lib/transform.mjs",
   "lib/watch.mjs",
   "lib/zip.mjs",
