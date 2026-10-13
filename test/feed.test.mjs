@@ -227,3 +227,13 @@ test("remembered checks are pruned to current candidates and capped", () => {
   assert.ok(cache.has("chat-1"));
   assert.ok(!cache.has("chat-9"));
 });
+
+test("a failure stays urgent for a while after the last activity, then becomes history", () => {
+  const failedTurn = { turnStates: [{ id: "t", status: "failed", questions: [] }] };
+  assert.equal(classifyCodex({ ...failedTurn, updatedAt: NOW - 5 * 60_000 }, { now: NOW }), "failed");
+  assert.equal(classifyCodex({ ...failedTurn, updatedAt: NOW - FEED_LIMITS.failedMs - 1000 }, { now: NOW }), "quiet");
+  // Orca keeps an errored pane until it is closed; once it has been quiet for a while it no longer calls for attention.
+  assert.equal(classifyOrca({ status: "error", updatedAt: NOW - 60_000 }, { now: NOW }), "failed");
+  assert.equal(classifyOrca({ status: "error", updatedAt: NOW - 3 * HOUR }, { now: NOW }), "quiet");
+  assert.equal(classifyOrca({ status: "error" }, { now: NOW }), "quiet", "a failure with no time cannot be fresh");
+});

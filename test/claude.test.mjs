@@ -485,3 +485,21 @@ test("the all-party feed carries Claude, Codex, and Orca members, and absent Orc
   assert.match(partial.warning, /Claude Code activity could not be read/);
   assert.equal(partial.coverage.claudeAvailable, false);
 });
+
+test("a StopFailure names its reason from the documented error field, and an old one stops calling for attention", () => {
+  const start = NOW - 3 * 60 * 60_000;
+  const failed = records(
+    hook("UserPromptSubmit", {}, start),
+    hook("StopFailure", { error: "overloaded", error_details: "529 Overloaded", last_assistant_message: "API Error: Overloaded" }, start + 1000),
+  );
+  assert.equal(failed[1].errorType, "overloaded");
+  assert.equal(JSON.stringify(failed[1]).includes("529"), false, "details are not kept");
+  const fresh = buildClaudeSessions(failed, { now: start + 5 * 60_000 })[0].agents[0];
+  assert.equal(fresh.attention, "failed");
+  assert.equal(fresh.latest.description, "Claude was overloaded.");
+  const later = buildClaudeSessions(failed, { now: start + CLAUDE_LIMITS.failedMs + 60_000 })[0].agents[0];
+  assert.equal(later.attention, "quiet");
+  assert.equal(later.status, "failed", "the stream still says it stopped with an error");
+  // Older Claude Code versions sent error_type.
+  assert.equal(records(hook("StopFailure", { error_type: "rate_limit" }))[0].errorType, "rate_limit");
+});
