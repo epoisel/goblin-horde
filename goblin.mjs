@@ -21,10 +21,10 @@ if (major < 20) {
   process.exit(2);
 }
 
-const { ManagerError, doctor, getLocalJson, hooksInstall, hooksRemove, hooksStatus, install, locate, makeContext, start, status, stop, uninstall } = await import("./lib/manager.mjs");
+const { ManagerError, autostart, doctor, getLocalJson, hooksInstall, hooksRemove, hooksStatus, install, locate, makeContext, start, status, stop, uninstall } = await import("./lib/manager.mjs");
 const { appendExtensionRecord, extensionFeedDir, validateExtensionRecord } = await import("./lib/extension.mjs");
 
-const BOOLEAN = new Set(["json", "no-start", "skip-skill", "remove-settings", "claude-hooks", "no-claude-hooks", "check", "no-browser", "compact", "help", "report"]);
+const BOOLEAN = new Set(["json", "no-start", "skip-skill", "remove-settings", "claude-hooks", "no-claude-hooks", "check", "no-browser", "compact", "help", "report", "yes"]);
 const VALUE = new Set(["install-dir", "state-dir", "claude-config-dir", "codex-home", "codex-skill-dir", "port", "ui", "feed", "record"]);
 
 export function parseArgs(argv) {
@@ -56,6 +56,8 @@ function managerFlags(flags) {
 const HELP = `Goblin Horde manager
 
   node goblin.mjs doctor            Check prerequisites, feeds, and the port. Changes nothing.
+  node goblin.mjs setup             Guided install: checks this computer, asks two questions, installs, opens.
+  node goblin.mjs autostart on|off  Start Goblin Horde when you sign in to Windows, or stop.
   node goblin.mjs doctor --report   A short report safe to paste into a bug report: states, counts, and
                                     timings only, with no chats, names, paths, or pairing codes.
   node goblin.mjs install           Copy the app to your user folder and start it.
@@ -130,6 +132,57 @@ async function emit(ctx, flags) {
 }
 
 /**
+ * `setup`: what "Install Goblin Horde.cmd" runs. It says what this computer has, asks about the two
+ * changes that reach outside Goblin Horde's own folders (Claude Code's settings, starting at sign-in),
+ * installs, and opens the goblins. Without a terminal to answer (or with --yes) it takes the defaults:
+ * connect Claude Code when it is installed, and do not start at sign-in.
+ */
+async function setup(ctx, options, { assumeYes = false } = {}) {
+  const log = ctx.log;
+  const { createInterface } = await import("node:readline/promises");
+  const interactive = !assumeYes && process.stdin.isTTY;
+  const prompt = interactive ? createInterface({ input: process.stdin, output: process.stdout }) : null;
+  const ask = async (question, fallback) => {
+    if (!prompt) return fallback;
+    const answer = (await prompt.question(`${question} ${fallback ? "[Y/n]" : "[y/N]"} `)).trim().toLowerCase();
+    return answer ? answer.startsWith("y") : fallback;
+  };
+  try {
+    log("Goblin Horde setup\n");
+    const report = await doctor(ctx, options);
+    const check = (name) => report.checks.find((item) => item.name === name) || {};
+    const found = (name, label) => log(`  ${check(name).state === "ok" ? "✓" : "·"} ${label}`);
+    found("codex", "Codex");
+    found("claude", "Claude Code");
+    found("orca", "Orca");
+    log(`  ${check("desktop-widget").state === "ok" ? "✓" : "·"} Desktop goblins (Python with Tkinter)\n`);
+    if (check("port").state === "conflict") {
+      log(`Port ${report.port} is busy: ${check("port").detail}`);
+      return 1;
+    }
+    if (check("desktop-widget").state !== "ok") {
+      log("The desktop goblins need Python 3 from python.org (keep the \"tcl/tk\" option ticked). Until then,");
+      log("Goblin Horde opens in your browser instead, which shows the same parties.");
+      if (await ask("Open the Python download page?", false)) ctx.openUrl("https://www.python.org/downloads/");
+    }
+    let claudeHooks;
+    if (check("claude").present && check("claude-hooks").state !== "ok") {
+      log("Claude Code is on this computer. To show its sessions, Goblin Horde adds a few entries to Claude Code's");
+      log("settings (a backup is kept; undo any time with: node goblin.mjs hooks remove).");
+      claudeHooks = await ask("Show Claude Code sessions too?", true);
+    }
+    const autostart = report.platform === "win32" ? await ask("Start Goblin Horde when you sign in to Windows?", false) : undefined;
+    log("");
+    const result = await install(ctx, { ...options, claudeHooks, autostart });
+    for (const line of [...result.messages, ...(result.started?.messages || [])]) log(line);
+    log("\nAll set. Your goblins are on the desktop" + (result.startMenu ? "; find Goblin Horde in the Start menu to open it again." : "."));
+    return 0;
+  } finally {
+    prompt?.close();
+  }
+}
+
+/**
  * `doctor --report`: what to paste into a bug report. Check names and states only (their details can
  * hold folder paths), plus the running viewer's own diagnostic summary when it answers.
  */
@@ -153,6 +206,14 @@ export async function main(argv = process.argv.slice(2), ctx = makeContext({ sou
   const out = (data, print) => (flags.json ? log(JSON.stringify(data, null, 2)) : print(data));
   if (flags.help) { log(HELP); return 0; }
   switch (command) {
+    case "setup":
+      return setup(ctx, options, { assumeYes: Boolean(flags.yes) });
+    case "autostart": {
+      const enable = sub === "on" ? true : sub === "off" ? false : undefined;
+      if (sub && enable === undefined) throw new ManagerError("Use: node goblin.mjs autostart on | off");
+      out(autostart(ctx, options, enable), (data) => log(data.message));
+      return 0;
+    }
     case "help":
       log(HELP);
       return 0;

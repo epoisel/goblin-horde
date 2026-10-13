@@ -84,6 +84,14 @@ class SettingsFileTests(unittest.TestCase):
         widget.load_settings()
         self.assertEqual(aside.read_text(encoding="utf-8"), '{"partingNotes": [')
 
+    def test_a_file_that_is_not_utf8_is_set_aside_and_the_widget_still_starts(self):
+        self.file.write_bytes(b'{"columns": 3, "sourceName": "caf\xe9"}')
+        widget = bare_widget()
+        widget.load_settings()
+        self.assertEqual(widget.columns, 2, "defaults are kept")
+        aside = self.file.with_name("goblins.json.unreadable")
+        self.assertEqual(aside.read_bytes(), b'{"columns": 3, "sourceName": "caf\xe9"}')
+
     def test_settings_are_replaced_whole(self):
         write_settings(self.file, '{"columns": 2}')
         write_settings(self.file, '{"columns": 3}')

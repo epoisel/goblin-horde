@@ -4,7 +4,7 @@
 
 Goblin Horde shows **public activity only**: the messages agents show you, tool names, file names, and statuses. It does not show and cannot see an agent's private reasoning. A goblin's "thinking" bubble means only that the agent is working quietly.
 
-> **Status: early (0.3).** It works day to day on Windows, but expect rough edges. The macOS desktop widget is implemented but **has not yet been tested on a real Mac**. See [Platform support](#platform-support) and the [macOS smoke check](#on-macos).
+> **Status: early (0.4).** It works day to day on Windows, but expect rough edges. The macOS desktop widget is implemented but **has not yet been tested on a real Mac**. See [Platform support](#platform-support) and the [macOS smoke check](#on-macos).
 
 ## Platform support
 
@@ -18,17 +18,17 @@ All systems need **Node.js 20 or newer**. There are no packages to install.
 
 ## Quick start
 
-1. Install [Node.js](https://nodejs.org) 20 or newer. For desktop goblins on Windows or macOS, also have Python 3 with Tkinter.
-2. Download [GoblinHorde-Team.zip](https://github.com/epoisel/goblin-horde/releases/download/v0.3.0/GoblinHorde-Team.zip) from the [v0.3.0 release](https://github.com/epoisel/goblin-horde/releases/tag/v0.3.0) (or download this repository), unzip it, and open a terminal in that folder. On macOS, the native desktop widget still needs a smoke test on a real Mac (see [On macOS](#on-macos)); the browser viewer is the fallback.
-3. Run:
+**On Windows:**
 
-   ```
-   node goblin.mjs install
-   ```
+1. Install [Node.js](https://nodejs.org) (the LTS version). For the desktop goblins, also install [Python 3](https://www.python.org/downloads/) with its default "tcl/tk" option; without it, Goblin Horde opens in your browser instead.
+2. Download [GoblinHorde-Team.zip](https://github.com/epoisel/goblin-horde/releases/latest/download/GoblinHorde-Team.zip) from the [latest release](https://github.com/epoisel/goblin-horde/releases/latest) and unzip it.
+3. Double-click **Install Goblin Horde.cmd**. It shows what it found on this computer, asks whether to show your Claude Code sessions too and whether to start with Windows, installs, and opens your goblins.
 
-   Add `--claude-hooks` to also show Claude Code sessions (see [Connecting Claude Code](#connecting-claude-code)). Run `node goblin.mjs doctor` first if you want to check what this computer has; it changes nothing.
+Open it again any time from the Start menu (**Goblin Horde**). To update, unzip a newer release and double-click the installer again: your settings, watched chats, and notes are kept.
 
-Install copies the app into your own user folder and starts it. It does not need administrator rights and never starts at login.
+**On macOS or Linux** (or from a terminal on Windows), open a terminal in the unzipped folder and run `node goblin.mjs setup`, the same guided install. `node goblin.mjs install` installs without questions; add `--claude-hooks` to also show Claude Code sessions (see [Connecting Claude Code](#connecting-claude-code)). On macOS, the native desktop widget still needs a smoke test on a real Mac (see [On macOS](#on-macos)); the browser viewer is the fallback.
+
+Install copies the app into your own user folder and starts it. It never needs administrator rights, and it starts at sign-in only if you say so (change it later from the widget's ⋯ menu, **Start with Windows**, or with `node goblin.mjs autostart on|off`).
 
 **Uninstall** with the installed copy's manager:
 
@@ -67,7 +67,7 @@ When you ask your agent to install it and Claude Code is on this computer, the a
 
 You need **Node.js 20 or newer**. Everything else is optional and only adds feeds: the **Codex CLI** for Codex chats, **Claude Code** for Claude sessions, **Orca** for Orca workspaces, and on Windows or macOS **Python with Tkinter** for the desktop goblins (on macOS, Python 3 from python.org or Homebrew `python-tk`, with Tk 8.6 or newer). Nothing is downloaded or installed for you.
 
-**What install does, in plain terms.** It copies the app (only the files listed in `package-files.json`) into a folder that belongs to you, adds a small "Goblin Horde manager" skill so Codex and Claude Code know how to start, stop, and remove it later, and starts it. It does not start at login, does not need administrator rights, and does not touch anything outside the folders below.
+**What install does, in plain terms.** It copies the app (only the files listed in `package-files.json`) into a folder that belongs to you, adds a small "Goblin Horde manager" skill so Codex and Claude Code know how to start, stop, and remove it later, and starts it. On Windows it also adds a **Goblin Horde** Start menu entry (and a sign-in shortcut only if you ask for one). It does not need administrator rights and does not touch anything else outside the folders below; uninstall removes the shortcuts too.
 
 | | App files | Your settings and recorded activity |
 |---|---|---|

@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HOOK_EVENTS, HOOK_MARKER, claudeHookReport, claudeSettingsPath } from "../lib/claude-hooks.mjs";
 import { claudeConfigDir } from "../lib/paths.mjs";
-import { MARKER, SKILL_MARKER, childEnv, install, locate, makeContext, readManifest, start, status, stop, uninstall } from "../lib/manager.mjs";
+import { MARKER, SKILL_MARKER, autostart, childEnv, install, locate, makeContext, readManifest, start, status, stop, uninstall } from "../lib/manager.mjs";
 import { isAlive, listProcesses, stopPid } from "../lib/processes.mjs";
 import { main, parseArgs } from "../goblin.mjs";
 
@@ -334,4 +334,55 @@ test("a process id that now runs another program is not reported as stopped, and
     assert.equal(await stopPid(child.pid, { waitMs: 300, verify: () => false }), false);
     assert.equal(isAlive(child.pid), true, "the other program was left running");
   } finally { child.kill("SIGKILL"); }
+});
+
+test("on Windows, install adds a Start menu entry, sign-in start is opt-in, and uninstall removes both", { skip: process.platform !== "win32" }, async () => {
+  const box = sandbox();
+  try {
+    box.env.APPDATA = join(box.root, "roaming");
+    const written = [];
+    // A stand-in for the Windows shortcut writer: a file that names its target, as a real .lnk does.
+    box.ctx.writeShortcut = (link, spec) => {
+      written.push({ link, spec });
+      mkdirSync(dirname(link), { recursive: true });
+      writeFileSync(link, Buffer.from(`${spec.target} ${spec.args}`, "utf16le"));
+    };
+    const programs = join(box.env.APPDATA, "Microsoft", "Windows", "Start Menu", "Programs");
+    const menu = join(programs, "Goblin Horde.lnk");
+    const startup = join(programs, "Startup", "Goblin Horde.lnk");
+
+    const result = await install(box.ctx, box.flags);
+    assert.equal(existsSync(menu), true);
+    assert.equal(existsSync(startup), false, "starting at sign-in is never assumed");
+    assert.equal(result.startMenu, true);
+    assert.match(written[0].spec.args, /goblin\.mjs" start --install-dir "/);
+    assert.equal(written[0].spec.icon, join(box.flags.installDir, "goblin.ico"));
+
+    assert.equal(autostart(box.ctx, box.flags, true).enabled, true);
+    assert.equal(existsSync(startup), true);
+    assert.equal(autostart(box.ctx, box.flags).enabled, true);
+    // Reinstalling keeps a sign-in shortcut that is already there.
+    await install(box.ctx, box.flags);
+    assert.equal(existsSync(startup), true);
+
+    await uninstall(box.ctx, box.flags);
+    assert.equal(existsSync(menu), false);
+    assert.equal(existsSync(startup), false);
+  } finally { box.cleanup(); }
+});
+
+test("uninstall leaves another installation's shortcuts alone", { skip: process.platform !== "win32" }, async () => {
+  const box = sandbox();
+  try {
+    box.env.APPDATA = join(box.root, "roaming");
+    box.ctx.writeShortcut = () => { throw new Error("no shortcut writer here"); };
+    const result = await install(box.ctx, box.flags);
+    assert.equal(result.startMenu, false);
+    assert.ok(result.messages.some((line) => /Could not add the Start menu entry \(no shortcut writer here\)/.test(line)));
+    const menu = join(box.env.APPDATA, "Microsoft", "Windows", "Start Menu", "Programs", "Goblin Horde.lnk");
+    mkdirSync(dirname(menu), { recursive: true });
+    writeFileSync(menu, Buffer.from("C:\Other\GoblinHorde\goblin.mjs start", "utf16le"));
+    await uninstall(box.ctx, box.flags);
+    assert.equal(existsSync(menu), true);
+  } finally { box.cleanup(); }
 });

@@ -41,6 +41,7 @@ def tile_click(stream, actor_id):
 
 
 @unittest.skipUnless(sys.platform == "win32", "Desktop widget requires Windows Tk")
+@patch("desktop_widget.STREAM_LIMIT", 10)  # About closed streams, not how many windows open.
 class ClosedStreamUiTests(unittest.TestCase):
     def test_closing_one_of_six_stays_closed_until_its_tile_is_clicked(self):
         fixture = Fixture(self)

@@ -195,6 +195,7 @@ def scene_widget(display_mode="expanded"):
     widget.retirement = RetirementTracker()
     widget.notes = PartingNotes()
     widget.exits = {}
+    widget.roster_only = set()
     return widget
 
 
@@ -394,10 +395,37 @@ def party_widget(ids=("party", "a", "b", "c", "d", "e")):
     widget.focused_stream_id = ""
     widget.peek_id = ""
     widget.party_mode = False
+    widget.roster_only = set()
     widget.open_stream = Mock(side_effect=lambda actor, saved=None: widget.streams.setdefault(actor["id"], Mock()))
     for name in ("align_streams", "bring_stream_forward", "save_position", "end_peek", "condense_party"):
         setattr(widget, name, Mock())
     return widget
+
+
+class CalmExpandTests(unittest.TestCase):
+    def test_a_big_party_opens_three_windows_and_keeps_the_rest_on_the_roster(self):
+        widget = party_widget()
+        widget.actors[3]["needsInput"] = True  # "c" needs the person: it always gets a window.
+        widget.actors[4]["status"] = "active"  # "d" is working.
+        widget.open_party("a")
+        self.assertEqual(set(widget.streams), {"a", "c", "d"})
+        self.assertEqual(widget.roster_only, {"party", "b", "e"})
+        self.assertEqual(widget.focused_stream_id, "a")
+
+    def test_everyone_who_needs_you_opens_even_past_the_limit(self):
+        widget = party_widget()
+        for actor in widget.actors[1:5]:
+            actor["needsInput"] = True
+        widget.open_party("party")
+        self.assertEqual(set(widget.streams), {"party", "a", "b", "c", "d"})
+
+    def test_the_rally_opens_everyone(self):
+        widget = party_widget()
+        widget.dismissed = {}
+        widget.set_dismissed = Mock()
+        widget.open_full_party("a")
+        self.assertEqual(set(widget.streams), {"party", "a", "b", "c", "d", "e"})
+        self.assertEqual(widget.roster_only, set())
 
 
 def close(widget, actor_id):
@@ -406,6 +434,7 @@ def close(widget, actor_id):
     widget.on_stream_closed(actor_id)
 
 
+@patch("desktop_widget.STREAM_LIMIT", 10)
 class ClosedStreamTests(unittest.TestCase):
     def test_closing_one_of_six_keeps_it_closed_through_polls_expand_and_restart(self):
         widget = party_widget()
