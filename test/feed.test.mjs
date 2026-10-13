@@ -103,6 +103,15 @@ test("a chat that fails to read backs off, doubling, instead of costing a read e
   assert.equal(planCodexReads([thread], { now: NOW + FEED_LIMITS.maxRetryMs, failures }).reads.length, 1);
 });
 
+test("a chat guessed to be waiting on an approval is rechecked, so the guess clears when it ends", () => {
+  const thread = summary("held", 20 * HOUR);
+  const guess = { ...saved("held", thread.updatedAt, "needs", NOW - FEED_LIMITS.recheckMs - 1), thread: { id: "held", awaitingApproval: true } };
+  assert.deepEqual(planCodexReads([thread], { now: NOW, cache: new Map([["held", guess]]) }).reads.map((item) => item.id), ["held"]);
+  // A question the chat asked in its answer only changes with the chat, so it is not reread.
+  const asked = saved("held", thread.updatedAt, "needs", NOW - FEED_LIMITS.recheckMs - 1);
+  assert.equal(planCodexReads([thread], { now: NOW, cache: new Map([["held", asked]]) }).reads.length, 0);
+});
+
 // Run polls a second apart, as the server would, and note when each chat is first read.
 function pollUntilAllRead(threads, { mustIds = new Set(), succeeds = () => true, polls = 20 } = {}) {
   const cache = new Map();

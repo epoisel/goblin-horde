@@ -26,8 +26,8 @@ from goblin_motion import ActionPulse, MemberStatus, goblin_action, member_statu
 from goblin_parting import (OUTCOME_COLORS, PartingNotes, RetirementTracker, note_lines, outcome_word,
                             parting_note)
 from party_layout import (age_label, compact_active, coverage_note, family_ink, launchpad_board, loop_groups,
-                          model_badge, model_of, party_models, party_scope, project_for, reachable, search_sources,
-                          stable_layout, tile_plan, watched_cards)
+                          model_badge, model_of, party_models, party_scope, priority_for, project_for, reachable,
+                          search_sources, stable_layout, tile_plan, watched_cards)
 from stream_windows import (StreamWindow, WIDTH as STREAM_WIDTH, HEIGHT as STREAM_HEIGHT, monitor_areas,
                             monitor_work_area, screen_geometry, workflow_for)
 
@@ -81,6 +81,9 @@ PLACEMENT_LIMIT = 200
 STREAM_GRIP = (103, 8, STREAM_WIDTH - 8, 80)
 # The one explicit "open every window" action; expanding and polls leave ×-closed streams shut.
 RALLY_LABEL = "Rally whole party (reopen closed)"
+# Expanding a party opens at most this many stream windows; members who need you or failed always open.
+# The rest wait on the roster (click one to open it); the rally opens everyone.
+STREAM_LIMIT = 3
 
 
 def parting_status(outcome: str, source: str = "") -> MemberStatus:
@@ -186,13 +189,13 @@ def write_settings(target: Path, text: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def keep_unreadable_settings(text: str) -> None:
+def keep_unreadable_settings(raw: bytes) -> None:
     """Set an unreadable settings file aside (once) instead of losing its notes and layout to the next save."""
     try:
         target = state_file()
         aside = target.with_name(f"{target.name}.unreadable")
         if not aside.exists():
-            aside.write_text(text, encoding="utf-8")
+            aside.write_bytes(raw)
     except OSError:
         pass
 
@@ -1193,7 +1196,7 @@ class Launchpad:
             [card_key(card) for card in active], [card_key(card) for card in recent], older,
             len(owner.source_catalog), owner.catalog_failed, owner.palette_offset,
             self.show_all_working, coverage_note(owner.board_coverage),
-            tuple(owner.watched_ids), tuple(owner.catalog_unavailable), int(owner.board_age) // 10,
+            tuple(owner.watched_ids), tuple(owner.catalog_unavailable), int(owner.board_age) // 10, owner.welcomed,
             tuple((key, str(value.get("state")), bool(value.get("canConnect"))) for key, value in sorted(owner.sources.items())),
         ))
         if fingerprint == self.fingerprint and not force:
@@ -1245,6 +1248,8 @@ class Launchpad:
             y = self.draw_results(y, width)
         else:
             y = self.draw_sources(y, width)
+            if not self.owner.welcomed and not self.owner.demo:
+                y = self.draw_welcome(y, width)
             if self.owner.thread_id != "all":
                 y = self.draw_current(y, width)
             needs = sum(card.needs for card in active)
@@ -1287,6 +1292,28 @@ class Launchpad:
         c.create_rectangle(0, 0, 0, 0, outline=GOLD, width=1, state="hidden", tags="hover")
         place_at_anchor(self.owner, self.window, LAUNCHPAD_WIDTH, view + chrome)
 
+    WELCOME = (
+        "Each goblin is one AI agent at work. Claude models are hooded hexers, OpenAI models are sappers, "
+        "and everything else is a raider; the badge beside a party names its model.",
+        "Gold means it needs you, red means it failed, green means it is working. Click a party for its "
+        "goblins, or EXPAND for what each one is saying and doing.",
+        "☆ keeps a chat on this list. The row above shows what is connected; FIX repairs it. "
+        "The ⋯ menu has the rest, including Start with Windows.",
+    )
+
+    def draw_welcome(self, y: int, width: int) -> int:
+        """A one-time card that says what the goblins, colours, and buttons mean."""
+        c = self.body
+        lines = [line for paragraph in self.WELCOME for line in [*wrap_text(self.small_font, paragraph, width - 32), ""]][:-1]
+        step = self.small_font.metrics("linespace") + 1
+        bottom = y + 28 + len(lines) * step + 6
+        c.create_rectangle(4, y, width - 4, bottom, fill="#2b4a39", outline=GOLD, width=2)
+        c.create_text(14, y + 7, anchor="nw", text="WELCOME TO GOBLIN HORDE", fill=GOLD, font=self.tag_font)
+        self.chip(width - 12, y + 5, "GOT IT", self.owner.dismiss_welcome, "Hide this card", strong=True)
+        for index, line in enumerate(lines):
+            c.create_text(14, y + 28 + index * step, anchor="nw", text=line, fill=IVORY, font=self.small_font)
+        return bottom + 6
+
     SOURCE_NAMES = (("codex", "CODEX"), ("claude", "CLAUDE"), ("orca", "ORCA"), ("extensions", "FEEDS"))
 
     def draw_sources(self, y: int, width: int) -> int:
@@ -1304,23 +1331,28 @@ class Launchpad:
             state = str(source.get("state") or "")
             detail = str(source.get("detail") or "")
             command = None
+            action = ""
             if state == "ok":
                 glyph, ink = "✓", LIVELY
             elif state == "starting":
                 glyph, ink = "…", MUTED
-            elif state in ("none", "not-installed"):
+            elif key == "claude" and state == "not-connected":
+                # Optional: someone who uses only Codex is not told something is wrong.
+                glyph, ink = "–", "#7f9a88"
+                if source.get("canConnect"):
+                    command, action, ink = owner.connect_claude, " CONNECT", GOLD
+                    detail = f"{detail} Click to connect it."
+            elif state in ("none", "not-installed") or (key == "orca" and state == "unavailable"):
                 glyph, ink = "–", "#7f9a88"
             else:
                 glyph, ink = "✕", ALERT
                 if key == "codex":
-                    command, detail = owner.reconnect_codex, f"{detail} Click to reconnect now."
-                elif key == "claude" and source.get("canConnect"):
-                    command, detail = owner.connect_claude, f"{detail} Click to connect it."
+                    command, action, detail = owner.reconnect_codex, " FIX", f"{detail} Click to reconnect now."
             if key == "codex" and state == "ok":
                 detail += " Replies from the browser or phone are available."
             elif state == "ok" and source.get("replies") is False:
                 detail += " Watch-only here: reply in the app itself."
-            label = f"{name} {glyph}" + (" FIX" if command else "")
+            label = f"{name} {glyph}{action}"
             right = x + self.tag_font.measure(label) + 12
             c.create_rectangle(x, y, right, y + 17, fill=PILL_INK, outline=ink if command else CARD_LINE)
             c.create_text((x + right) // 2, y + 9, text=label, fill=ink, font=self.tag_font)
@@ -1632,6 +1664,9 @@ class Launchpad:
         menu.add_command(label="Reconnect Codex", command=owner.reconnect_codex)
         if (owner.sources.get("claude") or {}).get("canConnect"):
             menu.add_command(label="Connect Claude Code…", command=owner.connect_claude)
+        if owner.autostart.get("available"):
+            menu.add_command(label=("✓ " if owner.autostart.get("enabled") else "") + "Start with Windows",
+                             command=owner.toggle_autostart)
         menu.add_command(label="Copy diagnostic report", command=owner.copy_diagnostics)
         menu.add_separator()
         menu.add_command(label="Close goblins", command=owner.close)
@@ -1694,6 +1729,7 @@ class GoblinWidget:
         self.text_lines: dict[str, list[str]] = {}
         self.text_advanced_at: dict[str, float] = {}
         self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="goblin-horde")
+        self.roster_only: set[str] = set()  # Members left on the roster when a party opened calmly.
         # Parties the person watches: always read by the server and kept on the launchpad.
         self.watched_ids: list[str] = []
         self.watch_pending = None
@@ -1741,6 +1777,8 @@ class GoblinWidget:
         self.catalog_unavailable: list[str] = []
         # Which feeds the viewer can see (Codex, Claude Code, Orca, extensions), refreshed every 30 seconds.
         self.sources: dict = {}
+        self.autostart: dict = {}  # {available, enabled}: starting at Windows sign-in.
+        self.welcomed = False  # The launchpad's welcome card stays until "Got it".
         self.sources_pending = None
         self.sources_after = None
         self.notes = PartingNotes()
@@ -1839,14 +1877,14 @@ class GoblinWidget:
     def load_settings(self) -> None:
         """Restore saved settings. Each group is applied on its own, so one bad value never drops the rest."""
         try:
-            text = state_file().read_text(encoding="utf-8")
+            raw = state_file().read_bytes()
         except OSError:
             return
         try:
-            saved = json.loads(text)
-        except ValueError:
+            saved = json.loads(raw.decode("utf-8"))
+        except ValueError:  # Also UnicodeDecodeError: not UTF-8 at all.
             # Keep the unreadable file for recovery; the next save writes fresh settings beside it.
-            keep_unreadable_settings(text)
+            keep_unreadable_settings(raw)
             return
         if not isinstance(saved, dict):
             return
@@ -1899,6 +1937,7 @@ class GoblinWidget:
         def preferences() -> None:
             if isinstance(saved.get("reducedMotion"), bool):
                 self.reduced_motion_choice = saved["reducedMotion"]
+            self.welcomed = saved.get("welcomed") is True
             self.focused_stream_id = str(saved.get("focusedStreamId") or "")
             if not self.explicit_thread:
                 self.thread_id = str(saved.get("threadId") or "all")
@@ -2012,6 +2051,7 @@ class GoblinWidget:
                 "partyMode": self.party_mode, "homeView": self.home_view,
                 "focusedStreamId": self.focused_stream_id,
                 "reducedMotion": self.reduced_motion_choice,
+                "welcomed": self.welcomed,
                 "streams": self.stream_states(),
                 "dismissedStreams": self.dismissed,
                 "placements": self.placements,
@@ -2226,7 +2266,9 @@ class GoblinWidget:
                 self.sources_after = self.root.after(200, self.poll_sources)
                 return
             try:
-                self.sources = self.sources_pending.result().get("sources") or {}
+                capabilities = self.sources_pending.result()
+                self.sources = capabilities.get("sources") or {}
+                self.autostart = capabilities.get("autostart") or {}
             except Exception:
                 pass  # The board already says when the viewer itself is not answering.
             self.sources_pending = None
@@ -2298,6 +2340,22 @@ class GoblinWidget:
             self.refresh_sources_soon(300)
         self.when_done(self.executor.submit(self.post_local, "/api/connect-claude"), done)
 
+    def dismiss_welcome(self) -> None:
+        self.welcomed = True
+        self.save_position()
+        self.launchpad.refresh(force=True)
+
+    def toggle_autostart(self) -> None:
+        """Start Goblin Horde when the person signs in to Windows, or stop doing so."""
+        enable = not self.autostart.get("enabled")
+
+        def done(result, error) -> None:
+            if error:
+                messagebox.showwarning("Goblin Horde", f"That did not change: {error}", parent=self.root)
+            else:
+                self.autostart = result.get("autostart") or self.autostart
+        self.when_done(self.executor.submit(self.post_local, "/api/autostart", {"enabled": enable}), done)
+
     def copy_diagnostics(self) -> None:
         """Copy a short report that is safe to share: versions, states, counts, timings; no chats or codes."""
         widget_facts = f"widget: home {self.home_view} · view {self.display_mode} · {len(self.streams)} streams · " \
@@ -2340,8 +2398,9 @@ class GoblinWidget:
             if not future.done():
                 self.root.after(150, settle)
                 return
-            if self.watch_pending is future:
-                self.watch_pending = None
+            if self.watch_pending is not future:
+                return  # A newer change is on its way; its answer is the one that counts.
+            self.watch_pending = None
             try:
                 self.watched_ids = list(future.result())
             except Exception:
@@ -2585,7 +2644,22 @@ class GoblinWidget:
                 self.open_stream(related)
         self.align_streams()
 
-    def open_party(self, focus_id: str = "", bring_forward: bool = True, *, from_poll: bool = False) -> None:
+    def calm_streams(self, actors: list[dict], focus_id: str) -> set[str]:
+        """Which members get a window: the one asked for, those already open, anyone who needs you or
+        failed, then the busiest and newest until STREAM_LIMIT. Returns the ids that wait on the roster."""
+        now_ms = time.time() * 1000
+        ranked = sorted(actors, key=lambda actor: priority_for(actor, now_ms), reverse=True)
+        chosen = {str(actor["id"]) for actor in actors
+                  if str(actor["id"]) == focus_id or str(actor["id"]) in self.streams
+                  or priority_for(actor, now_ms)[0] >= 4}
+        for actor in ranked:
+            if len(chosen) >= STREAM_LIMIT:
+                break
+            chosen.add(str(actor["id"]))
+        return {str(actor["id"]) for actor in actors} - chosen
+
+    def open_party(self, focus_id: str = "", bring_forward: bool = True, *, from_poll: bool = False,
+                   everyone: bool = False) -> None:
         """Open the selected source's goblins, including actors on other pages.
 
         Streams closed with × stay closed. A person expanding the party reopens the goblin they
@@ -2614,6 +2688,10 @@ class GoblinWidget:
             if reopened:
                 self.set_dismissed(self.thread_id, self.dismissed_ids(self.thread_id) - reopened)
                 closed -= reopened
+        candidates = [actor for actor in actors if str(actor["id"]) not in closed]
+        # A large party opens calmly: a few windows, the rest a click away on the roster.
+        self.roster_only = set() if everyone else self.calm_streams(candidates, focus_id)
+        closed = closed | self.roster_only
         open_ids = [str(actor["id"]) for actor in actors if str(actor["id"]) not in closed]
         self.focused_stream_id = focus_id if focus_id in open_ids else open_ids[0] if open_ids else ""
         self.end_peek()
@@ -2638,7 +2716,7 @@ class GoblinWidget:
         """The explicit rally: every member's window, including ones closed with ×."""
         if self.thread_id != "all" or self.demo:
             self.set_dismissed(self.thread_id, set())
-        self.open_party(focus_id)
+        self.open_party(focus_id, everyone=True)
 
     def bring_stream_forward(self, actor_id: str) -> None:
         stream = self.streams.get(actor_id)
@@ -3252,7 +3330,7 @@ class GoblinWidget:
 
     def fetch_scene(self, scope: str) -> dict:
         suffix = f"?id={urllib.parse.quote(scope)}"
-        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/api/scene{suffix}", timeout=12) as response:
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/api/scene{suffix}", timeout=20) as response:
             return json.load(response)
 
     def update_party_streams(self, root: dict, agents: list[dict], warning: bool) -> None:
@@ -3354,7 +3432,9 @@ class GoblinWidget:
                         self.open_party(focus_id)
             elif self.display_mode == "expanded" and scope != "all":
                 # A stream closed with × stays closed; only genuinely new members open here.
-                party_ids = {str(actor.get("id")) for actor in self.visible_actors()} - self.dismissed_ids(scope)
+                # Members waiting on the roster by choice are not "missing" windows.
+                party_ids = ({str(actor.get("id")) for actor in self.visible_actors()} - self.dismissed_ids(scope)
+                             - self.roster_only)
                 if not self.party_mode or any(actor_id not in self.streams for actor_id in party_ids):
                     # A joining member or a recovered feed gets a free tile without stealing focus.
                     self.open_party(self.focused_stream_id, bring_forward=False, from_poll=True)

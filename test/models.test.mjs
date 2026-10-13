@@ -79,12 +79,20 @@ test("the hook reads only the model id from the newest end of a transcript, incl
       JSON.stringify({ type: "assistant", message: { model: "<synthetic>", content: [] } }),
     ].join("\n"));
     mkdirSync(join(dir, "sess", "subagents"), { recursive: true });
-    writeFileSync(join(dir, "sess", "subagents", "agent-abc123.jsonl"), JSON.stringify({ message: { model: "claude-haiku-4-5" } }));
+    writeFileSync(join(dir, "sess", "subagents", "agent-abc123.jsonl"), JSON.stringify({ type: "assistant", message: { model: "claude-haiku-4-5" } }));
     assert.equal(transcriptModel({ hook_event_name: "Stop", transcript_path: main }), "claude-opus-5-5");
     assert.equal(transcriptModel({ hook_event_name: "PreToolUse", transcript_path: main, agent_id: "abc123" }), "claude-haiku-4-5");
     assert.equal(transcriptModel({ hook_event_name: "Notification", transcript_path: main }), "", "only events after a reply look");
     assert.equal(transcriptModel({ hook_event_name: "Stop", transcript_path: join(dir, "missing.jsonl") }), "");
     assert.equal(transcriptModel({ hook_event_name: "Stop", transcript_path: join(dir, "notes.txt") }), "");
+    // A "model" inside a tool call or its result is never mistaken for the assistant's own.
+    const tools = join(dir, "tools.jsonl");
+    writeFileSync(tools, [
+      JSON.stringify({ type: "assistant", message: { model: "claude-opus-5-5", content: [{ type: "tool_use", input: { model: "haiku" } }] } }),
+      JSON.stringify({ type: "user", toolUseResult: { model: "my-private-codename" } }),
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", input: { model: "sonnet" } }] } }),
+    ].join("\n"));
+    assert.equal(transcriptModel({ hook_event_name: "Stop", transcript_path: tools }), "claude-opus-5-5");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

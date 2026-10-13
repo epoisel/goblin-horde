@@ -66,6 +66,20 @@ class WatchToggleTests(unittest.TestCase):
         self.assertIsNone(widget.watch_pending)
         widget.kick_board.assert_called_once_with()
 
+    def test_an_older_answer_never_overrides_a_newer_change(self):
+        widget = watching_widget()
+        first, second = Future(), Future()
+        widget.executor.submit.side_effect = [first, second]
+        widget.set_watched("chat-b", True)
+        settle_first = widget.root.after.call_args.args[1]
+        widget.set_watched("chat-c", True)
+        settle_second = widget.root.after.call_args.args[1]
+        second.set_result(["chat-c", "chat-b", "chat-a"])
+        settle_second()
+        first.set_result(["chat-b", "chat-a"])  # Arrives last, but describes an older state.
+        settle_first()
+        self.assertEqual(widget.watched_ids, ["chat-c", "chat-b", "chat-a"])
+
     def test_a_change_the_server_refused_is_taken_back(self):
         widget = watching_widget()
         future = Future()

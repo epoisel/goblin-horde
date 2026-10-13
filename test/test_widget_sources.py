@@ -45,7 +45,7 @@ class SourcesRowTests(unittest.TestCase):
         })
         self.assertEqual(bottom, 28)
         labels = [call.kwargs["text"] for call in pad.body.create_text.call_args_list]
-        self.assertEqual(labels, ["CODEX ✕ FIX", "CLAUDE ✕ FIX", "ORCA ✓", "FEEDS –"])
+        self.assertEqual(labels, ["CODEX ✕ FIX", "CLAUDE – CONNECT", "ORCA ✓", "FEEDS –"])
         codex, claude, orca, _feeds = pad.hitboxes
         codex[4]()
         pad.owner.reconnect_codex.assert_called_once_with()
@@ -53,9 +53,10 @@ class SourcesRowTests(unittest.TestCase):
         pad.owner.connect_claude.assert_called_once_with()
         self.assertIn("reply in the app itself", orca[5])
 
-    def test_claude_without_a_one_click_connect_only_explains(self):
-        pad, _ = self.draw({"claude": {"state": "not-connected", "detail": "Not connected.", "canConnect": False}})
-        self.assertEqual(pad.body.create_text.call_args.kwargs["text"], "CLAUDE ✕")
+    def test_an_optional_feed_not_in_use_is_neutral_not_an_error(self):
+        pad, _ = self.draw({"claude": {"state": "not-connected", "detail": "Not connected.", "canConnect": False},
+                            "orca": {"state": "unavailable", "detail": "Orca is not answering."}})
+        self.assertEqual([call.kwargs["text"] for call in pad.body.create_text.call_args_list], ["CLAUDE –", "ORCA –"])
         pad.hitboxes[0][4]()
         pad.owner.connect_claude.assert_not_called()
 

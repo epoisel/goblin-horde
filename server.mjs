@@ -18,6 +18,7 @@ import { ClaudeReader, goblinStateDir } from "./lib/claude.mjs";
 import { ExtensionReader, EXTENSION_PARTY, extensionFeedDir } from "./lib/extension.mjs";
 import { claudeHookReport, claudeSettingsPath, installClaudeHooks } from "./lib/claude-hooks.mjs";
 import { diagnosticReport } from "./lib/diagnostics.mjs";
+import { removeShortcut, shortcutPaths, shortcutSpec, writeShortcut } from "./lib/shortcuts.mjs";
 import { claudeConfigDir } from "./lib/paths.mjs";
 import { codexCommand } from "./lib/codex-bin.mjs";
 import { Pairing, sessionCookie } from "./lib/pairing.mjs";
@@ -138,7 +139,8 @@ class CodexReader {
     } else {
       this.scheduleRestart(this.problem);
     }
-    this.health = { ...this.health, state: this.restarts ? "restarting" : "starting", since: Date.now() };
+    this.pagedTurns = undefined; // A Codex updated since the last start may now page its history.
+    if (this.process) this.health = { ...this.health, state: this.restarts ? "restarting" : "starting", since: Date.now() };
     this.ready = this.request("initialize", {
       clientInfo: { name: "goblin_horde", title: "Goblin Horde", version },
       capabilities: { experimentalApi: true },
@@ -148,8 +150,17 @@ class CodexReader {
       this.restarts = 0;
       this.health = { ...this.health, state: "ready", since: Date.now(), lastError: "", nextRetryAt: 0 };
     });
-    // Codex is optional: callers still await `ready` and see the failure, but nothing else is left holding it.
-    this.ready.catch(() => {});
+    // Codex is optional: callers still await `ready` and see the failure. A Codex that never answered
+    // initialize (or refused it) is stopped and retried, as one that exited would be.
+    this.ready.catch((error) => {
+      if (!current() || !this.process) return;
+      const child = this.process;
+      this.generation++; // Its exit is now expected, not news.
+      try { child.kill(); } catch { /* Already gone. */ }
+      this.problem = `Codex did not start (${error.message}).`;
+      this.failAll(error);
+      this.scheduleRestart(this.problem);
+    });
   }
 
   scheduleRestart(reason) {
@@ -425,6 +436,12 @@ async function listAllSources() {
   return { threads: [...codex, ...sessions, ...parties, ...workspaces].sort((a, b) => Number(b.updatedAt) - Number(a.updatedAt)), unavailable };
 }
 
+/** Whether this installed copy can start at Windows sign-in, and whether it does. */
+function autostartState() {
+  const paths = installed ? shortcutPaths() : null;
+  return paths ? { available: true, enabled: existsSync(paths.startup) } : { available: false, enabled: false };
+}
+
 /** Codex's connection, in the same shape as the other sources: retried on its own, or by reconnect. */
 function codexSource() {
   const health = reader.health;
@@ -450,6 +467,7 @@ async function capabilities() {
       : process.platform === "darwin"
         ? { native: true, note: "The transparent desktop goblins run on macOS with python.org or Homebrew Python (Tk 8.6 or newer); \"node goblin.mjs doctor\" shows whether this Mac has it." }
         : { native: false, note: "This computer uses the browser viewer. The transparent desktop goblins run on Windows and macOS." },
+    autostart: autostartState(),
     sources: {
       codex: codexSource(),
       claude: {
@@ -513,12 +531,14 @@ async function timedScene() {
 let allScenePending = null;
 let allSceneCached = null;
 let allSceneCachedAt = 0;
+let allSceneDirty = false; // Something changed: rebuild now, but keep serving the last scene meanwhile.
 // A scene this old is still served at once while a fresh one is built; older ones wait for the rebuild.
 const ALL_SCENE_STALE_MS = 60_000;
 function recentScene() {
   const age = Date.now() - allSceneCachedAt;
-  if (allSceneCached && age < 1500) return Promise.resolve(allSceneCached);
+  if (allSceneCached && age < 1500 && !allSceneDirty) return Promise.resolve(allSceneCached);
   if (!allScenePending) {
+    allSceneDirty = false;
     allScenePending = timedScene().then((scene) => {
       allSceneCached = scene;
       allSceneCachedAt = Date.now();
@@ -671,16 +691,24 @@ const handler = async (request, response) => {
     try { return await handlePair(request, response, origin); }
     catch { return fail(response, 500, "Unable to pair this phone."); }
   }
-  if (["/api/reconnect", "/api/connect-claude"].includes(url.pathname) && request.method === "POST") {
+  if (["/api/reconnect", "/api/connect-claude", "/api/autostart"].includes(url.pathname) && request.method === "POST") {
     // Only this computer may restart a source or change Claude Code's settings; never a paired phone.
     if (!isLocal(request)) return json(response, 403, { error: "Only this computer can do that." });
     if (request.headers.origin !== origin || !String(request.headers["content-type"] || "").startsWith("application/json"))
       return json(response, 403, { error: "Open the viewer first." });
     try {
-      await readBody(request);
+      const data = await readBody(request);
+      if (url.pathname === "/api/autostart") {
+        const paths = installed ? shortcutPaths() : null;
+        if (!paths) return json(response, 409, { error: "Starting at sign-in needs an installed copy on Windows." });
+        if (typeof data.enabled !== "boolean") return json(response, 400, { error: "Say whether to start at sign-in." });
+        if (data.enabled) writeShortcut(paths.startup, shortcutSpec({ nodePath: process.execPath, installDir: here.replace(/[\\/]+$/, "") }));
+        else removeShortcut(paths.startup);
+        return json(response, 200, { autostart: autostartState() });
+      }
       if (url.pathname === "/api/reconnect") {
         reader.reconnect();
-        allSceneCachedAt = 0;
+        allSceneDirty = true;
         return json(response, 200, { codex: codexSource() });
       }
       if (!installed) return json(response, 409, { error: "Install Goblin Horde first (node goblin.mjs install), then connect Claude Code." });
@@ -699,7 +727,7 @@ const handler = async (request, response) => {
       const data = await readBody(request);
       if (typeof data.watched !== "boolean") throw Object.assign(new Error("Say whether to watch it."), { statusCode: 400 });
       const ids = watchList.set(String(data.id || ""), data.watched);
-      allSceneCachedAt = 0; // The next poll reads the newly watched chat or drops the unwatched one.
+      allSceneDirty = true; // The next poll starts reading the newly watched chat; nobody waits for it.
       return json(response, 200, { watched: ids });
     } catch (error) { return fail(response, error.statusCode || 500, error.message || "Unable to change what is watched."); }
   }
@@ -742,7 +770,8 @@ const handler = async (request, response) => {
     }
     if (url.pathname === "/api/scene") {
       const threadId = url.searchParams.get("id") || defaultThreadId;
-      if (threadId === "all") return json(response, 200, { ...(await recentScene()), servedAt: Date.now() });
+      // The watch list is always the current one, even on a scene built before the last change.
+      if (threadId === "all") return json(response, 200, { ...(await recentScene()), watched: [...watchList.ids], servedAt: Date.now() });
       if (threadId.startsWith("orca:")) {
         const scene = await orca.scene(threadId);
         return scene ? json(response, 200, { ...scene, checkedAt: Date.now() }) : json(response, 404, { error: "That Orca workspace is unavailable." });
