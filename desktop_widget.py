@@ -8,7 +8,7 @@ import json
 import os
 import time
 import tkinter as tk
-from tkinter import font as tkfont, simpledialog
+from tkinter import font as tkfont, messagebox, simpledialog
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1193,6 +1193,8 @@ class Launchpad:
             [card_key(card) for card in active], [card_key(card) for card in recent], older,
             len(owner.source_catalog), owner.catalog_failed, owner.palette_offset,
             self.show_all_working, coverage_note(owner.board_coverage),
+            tuple(owner.watched_ids), tuple(owner.catalog_unavailable), int(owner.board_age) // 10,
+            tuple((key, str(value.get("state")), bool(value.get("canConnect"))) for key, value in sorted(owner.sources.items())),
         ))
         if fingerprint == self.fingerprint and not force:
             return
@@ -1214,6 +1216,9 @@ class Launchpad:
             return "OFFLINE · GOBLIN HORDE IS NOT ANSWERING · RETRYING"
         elif connection == "PARTIAL":
             state = coverage_note(self.owner.board_coverage) or "PARTIAL FEED"
+        elif self.owner.board_age >= 20:
+            # The server answered with the last scene it built while a fresher one is on its way.
+            state = f"UPDATED {int(self.owner.board_age)}s AGO"
         else:
             state = connection
         parts = [state, f"{len(active)} WORKING"]
@@ -1239,6 +1244,7 @@ class Launchpad:
         if self.searching:
             y = self.draw_results(y, width)
         else:
+            y = self.draw_sources(y, width)
             if self.owner.thread_id != "all":
                 y = self.draw_current(y, width)
             needs = sum(card.needs for card in active)
@@ -1280,6 +1286,47 @@ class Launchpad:
             c.yview_moveto(0)
         c.create_rectangle(0, 0, 0, 0, outline=GOLD, width=1, state="hidden", tags="hover")
         place_at_anchor(self.owner, self.window, LAUNCHPAD_WIDTH, view + chrome)
+
+    SOURCE_NAMES = (("codex", "CODEX"), ("claude", "CLAUDE"), ("orca", "ORCA"), ("extensions", "FEEDS"))
+
+    def draw_sources(self, y: int, width: int) -> int:
+        """One row naming every feed: ✓ connected, … starting, ✕ needs a fix (click to fix), – not in use."""
+        owner = self.owner
+        sources = owner.sources
+        if not sources:
+            return y
+        c = self.body
+        x = 8
+        for key, name in self.SOURCE_NAMES:
+            source = sources.get(key)
+            if not isinstance(source, dict):
+                continue  # A viewer that does not report this feed says nothing about it.
+            state = str(source.get("state") or "")
+            detail = str(source.get("detail") or "")
+            command = None
+            if state == "ok":
+                glyph, ink = "✓", LIVELY
+            elif state == "starting":
+                glyph, ink = "…", MUTED
+            elif state in ("none", "not-installed"):
+                glyph, ink = "–", "#7f9a88"
+            else:
+                glyph, ink = "✕", ALERT
+                if key == "codex":
+                    command, detail = owner.reconnect_codex, f"{detail} Click to reconnect now."
+                elif key == "claude" and source.get("canConnect"):
+                    command, detail = owner.connect_claude, f"{detail} Click to connect it."
+            if key == "codex" and state == "ok":
+                detail += " Replies from the browser or phone are available."
+            elif state == "ok" and source.get("replies") is False:
+                detail += " Watch-only here: reply in the app itself."
+            label = f"{name} {glyph}" + (" FIX" if command else "")
+            right = x + self.tag_font.measure(label) + 12
+            c.create_rectangle(x, y, right, y + 17, fill=PILL_INK, outline=ink if command else CARD_LINE)
+            c.create_text((x + right) // 2, y + 9, text=label, fill=ink, font=self.tag_font)
+            self.hitboxes.append((x, y, right, y + 17, command or (lambda: None), detail))
+            x = right + 5
+        return y + 24
 
     def section(self, y: int, width: int, text: str, color: str) -> int:
         self.body.create_text(8, y + 4, anchor="nw", text=text, fill=color, font=self.tag_font)
@@ -1486,6 +1533,10 @@ class Launchpad:
             heading = f"⌕ {len(self.results)} {'MATCH' if len(self.results) == 1 else 'MATCHES'} FOR “{query[:24]}”"
         else:
             heading = f"ALL {len(catalog)} CHATS AND WORKSPACES · NEWEST FIRST"
+        if owner.catalog_unavailable:
+            heading += f" · {', '.join(owner.catalog_unavailable).upper()} LIST UNAVAILABLE"
+        elif owner.catalog_failed or (owner.catalog_at and time.monotonic() - owner.catalog_at > 180):
+            heading += f" · LIST FROM {max(1, int((time.monotonic() - owner.catalog_at) / 60))}m AGO"
         y = self.section(y, width, heading, GOLD)
         if not self.results:
             c.create_text(12, y + 4, anchor="nw", fill=MUTED, font=self.small_font,
@@ -1577,6 +1628,11 @@ class Launchpad:
         menu.add_command(label="Change goblin outfits", command=owner.change_outfits)
         menu.add_command(label=owner.motion_label(), command=owner.toggle_reduced_motion)
         menu.add_command(label="Resume updates" if owner.paused else "Pause updates", command=owner.toggle_pause)
+        menu.add_separator()
+        menu.add_command(label="Reconnect Codex", command=owner.reconnect_codex)
+        if (owner.sources.get("claude") or {}).get("canConnect"):
+            menu.add_command(label="Connect Claude Code…", command=owner.connect_claude)
+        menu.add_command(label="Copy diagnostic report", command=owner.copy_diagnostics)
         menu.add_separator()
         menu.add_command(label="Close goblins", command=owner.close)
         menu.tk_popup(self.window.winfo_pointerx(), self.window.winfo_pointery())
@@ -1681,6 +1737,12 @@ class GoblinWidget:
         self.board_pending = None
         self.board_requested = 0.0
         self.board_after = None
+        self.board_age = 0.0  # Seconds the server's all-parties scene was old when it was served.
+        self.catalog_unavailable: list[str] = []
+        # Which feeds the viewer can see (Codex, Claude Code, Orca, extensions), refreshed every 30 seconds.
+        self.sources: dict = {}
+        self.sources_pending = None
+        self.sources_after = None
         self.notes = PartingNotes()
         self.retirement = RetirementTracker()
         # actor id -> Exit; one monotonic start per portal so every surface shows the same beat.
@@ -1770,6 +1832,7 @@ class GoblinWidget:
         self.poll_after = self.root.after(100, self.poll)
         self.animate_after = self.root.after(650, self.animate)
         self.catalog_after = self.root.after(200, self.load_catalog)
+        self.sources_after = self.root.after(400, self.poll_sources)
         if self.board_after is None:  # Showing the launchpad above may already have started it.
             self.board_after = self.root.after(120, self.poll_board)
 
@@ -2140,6 +2203,7 @@ class GoblinWidget:
         try:
             catalog = self.catalog_pending.result()
             self.source_catalog = catalog.get("threads") or []
+            self.catalog_unavailable = [str(name) for name in catalog.get("unavailable") or []]
             self.take_watched(catalog.get("watched"))
             self.catalog_failed = False
         except Exception:
@@ -2148,6 +2212,107 @@ class GoblinWidget:
         self.catalog_at = time.monotonic()
         self.launchpad.refresh()
         self.catalog_after = self.root.after(60_000, self.load_catalog)
+
+    # Sources -----------------------------------------------------------------
+    def poll_sources(self) -> None:
+        """Which feeds are connected, starting, or need setup; every 30 seconds, or at once after a fix."""
+        self.sources_after = None
+        if self.closing:
+            return
+        if self.sources_pending is None and not self.demo:
+            self.sources_pending = self.executor.submit(self.get_local, "/api/capabilities")
+        if self.sources_pending is not None:
+            if not self.sources_pending.done():
+                self.sources_after = self.root.after(200, self.poll_sources)
+                return
+            try:
+                self.sources = self.sources_pending.result().get("sources") or {}
+            except Exception:
+                pass  # The board already says when the viewer itself is not answering.
+            self.sources_pending = None
+            self.launchpad.refresh()
+        self.sources_after = self.root.after(30_000, self.poll_sources)
+
+    def refresh_sources_soon(self, delay: int = 1500) -> None:
+        if self.sources_after:
+            self.root.after_cancel(self.sources_after)
+        self.sources_after = self.root.after(delay, self.poll_sources)
+
+    def get_local(self, path: str) -> dict:
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=10) as response:
+            return json.load(response)
+
+    def post_local(self, path: str, data: dict | None = None) -> dict:
+        origin = f"http://127.0.0.1:{self.port}"
+        request = urllib.request.Request(f"{origin}{path}", method="POST", data=json.dumps(data or {}).encode("utf-8"),
+                                         headers={"Content-Type": "application/json", "Origin": origin})
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            try:
+                message = json.load(error).get("error")
+            except (ValueError, AttributeError):
+                message = ""
+            raise RuntimeError(message or f"The viewer answered {error.code}.") from None
+
+    def when_done(self, future, done) -> None:
+        """Call done(result, error) on the Tk thread once a background request finishes."""
+        def check() -> None:
+            if self.closing:
+                return
+            if not future.done():
+                self.root.after(150, check)
+                return
+            try:
+                done(future.result(), None)
+            except Exception as error:  # A failed request is reported, never raised into Tk.
+                done(None, error)
+        self.root.after(150, check)
+
+    def reconnect_codex(self) -> None:
+        """Restart the viewer's Codex connection now instead of waiting for its next retry."""
+        def done(_result, error) -> None:
+            if error:
+                messagebox.showwarning("Goblin Horde", f"Codex could not be reconnected: {error}", parent=self.root)
+            self.refresh_sources_soon(2500)
+            self.kick_board()
+        self.sources["codex"] = {**self.sources.get("codex", {}), "state": "starting", "detail": "Starting Codex…"}
+        self.launchpad.refresh(force=True)
+        self.when_done(self.executor.submit(self.post_local, "/api/reconnect"), done)
+
+    def connect_claude(self) -> None:
+        """Connect Claude Code after an explicit yes: it adds Goblin Horde hooks to Claude Code's user settings."""
+        if not messagebox.askyesno(
+                "Connect Claude Code",
+                "Show Claude Code sessions here?\n\nThis adds Goblin Horde entries to your Claude Code settings "
+                "(~/.claude/settings.json). Your other settings and hooks stay as they are, and a backup is kept beside it.\n\n"
+                "Undo any time with: node goblin.mjs hooks remove", parent=self.root):
+            return
+
+        def done(result, error) -> None:
+            if error:
+                messagebox.showwarning("Goblin Horde", f"Claude Code was not connected: {error}", parent=self.root)
+            else:
+                messagebox.showinfo("Goblin Horde", str(result.get("message") or "Connected Claude Code."), parent=self.root)
+            self.refresh_sources_soon(300)
+        self.when_done(self.executor.submit(self.post_local, "/api/connect-claude"), done)
+
+    def copy_diagnostics(self) -> None:
+        """Copy a short report that is safe to share: versions, states, counts, timings; no chats or codes."""
+        widget_facts = f"widget: home {self.home_view} · view {self.display_mode} · {len(self.streams)} streams · " \
+                       f"board {self.board_connection.lower()}, {int(self.board_age)}s old"
+
+        def done(result, error) -> None:
+            if error:
+                messagebox.showwarning("Goblin Horde", f"The viewer did not answer: {error}", parent=self.root)
+                return
+            text = f"{result.get('text', '')}\n{widget_facts}"
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            messagebox.showinfo("Goblin Horde", "Diagnostic report copied. Paste it into your bug report.\n\n" + text,
+                                parent=self.root)
+        self.when_done(self.executor.submit(self.get_local, "/api/diagnostics"), done)
 
     # Watching --------------------------------------------------------------
     def take_watched(self, ids) -> None:
@@ -3245,6 +3410,10 @@ class GoblinWidget:
         self.board_connection = "PARTIAL" if scene.get("warning") else "LIVE"
         self.board_success = time.time()
         self.board_requested = time.monotonic()
+        try:
+            self.board_age = max(0.0, (float(scene.get("servedAt")) - float(scene.get("checkedAt"))) / 1000)
+        except (TypeError, ValueError):
+            self.board_age = 0.0
 
     def board_cards(self):
         """Working and recent parties. The selected party uses its fuller focused scene."""
@@ -3295,7 +3464,7 @@ class GoblinWidget:
         self.closing = True
         self.save_position()
         for callback in (self.restore_after, self.poll_after, self.receive_after,
-                         self.animate_after, self.catalog_after, self.board_after):
+                         self.animate_after, self.catalog_after, self.board_after, self.sources_after):
             if callback:
                 self.root.after_cancel(callback)
         for stream in self.streams.values():

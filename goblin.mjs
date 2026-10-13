@@ -21,10 +21,10 @@ if (major < 20) {
   process.exit(2);
 }
 
-const { ManagerError, doctor, hooksInstall, hooksRemove, hooksStatus, install, locate, makeContext, start, status, stop, uninstall } = await import("./lib/manager.mjs");
+const { ManagerError, doctor, getLocalJson, hooksInstall, hooksRemove, hooksStatus, install, locate, makeContext, start, status, stop, uninstall } = await import("./lib/manager.mjs");
 const { appendExtensionRecord, extensionFeedDir, validateExtensionRecord } = await import("./lib/extension.mjs");
 
-const BOOLEAN = new Set(["json", "no-start", "skip-skill", "remove-settings", "claude-hooks", "no-claude-hooks", "check", "no-browser", "compact", "help"]);
+const BOOLEAN = new Set(["json", "no-start", "skip-skill", "remove-settings", "claude-hooks", "no-claude-hooks", "check", "no-browser", "compact", "help", "report"]);
 const VALUE = new Set(["install-dir", "state-dir", "claude-config-dir", "codex-home", "codex-skill-dir", "port", "ui", "feed", "record"]);
 
 export function parseArgs(argv) {
@@ -56,6 +56,8 @@ function managerFlags(flags) {
 const HELP = `Goblin Horde manager
 
   node goblin.mjs doctor            Check prerequisites, feeds, and the port. Changes nothing.
+  node goblin.mjs doctor --report   A short report safe to paste into a bug report: states, counts, and
+                                    timings only, with no chats, names, paths, or pairing codes.
   node goblin.mjs install           Copy the app to your user folder and start it.
       --claude-hooks                Also connect Claude Code (adds hooks to your Claude settings).
       --no-claude-hooks             Do not connect Claude Code (removes this installation's hooks if present).
@@ -127,6 +129,23 @@ async function emit(ctx, flags) {
   return { accepted: results.filter((item) => item.ok).length, rejected: results.filter((item) => !item.ok).length, results, checkOnly: Boolean(flags.check) };
 }
 
+/**
+ * `doctor --report`: what to paste into a bug report. Check names and states only (their details can
+ * hold folder paths), plus the running viewer's own diagnostic summary when it answers.
+ */
+async function safeReport(report, ctx, options) {
+  const lines = [`Goblin Horde doctor (${report.platform}): ` + report.checks.map((check) => `${check.name} ${check.state}`).join(" · ")];
+  try {
+    const port = locate(ctx, options).port;
+    const live = await getLocalJson(port, "/api/diagnostics", 4000);
+    if (live?.text) lines.push(live.text);
+    else lines.push("Viewer: no live report (it is not running, or it is an older version; start or reinstall it).");
+  } catch {
+    lines.push("Viewer: not answering on its port (start it with: node goblin.mjs start).");
+  }
+  return lines.join("\n");
+}
+
 export async function main(argv = process.argv.slice(2), ctx = makeContext({ sourceDir: dirname(fileURLToPath(import.meta.url)) })) {
   const { command, sub, flags } = parseArgs(argv);
   const options = managerFlags(flags);
@@ -139,6 +158,10 @@ export async function main(argv = process.argv.slice(2), ctx = makeContext({ sou
       return 0;
     case "doctor": {
       const report = await doctor(ctx, options);
+      if (flags.report) {
+        log(await safeReport(report, ctx, options));
+        return 0;
+      }
       out(report, (data) => printDoctor(data, log));
       return report.checks.some((check) => check.name === "node" && check.state !== "ok") ? 2 : 0;
     }

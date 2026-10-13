@@ -73,10 +73,11 @@
       <section id="reply-dock" class="reply-dock" aria-label="Reply" hidden>
         <form id="reply-form">
           <label id="reply-label" for="reply-text">Reply to this chat</label>
+          <p id="reply-hint" class="reply-hint">Your reply starts the next turn in this Codex chat. If the chat is open in the Codex app on your computer, you'll be offered a <strong>mobile branch</strong> instead: a separate copy of the chat that never merges back into the original.</p>
           <textarea id="reply-text" rows="2" maxlength="4000" placeholder="Tell Codex what to do next…" required></textarea>
           <div class="reply-actions"><span id="reply-status" role="status"></span><button id="reply-send" class="button gold" type="submit">Send reply</button></div>
         </form>
-        <div id="branch-choice" class="branch-choice" hidden><p>Codex has this chat open on your computer. A mobile branch copies the conversation so far and continues separately.</p><button id="branch-send" class="button" type="button">Send in mobile branch</button></div>
+        <div id="branch-choice" class="branch-choice" hidden><p>Codex has this chat open on your computer, so it can't take a reply from here. A mobile branch copies the conversation so far and continues separately. It does not merge back: carry anything you need into the original chat yourself.</p><button id="branch-send" class="button" type="button">Send in mobile branch</button></div>
       </section>
       <p id="watch-note" class="watch-note" hidden></p>
     </main>

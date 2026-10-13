@@ -381,3 +381,6 @@ body.lp-hidden .launchpad { display: none; }
 .mobile-address { color: var(--teal); overflow-wrap: anywhere; }
 .mobile-code { display: block; margin-top: 4px; font: 700 26px/1.2 var(--mono); letter-spacing: .2em; color: var(--gold); }
 body.no-art .goblin { background: radial-gradient(circle at 50% 45%, var(--moss) 0 30%, transparent 31%); }
+
+/* Says how a reply travels before anyone writes one: next turn, or a branch that never merges back. */
+.reply-hint { margin: 2px 0 6px; color: var(--soft); font-size: 12.5px; line-height: 1.4; }
