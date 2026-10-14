@@ -1175,7 +1175,9 @@ def status_chip(agent: dict, now_ms: float | None = None) -> tuple[str, str]:
     if idle_since(agent):
         return f"Idle · no activity for {quiet_for(now - idle_since(agent))}", "done"
     stamp = updated_ms(agent)
-    return (f"Done · {age_label(stamp, now)}" if stamp else "Done"), "done"
+    # A turn stopped with Esc or a denied permission did not finish.
+    word = "Stopped" if str(agent.get("status") or "").lower() == "stopped" else "Done"
+    return (f"{word} · {age_label(stamp, now)}" if stamp else word), "done"
 
 
 # Sources, search, and settings -----------------------------------------------------------------

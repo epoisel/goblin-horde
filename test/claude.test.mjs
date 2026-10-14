@@ -337,9 +337,15 @@ test("hooks map cleanly to needs-you, failure, finish, and end states", () => {
   assert.equal(ended.status, "ended");
   assert.equal(ended.turnStates.at(-1).status, "interrupted");
 
+  // An open shell command heard nothing from for longer than the shell tool can run: idle.
   const silent = buildClaudeSessions(records(...base), { now: NOW + CLAUDE_LIMITS.staleMs + 10_000 })[0].agents[0];
-  assert.equal(silent.status, "stale");
+  assert.equal(silent.status, "idle");
   assert.equal(silent.attention, "quiet");
+  // Any other open call (a subagent at work) is stale only after two hours.
+  const agentCall = [hook("UserPromptSubmit", {}, NOW), hook("PreToolUse", { tool_name: "Agent", tool_use_id: "g1", tool_input: { description: "Audit" } }, NOW + 1)];
+  const lost = buildClaudeSessions(records(...agentCall), { now: NOW + CLAUDE_LIMITS.staleMs + 10_000 })[0].agents[0];
+  assert.equal(lost.status, "stale");
+  assert.equal(lost.attention, "quiet");
 });
 
 test("a permission request stays open until its own tool resolves, not when another tool finishes", () => {

@@ -488,7 +488,7 @@ test("an open turn with nothing running and no hook for ten minutes is idle, not
   const thinking = main(list, NOW + 2_000 + CLAUDE_LIMITS.idleMs - 60_000);
   assert.equal(thinking.attention, "working");
   assert.deepEqual(thinking.now, { kind: "think", title: "Thinking", startedAt: NOW + 2_000 });
-  // A call still open (a long test run) keeps running past ten minutes, up to the two-hour stale limit.
+  // A call still open (a long test run) keeps running past ten minutes (a shell command up to twelve, see below).
   const running = main(records(...start, hook("PreToolUse", pre("Bash", { command: "npm run e2e" }, { tool_use_id: "toolu_i2" }), NOW + 3_000)), later);
   assert.equal(running.attention, "working");
   assert.equal(running.now.title, "Running npm run e2e");
@@ -620,4 +620,106 @@ test("the reader names a session from its transcript when the hook saw no prompt
     const broken = new ClaudeReader({ dir, ttlMs: 0, clock: () => NOW + 10_000, titles: { title: () => { throw new Error("disk gone"); } } });
     assert.match(broken.snapshot().sessions[0].name, /^Claude · billing-api · [0-9a-f]{4}$/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a notice while two requests wait keeps both asking: Claude Code shows the older one first", () => {
+  const SECOND = 1000;
+  const remove = pre("Bash", { command: "rm -rf build" }, { agent_id: "subX", agent_type: "general-purpose", tool_use_id: "toolu_SX" });
+  const install = pre("Bash", { command: "pnpm install" }, { agent_id: "subY", agent_type: "general-purpose", tool_use_id: "toolu_SY" });
+  const notice = (message, at) => hook("Notification", { notification_type: "permission_prompt", ...(message ? { message } : {}) }, at);
+  const asked = (more) => records(
+    hook("UserPromptSubmit", {}, NOW),
+    hook("SubagentStart", { agent_id: "subX", agent_type: "general-purpose" }, NOW + 100),
+    hook("SubagentStart", { agent_id: "subY", agent_type: "general-purpose" }, NOW + 200),
+    hook("PreToolUse", remove, NOW + SECOND), hook("PermissionRequest", remove, NOW + SECOND + 1),
+    hook("PreToolUse", install, NOW + 4 * SECOND), hook("PermissionRequest", install, NOW + 4 * SECOND + 1),
+    ...more,
+  );
+  const asks = (list, now) => party(list, now).agents.filter((agent) => agent.childOf && agent.ask).map((agent) => agent.ask.command).sort();
+  for (const said of ["Claude needs your permission to use Bash", ""]) {
+    const list = asked([notice(said, NOW + 7 * SECOND)]);
+    assert.deepEqual(asks(list, NOW + 11 * SECOND), ["pnpm install", "rm -rf build"], `the older request is still on screen (${said || "no words"})`);
+    assert.deepEqual(asks(list, NOW + 5 * 60 * SECOND), ["pnpm install", "rm -rf build"]);
+  }
+  // The notice names the tool on screen: an older request for another tool was answered before it.
+  const read = pre("Read", { file_path: "/work/billing-api/.env.example" }, { agent_id: "subY", agent_type: "general-purpose", tool_use_id: "toolu_SR" });
+  const mixed = records(
+    hook("UserPromptSubmit", {}, NOW),
+    hook("SubagentStart", { agent_id: "subX", agent_type: "general-purpose" }, NOW + 100),
+    hook("SubagentStart", { agent_id: "subY", agent_type: "general-purpose" }, NOW + 200),
+    hook("PreToolUse", remove, NOW + SECOND), hook("PermissionRequest", remove, NOW + SECOND + 1),
+    hook("PreToolUse", read, NOW + 4 * SECOND), hook("PermissionRequest", read, NOW + 4 * SECOND + 1),
+    notice("Claude needs your permission to use Read", NOW + 10 * SECOND),
+  );
+  const shown = party(mixed, NOW + 60 * SECOND).agents.filter((agent) => agent.childOf && agent.ask).map((agent) => agent.ask.tool);
+  assert.deepEqual(shown, ["Read"], "the Bash request made before it was approved at once");
+});
+
+test("a call started in the background says so instead of finished, and its subagent keeps working", () => {
+  const spawn = pre("Agent", { description: "Watch the nightly build", subagent_type: "general-purpose", prompt: "PRIVATE", run_in_background: true },
+    { tool_use_id: "toolu_BG" });
+  const [record] = records(hook("PreToolUse", spawn));
+  assert.equal(record.background, true);
+  assert.equal(records(hook("PreToolUse", pre("Bash", { command: "npm run dev", run_in_background: true })))[0].background, true);
+  assert.equal(records(hook("PreToolUse", pre("Bash", { command: "npm test" })))[0].background, undefined);
+  const list = records(
+    hook("UserPromptSubmit", {}, NOW),
+    hook("PreToolUse", spawn, NOW + 1_000),
+    hook("PostToolUse", spawn, NOW + 1_100),
+  );
+  assert.equal(main(list, NOW + 2_000).now.title, "Started in the background: Watch the nightly build");
+  const dev = pre("Bash", { command: "npm run dev", run_in_background: true }, { tool_use_id: "toolu_BD" });
+  assert.equal(main(records(hook("UserPromptSubmit", {}, NOW), hook("PreToolUse", dev, NOW + 1_000), hook("PostToolUse", dev, NOW + 1_100)), NOW + 2_000).now.title,
+    "Started npm run dev in the background");
+  // The session's turn ends and Claude Code goes back to its prompt; the background subagent works on.
+  const later = records(
+    hook("SubagentStart", { agent_id: "bg1", agent_type: "general-purpose" }, NOW + 1_200),
+    hook("PreToolUse", pre("Bash", { command: "gh run watch" }, { agent_id: "bg1", agent_type: "general-purpose", tool_use_id: "toolu_BW" }), NOW + 2_000),
+    hook("Stop", { last_assistant_message: "Started the watcher." }, NOW + 3_000),
+    hook("Notification", { notification_type: "idle_prompt" }, NOW + 63_000),
+  );
+  const child = party([...list, ...later], NOW + 70_000).agents.find((agent) => agent.childOf);
+  assert.equal(child.attention, "working");
+  assert.equal(child.now.title, "Running gh run watch");
+});
+
+test("a shell call with no hook for twelve minutes is over: the shell tool stops at ten", () => {
+  const start = [hook("UserPromptSubmit", { prompt: "Run the e2e suite" }, NOW),
+    hook("PreToolUse", pre("Bash", { command: "npm run e2e" }, { tool_use_id: "toolu_E" }), NOW + 1_000)];
+  const list = records(...start);
+  const eleven = main(list, NOW + 1_000 + 11 * 60_000);
+  assert.equal(eleven.attention, "working");
+  assert.equal(eleven.now.title, "Running npm run e2e");
+  const closed = main(list, NOW + 1_000 + 13 * 60_000);
+  assert.equal(closed.attention, "quiet");
+  assert.equal(closed.status, "idle");
+  assert.equal(closed.now, null);
+  assert.equal(closed.idleSince, NOW + 1_000);
+  // Another tool (a subagent at work) can run longer.
+  const agent = records(hook("UserPromptSubmit", {}, NOW), hook("PreToolUse", pre("Agent", { description: "Audit the importer", subagent_type: "Explore" }, { tool_use_id: "toolu_A" }), NOW + 1_000));
+  assert.equal(main(agent, NOW + 30 * 60_000).attention, "working");
+});
+
+test("a turn stopped with Esc or a denial reads Stopped, and its open step did not finish", () => {
+  const remove = pre("Bash", { command: "rm -rf build" }, { tool_use_id: "toolu_ST" });
+  const list = records(
+    hook("UserPromptSubmit", {}, NOW),
+    hook("PreToolUse", remove, NOW + 1_000),
+    hook("PermissionRequest", remove, NOW + 1_001),
+    hook("Notification", { notification_type: "permission_prompt", message: "Claude needs your permission to use Bash" }, NOW + 7_000),
+    hook("Notification", { notification_type: "idle_prompt" }, NOW + 20_000),
+  );
+  const stopped = main(list, NOW + 30_000);
+  assert.equal(stopped.status, "stopped");
+  assert.equal(stopped.attention, "quiet");
+  const step = stopped.activities.find((item) => item.kind === "command");
+  assert.notEqual(step.status, "completed", "a denied command did not run");
+  assert.notEqual(step.status, "inProgress");
+  assert.equal(stopped.latest.title, "Status");
+  assert.equal(stopped.latest.description, "Stopped before it finished.");
+  // A turn that finished before the prompt went idle is just finished.
+  const done = main(records(hook("UserPromptSubmit", {}, NOW), hook("Stop", { last_assistant_message: "All done." }, NOW + 1_000),
+    hook("Notification", { notification_type: "idle_prompt" }, NOW + 61_000)), NOW + 70_000);
+  assert.equal(done.status, "completed");
+  assert.equal(done.latest.description, "All done.");
 });

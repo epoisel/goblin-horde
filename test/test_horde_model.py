@@ -324,6 +324,13 @@ class DetailTests(unittest.TestCase):
         idle = agent("claude-agent:s", source="claude", attention="quiet", status="idle", idleSince=NOW - 66 * MIN,
                      updatedAt=NOW - 66 * MIN, turnStates=[{"status": "idle", "questions": []}])
         self.assertEqual(status_chip(idle, NOW), ("Idle · no activity for 66m", "done"))
+        # A turn stopped with Esc or a denied permission did not finish: it reads Stopped, never Done.
+        stopped = agent("claude-agent:s", source="claude", attention="quiet", status="stopped", updatedAt=NOW - 3 * MIN,
+                        turnStates=[{"status": "interrupted", "questions": []}],
+                        activities=[{"kind": "command", "title": "Ran a local command", "status": "stopped"},
+                                    {"kind": "update", "title": "Status", "description": "Stopped before it finished."}])
+        self.assertEqual(status_chip(stopped, NOW), ("Stopped · 3m ago", "done"))
+        self.assertEqual(row_line(stopped, now_ms=NOW).text, "Stopped before it finished.")
 
 
 class LiveLineTests(unittest.TestCase):
