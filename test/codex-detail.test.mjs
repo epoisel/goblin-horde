@@ -210,3 +210,19 @@ test("the plan reader remembers step times with its plan, from the same reads", 
     assert.equal(reader.times(join(root, "missing.jsonl")).size, 0);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("a step keeps the start time first read when only its result is in what the file gained", () => {
+  let text = "";
+  let size = 0;
+  const stamp = (seconds) => new Date((START + seconds) * 1000).toISOString();
+  const call = JSON.stringify({ timestamp: stamp(10), type: "response_item", payload: { type: "function_call", name: "shell_command", call_id: "call-7", arguments: "{}" } });
+  const output = JSON.stringify({ timestamp: stamp(95), type: "response_item", payload: { type: "function_call_output", call_id: "call-7", output: "PRIVATE" } });
+  // A tail of the new bytes only: the call itself is no longer in view, its output is.
+  const reader = new CodexPlanReader({ readTail: () => text, stat: () => ({ size, mtimeMs: size }), steps: [1024] });
+  text = `${call}\n`;
+  size = 100;
+  assert.deepEqual(reader.times("C:/codex/sessions/rollout-7.jsonl").get("call-7"), { startedAt: (START + 10) * 1000, completedAt: 0 });
+  text = `${output}\n`;
+  size = 200;
+  assert.deepEqual(reader.times("C:/codex/sessions/rollout-7.jsonl").get("call-7"), { startedAt: (START + 10) * 1000, completedAt: (START + 95) * 1000 });
+});

@@ -190,8 +190,14 @@ test("now names the step running in an open turn, else Thinking, and nothing onc
   assert.equal(open([{ type: "commandExecution", id: "c5", status: "completed", command: "npm test", exitCode: 1 }]).now.title, "Ran npm test · exit 1");
   assert.equal(open([{ type: "fileChange", id: "f2", status: "completed", changes: [{ path: "/w/src/csv.ts" }] }]).now.title, "Edited csv.ts");
   assert.equal(open([{ type: "agentMessage", id: "a1", phase: "commentary", text: "Checking the PR.\nThen merging." }]).now.title, "Said: Checking the PR.");
-  // Thinking only before the turn's first step.
-  assert.equal(open([]).now.title, "Thinking");
+  // Thinking only before the turn's first step, since the chat's newest sign of activity: its last update,
+  // or the turn's own start when that is newer.
+  assert.equal(open([]).turnStates.at(-1).startedAt, NOW - 300_000);
+  assert.deepEqual(open([]).now, { kind: "think", title: "Thinking", startedAt: NOW - 60_000 });
+  const fresh = withCodexNow(chat([{ id: "t2", status: "inProgress", startedAt: (NOW - 10_000) / 1000, completedAt: null, items: [] }]));
+  assert.deepEqual(fresh.now, { kind: "think", title: "Thinking", startedAt: NOW - 10_000 });
+  // Thinking is not held at the time it was first seen: it counts from the newest activity.
+  assert.equal(carryNowStart({ ...fresh, now: { ...fresh.now, startedAt: NOW - 90_000 } }, fresh).now.startedAt, NOW - 10_000);
   assert.equal(withCodexNow(chat([finalTurn("Done.")])).now, null);
   // A finished step keeps the time it was first seen too; a running step and a finished one are never the same.
   assert.equal(carryNowStart({ ...finished, now: { ...finished.now, startedAt: NOW - 90_000 } }, finished).now.startedAt, NOW - 90_000);
