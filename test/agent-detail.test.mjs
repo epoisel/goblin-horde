@@ -8,7 +8,7 @@ import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AgentDetailService, ClaudeDesktopIndex, agentKind, agentRoutes, gitBranch, launchUrl, orcaTwin } from "../lib/agent-detail.mjs";
+import { AgentDetailService, ClaudeDesktopIndex, agentKind, agentRoutes, gitBranch, launchUrl, mergedCodexNow, orcaTwin } from "../lib/agent-detail.mjs";
 
 const CWD = "C:\\work\\billing-api";
 const CHAT = "019a-chat-0001";
@@ -232,9 +232,25 @@ test("a Codex step's timer counts from when the step was first seen, not from wh
   // The scene names it with its shell wrapper; the detail without: still the same step.
   scene.agents[0].now = { kind: "command", title: "Running powershell -Command 'npm run lint'", detail: "powershell -Command 'npm run lint'", startedAt: 1_780_000_160_000 };
   assert.equal((await service.detail(CHAT)).now.startedAt, 1_780_000_160_000);
-  // Another step: the scene's time is not this one's.
+  // Another step: the scene's time is not this one's, and the turn's start is not either: no time is shown.
   scene.agents[0].now = { kind: "command", title: "Running npm test", detail: "npm test", startedAt: 1_780_000_170_000 };
-  assert.equal((await service.detail(CHAT)).now.startedAt, 1_780_000_100_000);
+  const other = (await service.detail(CHAT)).now;
+  assert.deepEqual([other.title, other.startedAt], ["Running npm run lint", 0]);
+});
+
+test("a Codex chat the Codex app runs shows the scene's step, timed from its session file", async () => {
+  const { service, scene } = world();
+  // The items of a chat running in another process never show a running step; its session file did.
+  scene.agents[0].runningElsewhere = true;
+  scene.agents[0].now = { kind: "command", title: "Ran gh pr view 214", detail: "gh pr view 214", startedAt: 1_780_000_180_000, done: true };
+  assert.deepEqual((await service.detail(CHAT)).now, scene.agents[0].now);
+  // Pure merge rules: the same step keeps the detail's words with the scene's time; Thinking yields to a step.
+  const own = { kind: "command", title: "Running npm test", detail: "npm test", startedAt: 0 };
+  assert.equal(mergedCodexNow(own, { now: { ...own, startedAt: 5 } }).startedAt, 5);
+  const done = { kind: "command", title: "Ran npm test", detail: "npm test", startedAt: 9, done: true };
+  assert.deepEqual(mergedCodexNow(own, { now: done }), own, "a running step is not merged with a finished one");
+  assert.deepEqual(mergedCodexNow({ kind: "think", title: "Thinking", startedAt: 1 }, { now: done }), done);
+  assert.equal(mergedCodexNow(own, {}), own);
 });
 
 test("Codex open launches its link; message replies, or says to open the app when the chat is open there", async () => {

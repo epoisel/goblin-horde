@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CodexPlanReader, changeStats, codexDetail, codexItemRow, parseRolloutPlan, spawnPromptFor } from "../lib/codex-detail.mjs";
+import { CodexPlanReader, changeStats, codexDetail, codexItemRow, parseRolloutPlan, parseRolloutTimes, spawnPromptFor } from "../lib/codex-detail.mjs";
 import { readFileTail } from "../lib/claude.mjs";
 import { parseClaudeTranscript } from "../lib/claude-detail.mjs";
 import { diffStats, groupLookups, relativePath, unwrapCommand } from "../lib/detail-text.mjs";
@@ -103,12 +103,51 @@ test("a finished chat: mission is this turn's message, said its final answer, no
   assert.deepEqual(detail.files.map((file) => [file.path, file.added, file.removed]), [["lib\\export.mjs", 2, 1], ["docs\\csv.md", 2, 0]]);
 });
 
-test("a working chat shows the running step as now; a quiet open turn is thinking", () => {
+test("a working chat shows the running step as now, else its newest finished step; Thinking only before any step", () => {
+  // Items carry no time: a running step without one in the session file has no start, never the turn's.
   const detail = codexDetail(chat({ running: true }), { active: true });
-  assert.deepEqual(detail.now, { kind: "command", title: "Running npm run lint", detail: "npm run lint", startedAt: (START + 100) * 1000 });
+  assert.deepEqual(detail.now, { kind: "command", title: "Running npm run lint", detail: "npm run lint", startedAt: 0 });
   assert.equal(detail.trail[0].status, "running");
+  assert.equal(detail.trail[0].at, null);
+  const timed = codexDetail(chat({ running: true }), { active: true, times: new Map([["c4", { startedAt: (START + 150) * 1000, completedAt: 0 }]]) });
+  assert.equal(timed.now.startedAt, (START + 150) * 1000);
+  // An open turn with nothing running names what it did last, in the past tense, as done.
+  const quiet = { turns: [{ id: "t", status: "inProgress", startedAt: START, items: [
+    { type: "userMessage", id: "u", content: [{ type: "text", text: "Go" }] },
+    { type: "commandExecution", id: "x1", command: "gh pr view 214", status: "completed", exitCode: 0, commandActions: [] }] }] };
+  assert.deepEqual(codexDetail(quiet, { active: true, times: new Map([["x1", { startedAt: (START + 5) * 1000, completedAt: (START + 7) * 1000 }]]) }).now,
+    { kind: "command", title: "Ran gh pr view 214", detail: "gh pr view 214", startedAt: (START + 5) * 1000, done: true });
+  quiet.turns[0].items.push({ type: "agentMessage", id: "m9", phase: "commentary", text: "The PR is green.\nMerging next." });
+  assert.equal(codexDetail(quiet, { active: true }).now.title, "Said: The PR is green.");
   const thinking = codexDetail({ turns: [{ id: "t", status: "inProgress", startedAt: START, items: [{ type: "userMessage", content: [{ type: "text", text: "Go" }] }] }] }, { active: true });
   assert.deepEqual(thinking.now, { kind: "think", title: "Thinking", startedAt: START * 1000 });
+});
+
+test("trail rows take their times from the session file by item or call id; the rest have none", () => {
+  const at = (seconds) => (START + seconds) * 1000;
+  const iso = (seconds) => new Date(at(seconds)).toISOString();
+  const text = [
+    JSON.stringify({ timestamp: iso(110), type: "event_msg", payload: { type: "item_completed", turn_id: "t2", item: { type: "CommandExecution", id: "c1", command: ["npm", "test"] },
+      started_at_ms: at(105), completed_at_ms: at(110) } }),
+    JSON.stringify({ timestamp: iso(120), type: "response_item", payload: { type: "function_call", name: "mcp", call_id: "p1", arguments: "{}" } }),
+    JSON.stringify({ timestamp: iso(121), type: "response_item", payload: { type: "function_call_output", call_id: "p1", output: "x" } }),
+    JSON.stringify({ timestamp: iso(130), type: "response_item", payload: { type: "message", id: "m2", role: "assistant", content: [{ type: "output_text", text: "Fixed" }] } }),
+    '{"timestamp":"cut mid-line', "",
+  ].join("\n");
+  const times = parseRolloutTimes(text);
+  assert.deepEqual(times.get("c1"), { startedAt: at(105), completedAt: at(110) });
+  assert.deepEqual(times.get("p1"), { startedAt: at(120), completedAt: at(121) });
+  const detail = codexDetail(chat(), { active: false, times });
+  const row = (id) => detail.trail.find((item) => item.id === id);
+  assert.equal(row("c1").at, at(105));
+  assert.equal(row("p1").at, at(120));
+  assert.equal(row("w1").at, null, "a step with no time in the file shows none, not the turn's start");
+  assert.equal(row("f1").at, null);
+  assert.equal(detail.said.at, at(130));
+  // A final answer with no time of its own is as old as its turn's end; anything else said has no time.
+  assert.equal(codexDetail(chat(), { active: false }).said.at, (START + 200) * 1000);
+  const commentary = codexDetail({ turns: [{ id: "t", status: "inProgress", startedAt: START, items: [{ type: "agentMessage", id: "m", phase: "commentary", text: "Looking" }] }] }, { active: true });
+  assert.equal(commentary.said.at, null);
 });
 
 test("a helper chat's instructions come from the chat that started it", () => {
@@ -150,5 +189,24 @@ test("plans are read from the end of the session file and remembered until it ch
     assert.deepEqual(reader.read(`\\\\?\\${file}`)?.steps.map((step) => step.status), ["done", "pending"]);
     assert.equal(reader.read(join(root, "missing.jsonl")), null);
     assert.equal(reader.read("C:\\not-a-session.txt"), null);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the plan reader remembers step times with its plan, from the same reads", () => {
+  const root = mkdtempSync(join(tmpdir(), "goblin-codex-times-"));
+  try {
+    const file = join(root, "rollout-2.jsonl");
+    const event = (id, seconds) => JSON.stringify({ timestamp: new Date((START + seconds) * 1000).toISOString(), type: "event_msg",
+      payload: { type: "item_completed", item: { type: "CommandExecution", id }, started_at_ms: (START + seconds - 1) * 1000, completed_at_ms: (START + seconds) * 1000 } });
+    writeFileSync(file, `${planLine(1000, [{ step: "One", status: "in_progress" }])}\n${event("exec-1", 10)}\n`);
+    let reads = 0;
+    const reader = new CodexPlanReader({ readTail: (path, bytes) => { reads++; return readFileTail(path, bytes); } });
+    assert.equal(reader.times(file).get("exec-1").startedAt, (START + 9) * 1000);
+    assert.equal(reader.read(file).steps[0].text, "One");
+    assert.equal(reads, 1, "the plan and the times come from one read");
+    appendFileSync(file, `${event("exec-2", 20)}\n`);
+    const times = reader.times(file);
+    assert.deepEqual([...times.keys()].filter((id) => id.startsWith("exec")), ["exec-1", "exec-2"], "what the file gained is added to what was known");
+    assert.equal(reader.times(join(root, "missing.jsonl")).size, 0);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
