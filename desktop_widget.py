@@ -54,7 +54,8 @@ SOURCES_MS = 30_000
 OFFLINE_AFTER = 2  # Failed reads in a row before the window says the viewer is not answering.
 DETAIL_CACHE = 40
 QUIT_LABEL = "Quit Goblin Horde"
-STRIP_HINT = ("Goblin Horde keeps watching from here. Click a goblin to open the window again; "
+# True whether the strip shows goblins or only its "all quiet" label: a click anywhere on it opens the window.
+STRIP_HINT = ("Goblin Horde keeps watching from here. Click the strip to open the window again; "
               "Quit is in the ⋯ menu, or right-click the strip.")
 STRIP_HINT_MS = 8000
 

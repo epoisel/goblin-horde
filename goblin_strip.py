@@ -4,7 +4,7 @@ A borderless, see-through, always-on-top window, docked above the taskbar at the
 it is dragged somewhere else. Goblins stand at 2x grouped by party with small gaps; a bubble over
 each head says ? (needs you), ! (failed), … (working), or ✓ (done, and the goblin is faded). Hover
 for the goblin's name and what it is doing; click one to open the Horde window on it. The pill on
-the left counts who needs you and opens the window too. At most twelve goblins, then "+N".
+the left counts who needs you; it, and a click anywhere else on the strip, opens the window too. At most twelve goblins, then "+N".
 """
 
 from __future__ import annotations
@@ -219,6 +219,7 @@ class GoblinStrip:
             return
         slot = self.slot_at(event.x)
         if slot is None:
+            self.app.open_window(select=None)  # Between the goblins, or past them: the strip opens the window too.
             return
         _left, _right, kind, ident = slot
         if kind == "pill" and self.needs:

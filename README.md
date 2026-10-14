@@ -161,7 +161,7 @@ The window keeps its size and place (on a display that is still connected), the 
 
 ### The goblin strip
 
-Closing the window (×) collapses it to the **goblin strip** (the first time, a short note says so): just the goblins, standing in a row above the taskbar at the bottom right, grouped by party, on top of other windows. A bubble over each head says **?** (needs you), **!** (failed), **…** (working), or **✓** (done, and the goblin is faded); the pill on the left counts who needs you. Each goblin is labelled with the part of its name that tells it from its neighbours. Hover a goblin for its name and what it is doing or asking; click it to open the window on that goblin, or click the pill. Drag the strip anywhere; it remembers where. It shows at most twelve goblins, then **+N**. **Show goblin strip** in the **⋯** menu keeps it on the desktop while the window is open too.
+Closing the window (×) collapses it to the **goblin strip** (the first time, a short note says so): just the goblins, standing in a row above the taskbar at the bottom right, grouped by party, on top of other windows. A bubble over each head says **?** (needs you), **!** (failed), **…** (working), or **✓** (done, and the goblin is faded); the pill on the left counts who needs you. Each goblin is labelled with the part of its name that tells it from its neighbours. Hover a goblin for its name and what it is doing or asking; click it to open the window on that goblin; a click anywhere else on the strip (the pill too) opens the window. Drag the strip anywhere; it remembers where. It shows at most twelve goblins, then **+N**. **Show goblin strip** in the **⋯** menu keeps it on the desktop while the window is open too.
 
 ### The goblins
 

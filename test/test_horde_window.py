@@ -63,7 +63,10 @@ class HordeWindowTests(unittest.TestCase):
     def test_needs_you_comes_first_with_the_actual_question_and_is_selected(self):
         widget = self.make()
         sections = [(row.title, row.count) for row in widget.rows if row.kind == "section"]
-        self.assertEqual(sections[:2], [("Needs you", 4), ("Working", 10)])
+        self.assertEqual(sections[:2], [("Needs you", 4), ("Working", 9)])
+        # The Working heading and the header's chips count alike: 9 working, 1 failed.
+        self.assertEqual(self.row_text(widget, "section:working", "title"), "Working · 9 · 1 failed")
+        self.assertEqual(widget.window.count_chips["working"].cget("text"), "9 working")
         self.assertEqual(widget.selected, "demo-chat-release-notes", "the longest-waiting ask is chosen")
         # A reply shows its question, not the sentence before it; a permission names what it would run.
         self.assertTrue(self.row_text(widget, "demo-chat-release-notes", "line").startswith("Should I convert the older"))
@@ -74,6 +77,19 @@ class HordeWindowTests(unittest.TestCase):
                          ["Codex ✓", "Claude ✓", "Orca ✓", "Feeds –"])
         bg = widget.roster.canvas.itemcget(widget.roster.views["demo-chat-release-notes"].bg, "fill")
         self.assertEqual(bg, SELECTED)
+
+    def test_two_goblins_whose_names_cut_the_same_are_told_apart(self):
+        widget = self.make()
+        world = widget.api.world
+        base = world.find("demo-chat-pr-review")
+        for ident, region in (("demo-chat-eu-flow", "EU"), ("demo-chat-us-flow", "US")):
+            world.actors.append({**base, "id": ident, "parentThreadId": "",
+                                 "name": f"Refactor the checkout payment flow for the {region}"})
+        load(widget)
+        eu = self.row_text(widget, "demo-chat-eu-flow", "title")
+        us = self.row_text(widget, "demo-chat-us-flow", "title")
+        self.assertNotEqual(eu, us)
+        self.assertTrue(eu.endswith("for the EU") and us.endswith("for the US"), (eu, us))
 
     def test_parties_list_their_lead_first_and_members_indented(self):
         widget = self.make()

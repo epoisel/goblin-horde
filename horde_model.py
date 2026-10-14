@@ -822,8 +822,13 @@ def build_roster(actors: list[dict], *, now_ms: float | None = None, catalog: li
                                    if part)
                 row = row._replace(title=f"Lead · {label}" if label else "Lead")
             working_rows.append(row)
+    # The heading counts as the header's chips do: working goblins, and the failed ones said apart.
+    failed_total = sum(classes[own] == FAILED for own in classes)
+    failed_shown = sum(row.kind == "agent" and not row.context and row.klass == FAILED for row in working_rows)
+    failed_here = failed_shown if terms else failed_total
     rows.append(Row("section", "section:working", "Working", section="working",
-                    count=counted if terms else working_total))
+                    count=(counted if terms else working_total) - failed_here,
+                    meta=f"{failed_here} failed" if failed_here else ""))
     if working_rows:
         rows.extend(working_rows)
     else:
@@ -992,10 +997,22 @@ def strip_labels(actors: list[dict], aliases: dict | None, fit, fit_end) -> list
     end. A name the person gave a goblin is never changed."""
     aliases = aliases or {}
     names = [strip_label(actor, aliases) for actor in actors]
-    shown = [fit(name) for name in names]
+    fixed = {index for index, actor in enumerate(actors) if aliases.get(actor_id(actor))}
+    return tell_apart(names, [fit(name) for name in names], (
+        lambda i, rest: fit(project_name(actors[i])) if project_name(actors[i]) else "",
+        lambda i, rest: fit(rest) if rest else "",
+        lambda i, rest: fit_end(names[i])), fixed)
+
+
+def tell_apart(names: list[str], shown: list[str], choices, fixed=frozenset()) -> list[str]:
+    """Labels (`shown`, cut from `names`) that would read the same are told apart by the first of `choices`
+    that gives each of them a different, non-empty label. A choice is called with the label's index and
+    the words of its name after the ones all of them share ("" when they share none). Labels at `fixed`
+    indexes (a name the person gave) never change."""
+    shown = list(shown)
     groups: dict[str, list[int]] = {}
     for index, text in enumerate(shown):
-        if not aliases.get(actor_id(actors[index])):
+        if index not in fixed:
             groups.setdefault(text, []).append(index)
     for members in groups.values():
         if len(members) < 2:
@@ -1005,15 +1022,23 @@ def strip_labels(actors: list[dict], aliases: dict | None, fit, fit_end) -> list
         while all(len(words[index]) > shared + 1 for index in members) and \
                 len({words[index][shared] for index in members}) == 1:
             shared += 1
-        for choose in (lambda i: fit(project_name(actors[i])) if project_name(actors[i]) else "",
-                       lambda i: fit(" ".join(words[i][shared:])) if shared else "",
-                       lambda i: fit_end(names[i])):
-            options = [choose(index) for index in members]
+        for choose in choices:
+            options = [choose(index, " ".join(words[index][shared:]) if shared else "") for index in members]
             if all(options) and len(set(options)) == len(options):
                 for index, option in zip(members, options):
                     shown[index] = option
                 break
     return shown
+
+
+def roster_titles(names: list[str], fits: list, fit_ends: list) -> list[str]:
+    """The roster's goblin names as they fit their rows: `fits[i]` cuts name i to its row's room from the
+    end, `fit_ends[i]` from the start. Two that would read the same ("Refactor the checkout paym…" twice)
+    keep how they end instead ("…flow for the EU"), else the words after the ones they share, the way the
+    strip tells its labels apart."""
+    return tell_apart(names, [fit(name) for fit, name in zip(fits, names)], (
+        lambda i, rest: fit_ends[i](names[i]),
+        lambda i, rest: fits[i](f"…{rest}") if rest else ""))
 
 
 def strip_tooltip(actor: dict, aliases: dict | None = None) -> str:
@@ -1029,8 +1054,10 @@ TRAIL_KINDS = {"command", "edit", "write", "read", "search", "web", "agent", "to
 ACTIVITY_TRAIL = {"command": "command", "file": "edit", "research": "web", "tool": "tool", "update": "message"}
 
 
-def trail_from_activities(activities: list) -> list[dict]:
-    """A trail (newest first) from the public steps an older viewer sends with every actor."""
+def trail_from_activities(activities: list, now: dict | None = None) -> list[dict]:
+    """A trail (newest first) from the public steps an older viewer sends with every actor. A step shows
+    its own time or none (never its turn's start, which would time every step alike); the newest running
+    step takes the start of the actor's running `now`, which is that step."""
     trail = []
     for index, item in enumerate(activities or []):
         if not isinstance(item, dict) or (item.get("kind") == "update" and item.get("title") == "Status"):
@@ -1043,11 +1070,15 @@ def trail_from_activities(activities: list) -> list[dict]:
             title = str(item.get("title") or "A step")
             detail = str(item.get("detail") or "") or description
         status = "running" if item.get("status") == "inProgress" else "failed" if failed_step(item) else "ok"
-        trail.append({"id": str(item.get("id") or f"step-{index}"), "at": item.get("at") or item.get("turnStartedAt"),
+        trail.append({"id": str(item.get("id") or f"step-{index}"), "at": item.get("at") or None,
                       "kind": kind, "title": title, "detail": detail, "status": status,
                       "exitCode": item.get("exitCode"), "durationMs": item.get("durationMs"),
                       "output": str(item.get("output") or "")})
-    return list(reversed(trail))[:60]
+    trail.reverse()
+    running = next((item for item in trail if item["status"] == "running"), None)
+    if running is not None and not running["at"] and now and not is_done_step(now) and not is_thinking(now):
+        running["at"] = stamp_ms(now.get("startedAt")) or None
+    return trail[:60]
 
 
 def detail_from_actor(actor: dict) -> dict:
@@ -1059,7 +1090,7 @@ def detail_from_actor(actor: dict) -> dict:
     return {
         "agent": actor, "mission": None, "plan": None, "now": now_of(actor),
         "said": {"text": str(said["description"]), "at": said.get("at")} if said else None,
-        "trail": trail_from_activities(activities), "files": [], "screen": None, "fallback": True,
+        "trail": trail_from_activities(activities, now_of(actor)), "files": [], "screen": None, "fallback": True,
     }
 
 

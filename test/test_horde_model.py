@@ -6,6 +6,7 @@ import unittest
 
 from goblin_motion import goblin_action
 from horde_demo import DemoWorld
+from horde_model import roster_titles  # noqa: E402 - beside the long list below
 from horde_model import (DONE, FAILED, NEEDS, WORKING, RosterMemory, actor_class, age_short, ago, ask_of, build_roster,
                          clamp_window, coverage_note, default_selection, detail_from_actor, detail_now, detail_sections,
                          display_name, duration, elapsed, final_question, join_reason, model_badge, motion_view,
@@ -159,8 +160,10 @@ class RosterTests(unittest.TestCase):
             agent("yesterday", attention="quiet", status="idle", updatedAt=NOW - 26 * 60 * MIN),
         ]
         rows, counts = self.build(actors)
-        sections = [(row.title, row.count) for row in rows if row.kind == "section"]
-        self.assertEqual(sections, [("Needs you", 2), ("Working", 2), ("Done today", 1)])
+        sections = [(row.title, row.count, row.meta) for row in rows if row.kind == "section"]
+        self.assertEqual(sections, [("Needs you", 2, ""), ("Working", 1, "1 failed"), ("Done today", 1, "")],
+                         "as the header counts: one working, one failed")
+        self.assertEqual((counts.working, counts.failed), (1, 1))
         self.assertEqual([row.key for row in rows if row.section == "needs" and row.kind == "agent"], ["older", "newer"])
         needs_row = next(row for row in rows if row.key == "older")
         self.assertEqual((needs_row.line.tone, needs_row.line.text), ("ask", "Which one?"))
@@ -237,6 +240,25 @@ class RosterTests(unittest.TestCase):
         self.assertEqual(sum(row.kind == "agent" for row in rows), 20)
         self.assertEqual((counts.needs, counts.working, counts.failed), (1, 18, 1), "each goblin counted once")
         self.assertEqual(len({row.key for row in rows}), len(rows), "every row key is unique")
+        # The Working heading agrees with the header's chips: the failed goblin is said apart, not counted as working.
+        heading = next(row for row in rows if row.key == "section:working")
+        self.assertEqual((heading.count, heading.meta), (18, "1 failed"))
+
+    def test_roster_titles_that_would_read_the_same_are_told_apart_by_how_they_end(self):
+        fit = lambda text: text[:26] + "…" if len(text) > 27 else text  # noqa: E731 - 27 characters of room
+        fit_end = lambda text: "…" + text[-26:] if len(text) > 27 else text  # noqa: E731
+        names = ["Refactor the checkout payment flow for the EU", "Refactor the checkout payment flow for the US",
+                 "Fix login"]
+        self.assertEqual([fit(name) for name in names[:2]], ["Refactor the checkout paym…"] * 2, "cut, they read the same")
+        told = roster_titles(names, [fit] * 3, [fit_end] * 3)
+        self.assertEqual(told, [fit_end(names[0]), fit_end(names[1]), "Fix login"])
+        self.assertTrue(told[0].endswith("for the EU") and told[1].endswith("for the US"), told)
+        # Names that also end the same are told apart by the words after the ones they share.
+        same_end = ["Refactor the checkout payments service so every EU flow is retried",
+                    "Refactor the checkout payments module so every EU flow is retried"]
+        told = roster_titles(same_end, [fit] * 2, [fit_end] * 2)
+        self.assertTrue(told[0].startswith("…service so") and told[1].startswith("…module so"), told)
+        self.assertEqual(roster_titles(["Same name", "Same name"], [fit] * 2, [fit_end] * 2), ["Same name", "Same name"])
 
 
 class StripTests(unittest.TestCase):
@@ -286,6 +308,21 @@ class DetailTests(unittest.TestCase):
         self.assertEqual(detail["trail"][1]["status"], "failed")
         self.assertEqual(detail["said"]["text"], "Fixing the test now.")
         self.assertEqual(detail_sections(detail), ["said", "trail"])
+
+    def test_public_steps_without_a_time_of_their_own_show_none(self):
+        actor = agent("a", now={"kind": "command", "title": "Running npm test", "startedAt": NOW - 30_000},
+                      activities=[
+                          {"id": "1", "kind": "command", "title": "Ran a local command", "status": "completed",
+                           "turnStartedAt": NOW - 600_000},
+                          {"id": "2", "kind": "command", "title": "Ran a local command", "status": "inProgress",
+                           "turnStartedAt": NOW - 600_000},
+                          {"id": "3", "kind": "tool", "title": "Used a tool", "status": "completed", "at": NOW - 5_000,
+                           "turnStartedAt": NOW - 600_000}])
+        trail = {item["id"]: item for item in detail_from_actor(actor)["trail"]}
+        self.assertIsNone(trail["1"]["at"], "never the turn's start")
+        self.assertEqual(trail["3"]["at"], NOW - 5_000, "a step's own time is kept")
+        self.assertEqual(trail["2"]["at"], NOW - 30_000, "the running step is timed from its own start")
+        self.assertEqual(trail_result(trail["2"], NOW), [("running 30s", "lively")])
 
     def test_a_source_without_records_still_shows_its_public_steps(self):
         actor = agent("ext-agent:relay:build:coder", activities=[

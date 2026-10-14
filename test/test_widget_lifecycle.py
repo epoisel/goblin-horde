@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import desktop_widget
@@ -236,10 +237,20 @@ class CloseButtonTests(unittest.TestCase):
         widget.show_strip_hint()
         self.assertEqual(widget.tooltip.label.cget("text"), desktop_widget.STRIP_HINT)
         self.assertIn("Quit is in the ⋯ menu", desktop_widget.STRIP_HINT)
+        # True whether the strip shows goblins or only its "all quiet" label: a click anywhere on it opens the window.
+        self.assertIn("Click the strip to open the window again", desktop_widget.STRIP_HINT)
+        self.assertNotIn("Click a goblin", desktop_widget.STRIP_HINT)
         widget.hide_strip_hint()
         self.assertEqual(widget.tooltip.window.state(), "withdrawn")
         saved = json.loads((Path(self.folder) / "goblins.json").read_text(encoding="utf-8"))
         self.assertIs(saved["stripHinted"], True, "remembered, so it is said only the first time")
+        opened = []
+        widget.open_window = lambda select=None: opened.append(select)
+        strip = widget.strip
+        strip.slots = [(10, 60, "pill", "")]
+        strip.on_press(SimpleNamespace(x_root=0, y_root=0))
+        strip.on_release(SimpleNamespace(x=200, y=10))  # Past the pill: nothing there but the strip itself.
+        self.assertEqual(opened, [None])
 
     def test_starting_again_after_the_x_opens_the_window_not_the_strip(self):
         widget = self.widget

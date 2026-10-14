@@ -13,9 +13,9 @@ from tkinter import ttk
 
 from desktop_platform import bind_context
 from goblin_sprite import SPAN_H, SPAN_W, TOP_ROOM, place_sprite, sprite_scale
-from horde_model import Row
+from horde_model import Row, roster_titles
 from horde_theme import (AMBER, FAINT, GOLD, HOVER, IVORY, LINE, LIVELY, MUTED, PANEL, SELECTED, Theme, WheelRouter,
-                         fit_text, tone)
+                         fit_text, fit_text_end, tone)
 
 SECTION_INK = {"needs": AMBER, "results": GOLD, "just": LIVELY}
 FOCUS_RING = "#5b8068"
@@ -87,6 +87,8 @@ class RowView:
         if self.kind == "section":
             arrow = ("▾ " if row.open else "▸ ") if row.section == "done" else ""
             label = f"{arrow}{row.title} · {row.count}" if row.count or row.section != "results" else f"{arrow}{row.title}"
+            if row.meta:
+                label = f"{label} · {row.meta}"  # "Working · 9 · 1 failed", as the header counts them.
             self.text("title", label, fill=SECTION_INK.get(row.section, MUTED))
             c.coords(self.items["title"], px(12), middle + px(2))
             right = px(12) + theme.small_strong.measure(label) + px(10)
@@ -123,10 +125,10 @@ class RowView:
             self.text("glyph", glyph)
             left = indent + px(28)
         right_text = row.right
-        right_width = theme.small.measure(right_text) if right_text else 0
         edge = width - px(12)
-        title_room = edge - left - (right_width + px(10) if right_text else 0)
-        title = fit_text(theme.strong, row.title, title_room)
+        title_room = roster.title_room(row, width)
+        # Told apart from another row whose name would cut the same (see RosterView.render).
+        title = roster.titles.get(row.key) or fit_text(theme.strong, row.title, title_room)
         title_ink = MUTED if row.context else IVORY
         self.text("title", title, fill=title_ink)
         meta = row.meta if row.meta and row.meta != row.title and row.kind == "agent" else ""
@@ -194,6 +196,7 @@ class RosterView:
         self.sprite_scale = sprite_scale(2, theme.scale)
         self.views: dict[str, RowView] = {}
         self.rows: list[Row] = []
+        self.titles: dict[str, str] = {}  # Each named row's title as it fits (see render).
         self.selected = ""
         self.hovered = ""
         self.serial = 0
@@ -220,12 +223,28 @@ class RosterView:
         return px(48)
 
     # Drawing -----------------------------------------------------------------------------------
+    def title_room(self, row: Row, width: int) -> int:
+        """How wide a goblin, watched chat, or search result row's name may be, in pixels."""
+        px = self.theme.px
+        indent = px(10) + row.depth * px(18)
+        left = indent + CUE_COLUMNS * self.sprite_scale + px(8) if row.kind == "agent" else indent + px(28)
+        right = self.theme.small.measure(row.right) + px(10) if row.right else 0
+        return width - px(12) - left - right
+
     def render(self, rows: list[Row], selected: str) -> None:
         """Lay the rows out, reusing every row's items; only changes are drawn."""
         self.rows = rows
         self.selected = selected
         width = max(self.canvas.winfo_width(), self.theme.px(120))
         self.width = width
+        # Names as they fit their rows; two that would read the same are told apart by how they end.
+        named = [row for row in rows if row.kind in ("agent", "watch", "result")]
+        rooms = [self.title_room(row, width) for row in named]
+        strong = self.theme.strong
+        titles = roster_titles([" ".join(row.title.split()) for row in named],
+                               [lambda text, room=room: fit_text(strong, text, room) for room in rooms],
+                               [lambda text, room=room: fit_text_end(strong, text, room) for room in rooms])
+        self.titles = {row.key: title for row, title in zip(named, titles)}
         top = self.theme.px(4)
         keep = set()
         for row in rows:
