@@ -136,7 +136,8 @@ test("the approval guess names the waiting command or patch, and the open turn s
       arguments: JSON.stringify({ plan: [{ step: "Read the exporter", status: "completed" }, { step: "Write the CSV writer", status: "in_progress" }, { step: "Run tests", status: "pending" }] }) });
     const write = (call) => writeFileSync(file, `${[line(300, "turn_context", { approval_policy: "on-request" }), plan,
       line(190, "response_item", { type: "function_call_output", call_id: "p1" }), call].join("\n")}\n`);
-    write(line(90, "response_item", { type: "function_call", name: "exec_command", call_id: "c1", arguments: JSON.stringify({ cmd: "npm run deploy -- --env staging", workdir: "/work/billing-api" }) }));
+    write(line(90, "response_item", { type: "function_call", name: "exec_command", call_id: "c1",
+      arguments: JSON.stringify({ cmd: "npm run deploy -- --env staging", workdir: "/work/billing-api", sandbox_permissions: "require_escalated" }) }));
     const seen = inspectRollout(file, { now: NOW });
     assert.equal(seen.awaits, true);
     assert.deepEqual(seen.call, { tool: "exec_command", command: "npm run deploy -- --env staging", at: NOW - 90_000 });
