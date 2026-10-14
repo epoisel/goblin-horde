@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 import desktop_platform
 from desktop_platform import (MAC_CLEAR, WINDOWS_KEY, TransparencyUnavailable, bind_context, check_support,
                               context_events, float_window, mac_prefers_reduced_motion, make_transparent,
-                              prepare_app, ui_family, ui_font)
+                              prepare_app)
 
 
 def on(platform):
@@ -77,25 +77,70 @@ class MacWindowSetupTests(unittest.TestCase):
             check_support(root)
         root.tk.call.assert_not_called()
 
-    def test_mac_app_matches_windows_scaling_routes_quit_and_hides_the_dock_icon(self):
-        root, quit_ = MagicMock(), MagicMock()
-        with on("darwin"), patch.object(desktop_platform, "hide_dock_icon", return_value=True) as hide:
-            prepare_app(root, on_quit=quit_)
-        root.tk.call.assert_any_call("tk", "scaling", 96 / 72)
-        root.createcommand.assert_called_once_with("tk::mac::Quit", quit_)
-        hide.assert_called_once()
+    def test_mac_app_routes_quit_and_the_dock_icon_through_the_app(self):
+        root, quit_, reopen = MagicMock(), MagicMock(), MagicMock()
+        with on("darwin"):
+            prepare_app(root, on_quit=quit_, on_reopen=reopen)
+        root.createcommand.assert_any_call("tk::mac::Quit", quit_)
+        root.createcommand.assert_any_call("tk::mac::ReopenApplication", reopen)
+        # The window is laid out in points with the system font; Tk's own scaling is left alone.
+        root.tk.call.assert_not_called()
 
     def test_windows_app_setup_is_untouched(self):
         root = MagicMock()
-        with on("win32"), patch.object(desktop_platform, "hide_dock_icon") as hide:
-            prepare_app(root, on_quit=MagicMock())
+        with on("win32"):
+            prepare_app(root, on_quit=MagicMock(), on_reopen=MagicMock())
         root.tk.call.assert_not_called()
         root.createcommand.assert_not_called()
-        hide.assert_not_called()
 
-    def test_hiding_the_dock_icon_never_raises_without_appkit(self):
-        with patch("ctypes.cdll.LoadLibrary", side_effect=OSError("no libobjc")):
-            self.assertFalse(desktop_platform.hide_dock_icon())
+
+class DisplayTests(unittest.TestCase):
+    def test_dpi_awareness_is_asked_for_only_on_windows_and_never_raises(self):
+        with on("darwin"):
+            self.assertEqual(desktop_platform.enable_dpi_awareness(), "")
+        windll = SimpleNamespace(user32=SimpleNamespace(SetProcessDpiAwarenessContext=MagicMock(return_value=0),
+                                                        SetProcessDPIAware=MagicMock(return_value=1)),
+                                 shcore=SimpleNamespace(SetProcessDpiAwareness=MagicMock(side_effect=OSError("old"))))
+        with on("win32"), patch.object(desktop_platform.ctypes, "windll", windll, create=True):
+            self.assertEqual(desktop_platform.enable_dpi_awareness(), "system", "falls back to system-aware")
+        windll.user32.SetProcessDpiAwarenessContext.return_value = 1
+        with on("win32"), patch.object(desktop_platform.ctypes, "windll", windll, create=True):
+            self.assertEqual(desktop_platform.enable_dpi_awareness(), "per-monitor-v2")
+
+    def test_one_scale_from_the_real_dpi(self):
+        root = MagicMock()
+        root.winfo_fpixels.return_value = 120.0
+        with on("win32"):
+            self.assertEqual(desktop_platform.display_scale(root), 1.25)
+        root.winfo_fpixels.return_value = 72.0
+        with on("win32"):
+            self.assertEqual(desktop_platform.display_scale(root), 1.0, "never smaller than the design")
+        with on("darwin"):
+            self.assertEqual(desktop_platform.display_scale(root), 1.0)
+
+    def test_the_dark_title_bar_is_windows_only_and_failures_are_ignored(self):
+        window = MagicMock()
+        window.wm_frame.return_value = "0x1a2b"
+        with on("darwin"):
+            self.assertFalse(desktop_platform.dark_title_bar(window))
+        window.wm_frame.assert_not_called()
+        calls = []
+
+        def record(hwnd, attribute, _value, _size):
+            calls.append((hwnd, attribute))
+            return 0
+        dwm = SimpleNamespace(DwmSetWindowAttribute=record)
+        with on("win32"), patch.object(desktop_platform.ctypes, "windll", SimpleNamespace(dwmapi=dwm), create=True):
+            self.assertTrue(desktop_platform.dark_title_bar(window, caption="#1f3328"))
+        self.assertEqual(calls, [(0x1a2b, 20), (0x1a2b, 35)])
+        broken = SimpleNamespace(DwmSetWindowAttribute=MagicMock(side_effect=OSError("no DWM")))
+        with on("win32"), patch.object(desktop_platform.ctypes, "windll", SimpleNamespace(dwmapi=broken), create=True):
+            self.assertFalse(desktop_platform.dark_title_bar(window))
+
+    def test_positions_left_of_the_primary_display_keep_their_sign(self):
+        self.assertEqual(desktop_platform.screen_geometry(-1200, 40), "+-1200+40")
+        with on("darwin"):
+            self.assertEqual(desktop_platform.monitor_areas(), [])
 
 
 class MacInputAndTextTests(unittest.TestCase):
@@ -120,13 +165,22 @@ class MacInputAndTextTests(unittest.TestCase):
             bind_context(widget, callback)
         widget.bind.assert_called_once_with("<Button-3>", callback)
 
-    def test_mac_fonts_name_fonts_that_ship_with_macos(self):
+    @unittest.skipUnless(sys.platform == "win32", "Measures real Tk fonts")
+    def test_readable_type_on_each_system(self):
+        from horde_theme import Theme
+        root = tk.Tk()
+        root.withdraw()
+        self.addCleanup(root.destroy)
+        windows = Theme(root, 1.25)
+        self.assertEqual((windows.body.cget("family"), windows.body.cget("size")), ("Segoe UI", 10))
+        self.assertIn(windows.mono.cget("family"), ("Cascadia Mono", "Consolas"))
+        self.assertEqual(windows.mono.cget("size"), 9)
+        self.assertEqual(windows.px(58), 72, "pixel sizes follow the display scale")
         with on("darwin"):
-            self.assertEqual(ui_family("Consolas"), "Menlo")
-            self.assertEqual(ui_family("Bahnschrift"), "Avenir Next Condensed")
-            self.assertEqual(ui_font("Segoe UI", 7), ("Helvetica Neue", 7))
-        with on("win32"):
-            self.assertEqual(ui_font("Consolas", 8, "bold"), ("Consolas", 8, "bold"))
+            mac = Theme(root, 1.0)
+        self.assertEqual(mac.body.cget("size"), 13, "the macOS system font size")
+        self.assertEqual(mac.mono.cget("family"), "Menlo")
+        self.assertGreaterEqual(min(font.cget("size") for font in (mac.small, mac.mono)), 11, "no 7-8 pt prose")
 
     def test_mac_reduce_motion_follows_the_accessibility_setting(self):
         answer = lambda out, code=0: (lambda *_a, **_k: SimpleNamespace(returncode=code, stdout=out))
@@ -191,18 +245,17 @@ class StartupReportTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == "win32", "Builds the real widget with Windows Tk, posing as macOS")
 class EveryWindowOnMacTests(unittest.TestCase):
-    """Builds the whole widget (goblin line, launchpad, party roster, streams, notes, tooltip)
-    with the platform layer answering as macOS, and inspects every window it made."""
+    """Builds the whole app (Horde window, goblin strip, tooltip) with the platform layer answering as
+    macOS, and inspects every window it made."""
 
     CLEAR = "#000001"  # Windows Tk has no systemTransparent colour; any marker colour will do.
 
-    def test_every_window_floats_and_the_see_through_ones_use_aqua_transparency(self):
+    def test_the_window_is_native_and_only_the_strip_and_tips_float(self):
         try:
-            from test_party_dock_geometry import settle
-            from test_parting_render import Fixture, member, receive
+            from widget_fixtures import isolate, load, settle
         except ImportError:
-            from test.test_party_dock_geometry import settle
-            from test.test_parting_render import Fixture, member, receive
+            from test.widget_fixtures import isolate, load, settle
+        import desktop_widget
         attributes = []
         original = tk.Wm.wm_attributes
 
@@ -212,59 +265,34 @@ class EveryWindowOnMacTests(unittest.TestCase):
                 return ""  # Aqua-only; Windows Tk would refuse it.
             return original(window, *args, **kwargs)
 
+        isolate(self)
         with on("darwin"), patch.object(desktop_platform, "MAC_CLEAR", self.CLEAR), \
                 patch.object(desktop_platform, "check_support"), \
-                patch.object(desktop_platform, "hide_dock_icon", return_value=False), \
+                patch.object(desktop_platform, "enable_dpi_awareness") as aware, \
                 patch.object(tk.Wm, "wm_attributes", record):
-            fixture = Fixture(self)
-            widget = fixture.widget(self)
-            receive(widget, [member(name) for name in "ab"])
-            widget.open_party("a")
+            widget = desktop_widget.GoblinWidget("", 44192, demo=True)
+            self.addCleanup(widget.close)
+            load(widget)
+            widget.strip.show()
+            widget.tooltip.show("A long goblin name", 10, 10)
             settle(widget)
-            streams = list(widget.streams.values())
-            self.assertTrue(streams, "the party opened its streams")
-            self.assertEqual(widget.canvas.cget("bg"), self.CLEAR)
-            for stream in streams:
-                self.assertEqual(stream.window.cget("bg"), self.CLEAR)
-                for canvas in (stream.tail, stream.sprite, stream.roster):
-                    self.assertEqual(canvas.cget("bg"), self.CLEAR)
-                for bubble in stream.bubbles[:1]:  # Right-click copies an event.
-                    self.assertLessEqual({"<Button-2>", "<Control-Button-1>"}, set(bubble.bind()))
-            widget.show_notes()
-            widget.party_dock.show_compact()
-            settle(widget)
-            widget.party_dock.show_tooltip("A long party name")
-            widget.root.update_idletasks()
+            aware.assert_called_once_with()  # Asked; the real call answers "" off Windows.
+            self.assertEqual(widget.theme.scale, 1.0, "macOS works in points already")
+            self.assertEqual(widget.theme.families["mono"], "Menlo")
 
-            windows = [widget.root]
-            pending = list(widget.root.winfo_children())
-            while pending:
-                child = pending.pop()
-                pending.extend(child.winfo_children())
-                if child.winfo_class() == "Toplevel":
-                    windows.append(child)
-            self.assertIsNotNone(widget.party_dock.tooltip, "the roster tooltip opened")
-            expected = {widget.root, widget.launchpad.window, widget.party_dock.window, widget.notes_panel.window,
-                        widget.party_dock.tooltip, *(stream.window for stream in widget.streams.values())}
-            self.assertLessEqual({str(window) for window in expected}, {str(window) for window in windows})
-            for window in windows:
+            self.assertFalse(widget.root.overrideredirect(), "the Horde window is a native window")
+            self.assertEqual(int(original(widget.root, "-topmost")), 0, "it is not on top unless asked")
+            for window in (widget.strip.window, widget.tooltip.window):
                 with self.subTest(window=str(window)):
                     self.assertTrue(window.overrideredirect(), "borderless")
                     self.assertEqual(int(original(window, "-topmost")), 1, "above other windows")
-
             transparent = {name for name, args in attributes if args[:2] == ("-transparent", True)}
-            see_through = {str(widget.root), *(str(stream.window) for stream in streams)}
-            self.assertLessEqual(see_through, transparent, "the goblin line and every stream are see-through")
-            solid = {str(widget.launchpad.window), str(widget.party_dock.window), str(widget.notes_panel.window),
-                     str(widget.party_dock.tooltip)}
-            self.assertFalse(solid & transparent, "panels stay opaque")
+            self.assertEqual(transparent, {str(widget.strip.window)}, "only the strip is see-through")
+            self.assertEqual(widget.strip.canvas.cget("bg"), self.CLEAR)
             self.assertFalse([args for _name, args in attributes if "-transparentcolor" in args])
-
-            for surface in (widget.canvas, widget.launchpad.body, widget.party_dock.body):
+            for surface in (widget.roster.canvas, widget.strip.canvas):
                 self.assertLessEqual({"<Button-2>", "<Control-Button-1>", "<Control-ButtonRelease-1>"},
                                      set(surface.bind()), str(surface))
-            self.assertEqual(widget.header_font.cget("family"), "Menlo")
-            self.assertEqual(widget.launchpad.title_font.cget("family"), "Avenir Next Condensed")
 
 
 if __name__ == "__main__":

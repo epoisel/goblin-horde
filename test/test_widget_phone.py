@@ -1,4 +1,4 @@
-"""Phone access is switched from the launchpad menu: on only after a yes, off at once, via the local endpoints."""
+"""Phone access is switched from the ⋯ menu: on only after a yes, off at once, via the local endpoints."""
 
 import unittest
 from concurrent.futures import Future
@@ -11,8 +11,10 @@ def phone_widget(phone: dict) -> GoblinWidget:
     widget = GoblinWidget.__new__(GoblinWidget)
     widget.closing = False
     widget.root = Mock()
+    widget.root.state.return_value = "normal"
     widget.phone = phone
-    widget.post_local = Mock()
+    widget.api = Mock()
+    widget.refresh = Mock()
     widget.future = Future()
     widget.executor = Mock(submit=Mock(return_value=widget.future))
     return widget
@@ -33,9 +35,10 @@ class PhoneAccessMenuTests(unittest.TestCase):
             question = box.askyesno.call_args.args[1]
             self.assertIn("approve or decline Codex", question)
             self.assertIn("send replies", question)
+            self.assertIn("summaries only", question)
             box.askyesno.return_value = True
             widget.toggle_phone()
-            widget.executor.submit.assert_called_once_with(widget.post_local, "/api/phone", {"enabled": True})
+            widget.executor.submit.assert_called_once_with(widget.api.phone, True)
             finish(widget, {"phone": {"enabled": True, "listening": True, "url": "http://192.168.1.20:43917", "adapter": "Wi-Fi"},
                             "code": "ABCDEFGH"})
             said = box.showinfo.call_args.args[1]
@@ -48,7 +51,7 @@ class PhoneAccessMenuTests(unittest.TestCase):
         with patch("desktop_widget.messagebox") as box:
             widget.toggle_phone()
             box.askyesno.assert_not_called()
-            widget.executor.submit.assert_called_once_with(widget.post_local, "/api/phone", {"enabled": False})
+            widget.executor.submit.assert_called_once_with(widget.api.phone, False)
             finish(widget, {"phone": {"enabled": False, "listening": False}})
             self.assertIn("signed out", box.showinfo.call_args.args[1])
         self.assertFalse(widget.phone["enabled"])
@@ -66,7 +69,7 @@ class PhoneAccessMenuTests(unittest.TestCase):
         with patch("desktop_widget.messagebox") as box:
             box.askyesno.return_value = True
             widget.reset_pairing()
-            widget.executor.submit.assert_called_once_with(widget.post_local, "/api/phone/reset")
+            widget.executor.submit.assert_called_once_with(widget.api.phone_reset)
             finish(widget, {"phone": widget.phone, "code": "JKLMNPQR"})
             self.assertIn("JKLMNPQR", box.showinfo.call_args.args[1])
 
