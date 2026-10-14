@@ -4,7 +4,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClaudeDetailReader, encodeProjectDir, parseClaudeTranscript, promptText, recordedTranscript, transcriptHead } from "../lib/claude-detail.mjs";
@@ -231,6 +231,91 @@ test("a turn that began beyond the bounded read keeps the last prompt Claude Cod
     assert.equal(later.mission.text, "Rebuild the search index");
     assert.equal(later.said.text, "Still indexing.");
   } finally { box.cleanup(); }
+});
+
+/**
+ * A file system that records every call as "method path", so a test can see what was never touched:
+ * realpath only asks where a path leads; stat, readTail and readHead open the file itself.
+ */
+function watchingFs() {
+  const touched = [];
+  const fs = new ClaudeDetailReader().fs;
+  const watch = (name) => (path, ...rest) => { touched.push(`${name} ${path}`); return fs[name](path, ...rest); };
+  const opened = (fragment) => touched.filter((call) => call.includes(fragment) && !call.startsWith("realpath ") && !call.startsWith("readdir "));
+  return { touched, opened, fs: { stat: watch("stat"), realpath: watch("realpath"), readTail: watch("readTail"), readHead: watch("readHead"), readdir: watch("readdir") } };
+}
+
+test("a forged transcript path in the hook log is never read, whatever its name", () => {
+  const box = sandbox();
+  try {
+    const folder = join(box.configDir, "projects", encodeProjectDir(CWD));
+    mkdirSync(join(folder, "sess-1", "subagents"), { recursive: true });
+    writeFileSync(join(folder, "sess-1.jsonl"), `${user(0, "Hello")}\n`);
+    const outside = join(box.root, "elsewhere");
+    mkdirSync(join(outside, "sess-1", "subagents"), { recursive: true });
+    for (const name of ["sess-9.jsonl", "sess-1.jsonl", join("sess-1", "subagents", "agent-a9.jsonl")]) writeFileSync(join(outside, name), `${user(0, "PRIVATE-ELSEWHERE")}\n`);
+    const forged = [
+      { session: "sess-9", transcript: join(outside, "sess-9.jsonl") },
+      { session: "sess-9", transcript: join(folder, "..", "..", "..", "elsewhere", "sess-9.jsonl") },
+      { session: "sess-1", agent: "a9", agentTranscript: join(outside, "sess-1", "subagents", "agent-a9.jsonl") },
+    ];
+    const { touched, opened, fs } = watchingFs();
+    const reader = new ClaudeDetailReader({ configDir: box.configDir, fs });
+    assert.equal(recordedTranscript(forged.slice(0, 1), "sess-9").main, join(outside, "sess-9.jsonl"), "the name alone passes");
+    assert.equal(reader.read({ session: "sess-9", recorded: recordedTranscript(forged.slice(0, 1), "sess-9") }), null);
+    assert.equal(reader.read({ session: "sess-9", recorded: recordedTranscript(forged.slice(1, 2), "sess-9") }), null);
+    // The subagent's forged path is refused; its real place beside the session has no file, so nothing is read.
+    assert.equal(reader.read({ session: "sess-1", agent: "a9", cwd: CWD, recorded: recordedTranscript(forged, "sess-1", "a9") }), null);
+    assert.ok(touched.some((call) => call.startsWith("realpath ") && call.includes("elsewhere")), "where each forged path leads was checked");
+    assert.deepEqual(opened("elsewhere"), [], "and none of them was opened");
+    // The session's own transcript is still read as usual.
+    assert.equal(reader.read({ session: "sess-1", cwd: CWD, recorded: { main: join(folder, "sess-1.jsonl") } }).mission.text, "Hello");
+    assert.ok(opened("sess-1.jsonl").length > 0);
+  } finally { box.cleanup(); }
+});
+
+test("a network or device path in the hook log is not even looked at", () => {
+  const box = sandbox();
+  try {
+    mkdirSync(join(box.configDir, "projects"), { recursive: true });
+    const { touched, fs } = watchingFs();
+    const reader = new ClaudeDetailReader({ configDir: box.configDir, fs, platform: "win32" });
+    for (const main of ["\\\\files.example.test\\share\\projects\\x\\sess-5.jsonl", "//files.example.test/share/projects/x/sess-5.jsonl",
+      "\\\\?\\UNC\\files.example.test\\share\\sess-5.jsonl", "\\\\.\\pipe\\sess-5.jsonl", "C:\\work\\CON\\sess-5.jsonl"]) {
+      assert.equal(reader.read({ session: "sess-5", recorded: { main } }), null, main);
+      assert.equal(reader.read({ session: "sess-5", agent: "a5", recorded: { agent: main } }), null, main);
+    }
+    assert.deepEqual(touched.filter((path) => /files\.example|pipe|CON/.test(path)), []);
+  } finally { box.cleanup(); }
+});
+
+test("a link inside the projects folder that leads outside it is not followed", (t) => {
+  const box = sandbox();
+  try {
+    const projects = join(box.configDir, "projects");
+    mkdirSync(projects, { recursive: true });
+    const outside = join(box.root, "elsewhere");
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, "sess-7.jsonl"), `${user(0, "PRIVATE-ELSEWHERE")}\n`);
+    try { symlinkSync(outside, join(projects, "linked"), process.platform === "win32" ? "junction" : "dir"); }
+    catch { t.skip("this computer cannot make a folder link"); return; }
+    const { fs, opened } = watchingFs();
+    const reader = new ClaudeDetailReader({ configDir: box.configDir, fs });
+    assert.equal(reader.read({ session: "sess-7", recorded: { main: join(projects, "linked", "sess-7.jsonl") } }), null);
+    assert.equal(reader.read({ session: "sess-7" }), null, "nor found through it by the scan");
+    assert.deepEqual(opened("sess-7"), []);
+    assert.equal(reader.cache.size, 0);
+  } finally { box.cleanup(); }
+});
+
+test("the projects folder is matched without regard to letter case on Windows", () => {
+  const real = { "C:\\Users\\dev\\.claude\\projects": "C:\\Users\\dev\\.claude\\projects", "c:\\users\\DEV\\.Claude\\Projects\\x\\sess-3.jsonl": "C:\\Users\\dev\\.claude\\projects\\x\\sess-3.jsonl",
+    "C:\\Users\\dev\\.claude\\projects-old\\sess-3.jsonl": "C:\\Users\\dev\\.claude\\projects-old\\sess-3.jsonl" };
+  const fs = { realpath: (path) => { if (path in real) return real[path]; throw new Error("ENOENT"); } };
+  const reader = new ClaudeDetailReader({ configDir: "C:\\Users\\dev\\.claude", fs, platform: "win32" });
+  assert.equal(reader.allowed("c:\\users\\DEV\\.Claude\\Projects\\x\\sess-3.jsonl"), true);
+  assert.equal(reader.allowed("C:\\Users\\dev\\.claude\\projects-old\\sess-3.jsonl"), false, "a neighbouring folder is not inside");
+  assert.equal(reader.allowed("C:\\Users\\dev\\.claude\\projects"), false);
 });
 
 test("project folders are named the way Claude Code names them", () => {
