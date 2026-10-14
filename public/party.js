@@ -159,7 +159,7 @@ function partyCard(id, origin, members) {
   const updated = Math.max(stampMs(base.updatedAt), ...members.map((member) => stampMs(member.updatedAt)));
   const failedMember = members.find((member) => feedRank(member) === 2);
   const failedStepTitle = failedMember && [...(failedMember.activities || [])].reverse().find(failedStep)?.title;
-  const questions = members.reduce((sum, member) => sum + (member.turnStates?.at(-1)?.questions?.length || 0), 0);
+  const questions = members.reduce((sum, member) => sum + (member.attention === "quiet" ? 0 : member.turnStates?.at(-1)?.questions?.length || 0), 0);
   return {
     id, name: String(base.name || base.nickname || id), project: projectName(base), source: sourceOf(base, id),
     members, rank: Math.min(9, ...ranks), updated,

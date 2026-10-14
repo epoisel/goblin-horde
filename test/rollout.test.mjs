@@ -104,3 +104,18 @@ test("a far-back approval policy is found once, then remembered instead of rerea
   rolloutAwaitsApproval("C:/s/far-policy.jsonl", { now: NOW, readTail, sizeOf });
   assert.ok(reads.length > 1);
 });
+
+test("a remembered policy is not trusted once more has been written than the newest read covers", async () => {
+  const { rolloutAwaitsApproval } = await import("../lib/rollout.mjs");
+  const path = "C:/s/policy-changed.jsonl";
+  let size = 3_000_000;
+  let tail = [call(90), usage(90)].join("\n");
+  let whole = [context("on-request"), "x", call(90), usage(90)].join("\n");
+  const readTail = (_p, bytes) => (bytes > 256 * 1024 ? whole : tail);
+  const sizeOf = () => size;
+  assert.equal(rolloutAwaitsApproval(path, { now: NOW, readTail, sizeOf }), true);
+  // The person switched to "never" in a new turn, then 600 KB more were written: the newest read no longer covers it all.
+  size += 600 * 1024;
+  whole = [context("never"), "x", call(90), usage(90)].join("\n");
+  assert.equal(rolloutAwaitsApproval(path, { now: NOW, readTail, sizeOf }), false);
+});

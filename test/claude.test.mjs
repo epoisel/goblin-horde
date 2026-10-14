@@ -532,3 +532,17 @@ test("an interrupted turn or a denied permission is over once Claude Code is bac
   // A new prompt after the idle notice works as before.
   assert.equal(main([...base, idle(NOW + 61_000), hook("UserPromptSubmit", {}, NOW + 70_000)]).attention, "working");
 });
+
+
+test("back at the prompt, a subagent's interrupted turn is over too", () => {
+  const start = NOW - 10 * 60_000;
+  const sessions = buildClaudeSessions(records(
+    hook("UserPromptSubmit", {}, start),
+    hook("SubagentStart", { agent_id: "sub1", agent_type: "Explore" }, start + 1000),
+    hook("PreToolUse", { agent_id: "sub1", agent_type: "Explore", tool_name: "Grep", tool_use_id: "toolu_s1" }, start + 2000),
+    hook("Notification", { notification_type: "idle_prompt" }, start + 70_000),
+  ), { now: start + 80_000 });
+  const child = sessions[0].agents.find((agent) => agent.childOf);
+  assert.equal(child.attention, "quiet");
+  assert.notEqual(child.status, "active");
+});

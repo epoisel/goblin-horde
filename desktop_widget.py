@@ -1489,7 +1489,8 @@ class Launchpad:
     def signal_label(card) -> str:
         """The pill under a party's name, the same words as the browser launchpad."""
         if card.needs:
-            questions = sum(len((member.get("turnStates") or [{}])[-1].get("questions") or []) for member in card.members)
+            questions = sum(len((member.get("turnStates") or [{}])[-1].get("questions") or []) for member in card.members
+                            if member.get("attention") != "quiet")
             return f"NEEDS YOU · {questions} QUESTION{'S' if questions != 1 else ''}" if questions else f"NEEDS YOU · {card.needs} WAITING"
         if card.failed:
             for member in card.members:

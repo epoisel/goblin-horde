@@ -103,3 +103,14 @@ test("a paired phone gets no command output and no tool arguments, only titles a
   // The original scene (the server's cache) is not changed.
   assert.ok(actor.activities.some((item) => item.output));
 });
+
+test("a SQL password flag is caught whatever its spelling, and longer flags or commit ids are left alone", () => {
+  const ps = redactSecrets('Invoke-Sqlcmd -ServerInstance s -Username sa -Password Hunt3rPw -Query "select 1"');
+  assert.equal(ps.includes("Hunt3rPw"), false, ps);
+  assert.match(ps, /-Password \[secret removed\] -Query/);
+  assert.equal(redactSecrets("sqlcmd -S x -PacketSize 4096"), "sqlcmd -S x -PacketSize 4096");
+  assert.equal(redactSecrets("sqlcmd -S x -U sa -P Hunt3rPw").includes("Hunt3rPw"), false);
+  // A full commit id is an id, not a secret; a long mixed token still is.
+  assert.equal(redactSecrets("merged 3f786850e387550fdab836ed7e6dc881de23001b"), "merged 3f786850e387550fdab836ed7e6dc881de23001b");
+  assert.equal(redactSecrets("key Ab3dEf7hIj1kLm2nOp4qRs5tUv6wXy8zAb9cDe0fGh").includes("Ab3dEf"), false);
+});
