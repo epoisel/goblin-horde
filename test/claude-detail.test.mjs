@@ -349,6 +349,80 @@ test("a transcript's end names its session: a name the person gave, else Claude 
   assert.ok(secret.derived.length <= 60 && secret.derived.endsWith("…"));
 });
 
+test("naming a session never scans the project folders, and the projects folder is resolved once", () => {
+  const box = sandbox();
+  try {
+    const projects = join(box.configDir, "projects");
+    for (let index = 0; index < 30; index++) mkdirSync(join(projects, `other-project-${index}`), { recursive: true });
+    // The transcript sits in a folder its cwd does not name: only a scan could find it, and naming does not scan.
+    writeFileSync(join(projects, "other-project-7", "sess-far.jsonl"), `${named("ai-title", "aiTitle", "Audit checkout accessibility")}\n`);
+    const folder = join(projects, encodeProjectDir(CWD));
+    mkdirSync(folder, { recursive: true });
+    for (const session of ["sess-a", "sess-b", "sess-c"]) writeFileSync(join(folder, `${session}.jsonl`), `${named("ai-title", "aiTitle", `Title of ${session}`)}\n`);
+    const { touched, fs } = watchingFs();
+    const titles = new ClaudeTitleReader({ locator: new ClaudeDetailReader({ configDir: box.configDir, fs }), clock: () => 1000 });
+    titles.startPoll();
+    assert.equal(titles.title({ session: "sess-far", cwd: CWD }), null);
+    for (const session of ["sess-a", "sess-b", "sess-c"]) assert.equal(titles.title({ session, cwd: CWD }).derived, `Title of ${session}`);
+    assert.deepEqual(touched.filter((call) => call.startsWith("readdir ")), [], "no folder was listed");
+    assert.equal(touched.filter((call) => call === `realpath ${projects}`).length, 1, "the projects folder is resolved once");
+    // The detail view (one selected agent) still finds a transcript by scanning.
+    assert.equal(new ClaudeDetailReader({ configDir: box.configDir }).locate({ session: "sess-far", cwd: CWD }), join(projects, "other-project-7", "sess-far.jsonl"));
+  } finally { box.cleanup(); }
+});
+
+test("the naming budget goes to the newest sessions first, and an unchanged transcript costs none of it", () => {
+  const box = sandbox();
+  try {
+    const folder = join(box.configDir, "projects", encodeProjectDir(CWD));
+    mkdirSync(folder, { recursive: true });
+    const sessions = ["sess-1", "sess-2", "sess-3", "sess-4", "sess-5", "sess-6"];
+    for (const session of sessions) writeFileSync(join(folder, `${session}.jsonl`), `${named("ai-title", "aiTitle", `Work on ${session}`)}\n`);
+    let clock = T0 + 60_000;
+    let reads = 0;
+    const locator = new ClaudeDetailReader({ configDir: box.configDir });
+    const fs = locator.fs;
+    locator.fs = { ...fs, readTail: (file, bytes) => { reads++; return fs.readTail(file, bytes); } };
+    const titles = new ClaudeTitleReader({ locator, clock: () => clock, limits: { ...CLAUDE_TITLE_LIMITS, readsPerPoll: 2 } });
+    // The hook saw the sessions start oldest first; sess-6 is the newest.
+    const records = sessions.map((session, index) => ({ v: 1, id: `cc00000${index}`, at: T0 + index * 1000, event: "SessionStart", session, cwd: CWD }));
+    const poll = () => { titles.startPoll(); return Object.fromEntries(buildClaudeSessions(records, { now: clock, names: (info) => titles.title(info) }).map((party) => [party.session, party.name])); };
+    const first = poll();
+    assert.equal(first["sess-6"], "Work on sess-6");
+    assert.equal(first["sess-5"], "Work on sess-5");
+    assert.match(first["sess-1"], /^Claude · billing-api · /, "older ones wait for a later poll");
+    assert.equal(reads, 2);
+    poll();
+    assert.equal(reads, 4);
+    // Once read, an unchanged transcript is checked with a stat: the whole budget goes to the rest.
+    clock += CLAUDE_TITLE_LIMITS.recheckMs + 1;
+    const third = poll();
+    assert.equal(reads, 6);
+    assert.deepEqual(sessions.map((session) => third[session]), sessions.map((session) => `Work on ${session}`));
+  } finally { box.cleanup(); }
+});
+
+test("a renamed session keeps its name when the transcript grows past the naming records", () => {
+  const box = sandbox();
+  try {
+    const folder = join(box.configDir, "projects", encodeProjectDir(CWD));
+    mkdirSync(folder, { recursive: true });
+    const file = join(folder, "sess-r.jsonl");
+    writeFileSync(file, `${[named("custom-title", "customTitle", "release-train"), named("ai-title", "aiTitle", "Repair invoice importer")].join("\n")}\n`);
+    let clock = 1000;
+    const titles = new ClaudeTitleReader({ locator: new ClaudeDetailReader({ configDir: box.configDir }), clock: () => clock });
+    titles.startPoll();
+    assert.equal(titles.title({ session: "sess-r", cwd: CWD }).custom, "release-train");
+    // A long turn: far more than the 64 KB tail is written after the naming records, then the next prompt.
+    appendFileSync(file, `${Array.from({ length: 400 }, (_, index) => assistant(100 + index, [{ type: "text", text: "x".repeat(300) }])).join("\n")}\n${lastPrompt("Now add the archive flag")}\n`);
+    clock += CLAUDE_TITLE_LIMITS.recheckMs + 1;
+    titles.startPoll();
+    const later = titles.title({ session: "sess-r", cwd: CWD });
+    assert.equal(later.custom, "release-train");
+    assert.equal(later.derived, "Repair invoice importer", "Claude Code's title out of view is kept too");
+  } finally { box.cleanup(); }
+});
+
 test("sessions are named from their transcripts, a few per poll, and a newer hook prompt still wins", () => {
   const box = sandbox();
   try {
