@@ -41,6 +41,16 @@ export const HOSTILE = {
   "export and spaces": fill("export "),
   "upper-case names and spaces": fill("A "),
   "curl user": `curl -u ${"a".repeat(SIZE)}`,
+  "setx names": fill("setx A "),
+  "environ keys": fill('os.environ["'),
+  "environment calls": fill('SetEnvironmentVariable("A", "\\"'),
+  "net use shares": fill("net use \\\\a\\b "),
+  "smb users": fill("smbclient -U a%"),
+  "secure string switches": fill("ConvertTo-SecureString -AsPlainText "),
+  "authorization schemes": fill("Authorization: x "),
+  "authorization parameters": `Authorization: OAuth ${fill('a="\\", ')}`,
+  "key names": fill('secret_key="\\'),
+  "backtick escapes": fill('-Password "`'),
 };
 
 /** The fastest of three runs, in ms: one slow run on a busy computer is not the filter's doing. */
