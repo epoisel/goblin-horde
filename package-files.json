@@ -26,6 +26,7 @@
   "Uninstall Goblin Horde.cmd",
   "skills/goblin-horde-manager/SKILL.md",
   "scripts/package.mjs",
+  "lib/asks.mjs",
   "lib/claude.mjs",
   "lib/claude-hooks.mjs",
   "lib/codex-bin.mjs",
