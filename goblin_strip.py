@@ -118,11 +118,11 @@ class GoblinStrip:
             # The bubble over the head: centred over the body (columns 1-17).
             glyph, back, front = BUBBLES.get(item.klass, ("", PANEL, LIVELY))
             center = left + 9 * self.scale
-            radius = px(8)
+            half_w, half_h = px(13), px(8)
             bubble_tag = f"bubble-{index}"
-            c.create_oval(center - radius, px(4), center + radius, px(4) + 2 * radius, fill=back,
+            c.create_oval(center - half_w, px(4), center + half_w, px(4) + 2 * half_h, fill=back,
                           outline=back if item.klass in (NEEDS, FAILED) else LINE, tags=bubble_tag)
-            c.create_text(center, px(4) + radius, text=glyph, fill=front, font=theme.small_strong,
+            c.create_text(center, px(4) + half_h, text=glyph, fill=front, font=theme.small_strong,
                           tags=(bubble_tag, f"{bubble_tag}-text"))
             # A short name under each goblin, on a dark tab so it reads on any wallpaper.
             name = clip(display_name(item.actor, self.app.aliases), 18)

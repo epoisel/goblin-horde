@@ -426,6 +426,8 @@ test("every Python module the widget imports ships with it", () => {
     seen.add(file);
     assert.ok(shipped.has(file), `${file} is imported by the widget but not in package-files.json`);
     const text = readFileSync(join(sourceDir, file), "utf8");
+    // UTF-8 read back as Windows-1252 turns "…" into "â€¦" and "·" into "Â·" on screen.
+    assert.doesNotMatch(text, /â€|Â·|â‹/, `${file} has mis-encoded characters`);
     for (const [, name] of text.matchAll(/^\s*(?:from|import)\s+([A-Za-z_][A-Za-z0-9_]*)/gm))
       if (existsSync(join(sourceDir, `${name}.py`))) pending.push(`${name}.py`);
   }

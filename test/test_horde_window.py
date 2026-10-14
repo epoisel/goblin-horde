@@ -40,6 +40,8 @@ class HordeWindowTests(unittest.TestCase):
         isolate(self)
         widget = GoblinWidget("", 44191, demo=True, demo_set=demo_set, **options)
         self.addCleanup(widget.close)
+        # Runs before close (cleanups run last-in, first-out): no callback may have failed.
+        self.addCleanup(lambda: self.assertEqual(widget.error_count, 0, "a Tk callback raised"))
         quiet(widget)
         load(widget)
         return widget

@@ -14,7 +14,7 @@ from __future__ import annotations
 import time
 from typing import NamedTuple
 
-from goblin_motion import latest_public_event, stamp_ms
+from goblin_motion import stamp_ms
 from goblin_sprite import model_of
 
 NOT_AGENTS = ("", "all", "standby")
@@ -619,6 +619,8 @@ def build_roster(actors: list[dict], *, now_ms: float | None = None, catalog: li
             continue
         listed = by_catalog.get(party) or {}
         project = project_name(listed if listed.get("cwd") else next((actor for actor in members if actor.get("cwd")), {}))
+        if project and project.lower() in names[party].lower():
+            project = ""  # "Orca · search-service" already says where it works.
         working_rows.append(Row("party", f"party:{party}", names[party], party=party, section="working",
                                 meta=project, count=len(members)))
         for row in members_rows:
@@ -769,7 +771,7 @@ def strip_tooltip(actor: dict, aliases: dict | None = None) -> str:
 
 
 # The detail pane -------------------------------------------------------------------------------
-DETAIL_ORDER = ("ask", "mission", "plan", "now", "said", "trail", "files", "screen")
+DETAIL_ORDER = ("ask", "waiting", "mission", "plan", "now", "said", "trail", "files", "screen")
 TRAIL_KINDS = {"command", "edit", "write", "read", "search", "web", "agent", "tool", "message", "ask", "error"}
 ACTIVITY_TRAIL = {"command": "command", "file": "edit", "research": "web", "tool": "tool", "update": "message"}
 
@@ -833,6 +835,7 @@ def detail_sections(detail: dict | None, agent: dict | None = None) -> list[str]
     agent = agent if agent is not None else (detail.get("agent") or {})
     present = {
         "ask": bool(ask_of(agent)),
+        "waiting": bool(waiting_of(agent)),
         "mission": bool(str(((detail.get("mission") or {}) if isinstance(detail.get("mission"), dict) else {}).get("text") or "").strip()),
         "plan": bool(plan_steps(detail.get("plan"))),
         "now": bool(now_of({"now": detail.get("now")}) or now_of(agent)),

@@ -32,6 +32,14 @@ class HordeWindow:
         self.header = tk.Frame(root, bg=HEADER, height=px(48))
         self.header.pack(fill="x")
         self.header.pack_propagate(False)
+        # The right side is packed first, so a narrow window squeezes the feeds, never the search box.
+        self.menu_button = FlatButton(self.header, theme, "⋯", app.show_menu, kind="quiet", font=theme.title,
+                                      padx=10, pady=0)
+        self.menu_button.configure(bg=HEADER)
+        self.menu_button.pack(side="right", padx=(px(4), px(10)), fill="y", pady=px(8))
+        self.search = tk.Entry(self.header, bg=ENTRY, fg=FAINT, insertbackground=GOLD, relief="flat", width=22,
+                               font=theme.body, highlightthickness=1, highlightbackground=LINE, highlightcolor=GOLD)
+        self.search.pack(side="right", pady=px(9), ipady=px(2))
         self.title = tk.Label(self.header, text="Goblin Horde", bg=HEADER, fg=IVORY, font=theme.title)
         self.title.pack(side="left", padx=(px(16), px(12)))
         self.counts = tk.Frame(self.header, bg=HEADER)
@@ -50,13 +58,7 @@ class HordeWindow:
         self.sources = tk.Frame(self.header, bg=HEADER)
         self.sources.pack(side="left", padx=(px(10), 0))
         self.source_labels: dict[str, tk.Label] = {}
-        self.menu_button = FlatButton(self.header, theme, "⋯", app.show_menu, kind="quiet", font=theme.title,
-                                      padx=10, pady=0)
-        self.menu_button.configure(bg=HEADER)
-        self.menu_button.pack(side="right", padx=(px(4), px(10)), fill="y", pady=px(8))
-        self.search = tk.Entry(self.header, bg=ENTRY, fg=FAINT, insertbackground=GOLD, relief="flat", width=22,
-                               font=theme.body, highlightthickness=1, highlightbackground=LINE, highlightcolor=GOLD)
-        self.search.pack(side="right", pady=px(9), ipady=px(2))
+        self.header.bind("<Configure>", lambda _event: self.fit_header())
         self.search.insert(0, PLACEHOLDER)
         self.search.bind("<FocusIn>", self.on_search_focus)
         self.search.bind("<FocusOut>", self.on_search_blur)
@@ -92,22 +94,28 @@ class HordeWindow:
             "done": f"{counts.done_today} done today" if counts.done_today else "",
             "feed": feed_note,
         }
-        for name in ("needs", "working", "failed", "done", "feed"):
-            label = self.count_chips[name]
-            text = values[name]
-            if label.cget("text") != text:
-                label.configure(text=text)
-            if text and not label.winfo_manager():
-                label.pack(side="left", padx=(0, self.theme.px(6)))
-            elif not text and label.winfo_manager():
-                label.pack_forget()
-        # Keep the chips in their order when one reappears.
+        for name, text in values.items():
+            if self.count_chips[name].cget("text") != text:
+                self.count_chips[name].configure(text=text)
+        # Only the chips with something to say, always in this order.
         shown = [self.count_chips[name] for name in ("needs", "working", "failed", "done", "feed") if values[name]]
         if [widget for widget in self.counts.pack_slaves()] != shown:
             for widget in self.counts.pack_slaves():
                 widget.pack_forget()
             for widget in shown:
                 widget.pack(side="left", padx=(0, self.theme.px(6)))
+        self.fit_header()
+
+    def fit_header(self) -> None:
+        """Show the feed chips only when they fit beside the title, counts, and search."""
+        px = self.theme.px
+        needed = (self.title.winfo_reqwidth() + px(28) + self.counts.winfo_reqwidth() + self.sources.winfo_reqwidth()
+                  + px(10) + self.search.winfo_reqwidth() + self.menu_button.winfo_reqwidth() + px(30))
+        fits = self.header.winfo_width() >= needed
+        if fits and not self.sources.winfo_manager():
+            self.sources.pack(side="left", padx=(px(10), 0), after=self.counts)
+        elif not fits and self.sources.winfo_manager():
+            self.sources.pack_forget()
 
     def update_sources(self, chips: list[SourceChip]) -> None:
         keys = [item.key for item in chips]
@@ -126,6 +134,7 @@ class HordeWindow:
             if label.cget("text") != text:
                 label.configure(text=text)
             label.configure(fg=tone(item.tone), cursor="hand2" if item.action else "")
+        self.fit_header()
 
     # Search ------------------------------------------------------------------------------------
     def query(self) -> str:

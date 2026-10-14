@@ -15,13 +15,13 @@ from __future__ import annotations
 import time
 import tkinter as tk
 
-from goblin_sprite import KINDS, SPAN_H, SPAN_W, TOP_ROOM, draw_sprite, sprite_scale, style_for
+from goblin_sprite import KINDS, SPAN_H, SPAN_W, TOP_ROOM, draw_sprite, sprite_scale
 from goblin_motion import stamp_ms
 from horde_model import (APP_NAMES, SOURCE_NAMES, actor_class, actor_id, age_label, ask_of, ask_text,
                          clock_label, detail_sections, elapsed, family_ink, model_badge, now_of, party_scope,
-                         plan_counts, plan_steps, project_name, screen_tail, source_of, status_chip, trail_result,
-                         display_name)
-from horde_theme import (AMBER, BUTTON, CARD, CORAL, ENTRY, FAINT, GOLD, HOVER, INK, IVORY, LINE, LIVELY, MONO_BG,
+                         plan_counts, plan_steps, progress_of, project_name, screen_tail, source_of, status_chip,
+                         trail_result, display_name, waiting_of)
+from horde_theme import (AMBER, CARD, CORAL, ENTRY, FAINT, GOLD, HOVER, IVORY, LILAC, LINE, LIVELY, MONO_BG,
                          MUTED, PANEL, FlatButton, ScrollArea, Theme, WheelRouter, chip, copy_menu, fit_text, tone)
 
 TRAIL_GLYPHS = {"command": "❯", "edit": "✎", "write": "✚", "read": "≡", "search": "⌕", "web": "◎",
@@ -71,7 +71,8 @@ class Card:
         label = tk.Label(parent or self.body, text="", bg=MONO_BG if mono else bg, fg=fg,
                          font=font or (theme.mono if mono else theme.body), justify="left", anchor="w",
                          padx=theme.px(8) if mono else 0, pady=theme.px(6) if mono else 0, **options)
-        self.view.wrapping(label, margin + (theme.px(16) if mono else 0))
+        # The card's side padding, border, and body padding, plus a mono box's own padding.
+        self.view.wrapping(label, margin + theme.px(84) + (theme.px(18) if mono else 0))
         copy_menu(label, lambda: label.cget("text"))
         return label
 
@@ -120,8 +121,8 @@ class TrailRow:
         self.title.pack(side="left", fill="x", expand=True, padx=(theme.px(4), 0))
         self.result_labels: list[tk.Label] = []
         self.more = tk.Frame(self.frame, bg=CARD)
-        self.detail = card.label(self.more, mono=True, margin=theme.px(30), fg=MUTED)
-        self.output = card.label(self.more, mono=True, margin=theme.px(30))
+        self.detail = card.label(self.more, mono=True, margin=theme.px(56), fg=MUTED)
+        self.output = card.label(self.more, mono=True, margin=theme.px(56))
         for widget in (self.line, self.time, self.icon, self.title, self.result):
             widget.bind("<Button-1>", self.on_click)
             widget.bind("<Enter>", lambda _event: self.hover(True))
@@ -231,6 +232,7 @@ class DetailView:
         self.build_header()
         self.build_composer()
         self.area = ScrollArea(self.frame, theme, wheel)
+        self.area.content.configure(pady=px(9))  # Room after the last card, so it never touches the edge.
         self.area.pack(fill="both", expand=True)
         self.area.width_listeners.append(self.on_width)
         self.cards: dict[str, Card] = {}
@@ -242,14 +244,14 @@ class DetailView:
     # Layout helpers ----------------------------------------------------------------------------
     def wrapping(self, label: tk.Label, margin: int) -> None:
         self.wrap_labels.append((label, margin))
-        label.configure(wraplength=max(self.theme.px(120), self.width - margin - self.theme.px(60)))
+        label.configure(wraplength=max(self.theme.px(120), self.width - margin))
 
     def on_width(self, width: int) -> None:
         self.width = width
         floor = self.theme.px(120)
         for label, margin in self.wrap_labels:
             try:
-                label.configure(wraplength=max(floor, width - margin - self.theme.px(60)))
+                label.configure(wraplength=max(floor, width - margin))
             except tk.TclError:
                 pass
         for row in self.trail_rows.values():
@@ -279,21 +281,46 @@ class DetailView:
         self.model_chip = chip(self.chips, theme)
         self.source_chip = chip(self.chips, theme, fg=MUTED)
         self.status_chip = chip(self.chips, theme)
+        self.progress_chip = chip(self.chips, theme, fg=MUTED)  # Steps done, when no plan is shown.
         for item in (self.model_chip, self.source_chip, self.status_chip):
             item.pack(side="left", padx=(0, px(6)))
+        self.subtitle_full = ""
+        column.bind("<Configure>", lambda _event: (self.fit_subtitle(), self.fit_chips()))
         self.buttons = tk.Frame(column, bg=PANEL)
         self.buttons.pack(fill="x", pady=(px(10), 0))
         self.open_button = FlatButton(self.buttons, theme, "Open ↗", self.on_open, kind="secondary")
         self.message_button = FlatButton(self.buttons, theme, "Message…", self.toggle_composer, kind="secondary")
-        self.dismiss_button = FlatButton(self.buttons, theme, "Dismiss", self.on_dismiss, kind="quiet")
         self.viewer_button = FlatButton(self.buttons, theme, "Open in browser ↗", self.on_viewer, kind="quiet")
         self.notice = tk.Label(self.buttons, text="", bg=PANEL, fg=MUTED, font=theme.small, anchor="w")
         self.notice_after = None
-        self.header_buttons = [self.open_button, self.message_button, self.dismiss_button, self.viewer_button]
+        self.header_buttons = [self.open_button, self.message_button, self.viewer_button]
         self.rule = tk.Frame(self.frame, bg=LINE, height=1)
         self.rule.pack(fill="x", padx=px(18), pady=(px(8), 0))
         self.header.bind("<Configure>", lambda event: self.name.configure(
             wraplength=max(px(160), event.width - SPAN_W * scale - px(20))))
+
+    def fit_subtitle(self) -> None:
+        width = self.header_column.winfo_width()
+        if width > 1:
+            set_text(self.subtitle, fit_text(self.theme.small, self.subtitle_full, width - self.theme.px(8)))
+
+    def fit_chips(self) -> None:
+        """The chips that fit on one line: status always, then model, steps, and source while room lasts."""
+        chips = [self.model_chip, self.source_chip, self.status_chip, self.progress_chip]
+        wanted = {item for item in chips if item.cget("text")}
+        room = self.header_column.winfo_width()
+        gap = self.theme.px(6)
+        if room > 1:
+            for dropped in (self.source_chip, self.progress_chip, self.model_chip):
+                if sum(item.winfo_reqwidth() + gap for item in wanted) <= room:
+                    break
+                wanted.discard(dropped)
+        shown = [item for item in chips if item in wanted]
+        if [item for item in self.chips.pack_slaves()] != shown:
+            for item in chips:
+                item.pack_forget()
+            for item in shown:
+                item.pack(side="left", padx=(0, gap))
 
     def show_buttons(self, wanted: list[FlatButton]) -> None:
         current = [button for button in self.header_buttons if button.winfo_manager()]
@@ -334,20 +361,22 @@ class DetailView:
         party_label = str(party.get("name") or self.app.party_label(party_scope(actor)) or "")
         project = str(agent.get("project") or project_name(actor) or "")
         own_name = display_name(actor)
-        bits = [bit for bit in (project, party_label if party_label and party_label != own_name else "") if bit]
+        bits = [bit for bit in dict.fromkeys((project, party_label)) if bit and bit != own_name]
         branch = str(agent.get("branch") or "")
         if branch:
             bits.append(f"branch {branch}")
-        set_text(self.subtitle, " · ".join(bits) or SOURCE_NAMES.get(source_of(actor), ""))
+        self.subtitle_full = " · ".join(bits) or SOURCE_NAMES.get(source_of(actor), "")
+        self.fit_subtitle()
+        progress = progress_of(actor)
+        steps = f"{progress['done']} of {progress['total']} steps" if progress and "plan" not in \
+            detail_sections(detail, actor) else ""
+        set_text(self.progress_chip, steps)
         badge = model_badge(actor, with_effort=True)
         set_text(self.model_chip, badge, fg=family_ink(actor))
-        if badge and not self.model_chip.winfo_manager():
-            self.model_chip.pack(side="left", padx=(0, self.theme.px(6)), before=self.source_chip)
-        elif not badge and self.model_chip.winfo_manager():
-            self.model_chip.pack_forget()
         set_text(self.source_chip, SOURCE_NAMES.get(source_of(actor), "Agent"))
         status, status_tone = status_chip(actor, now_ms)
         set_text(self.status_chip, status, fg=tone(status_tone))
+        self.fit_chips()
         controls = agent.get("controls") if isinstance(agent.get("controls"), dict) else {}
         wanted = []
         opener = controls.get("open") if isinstance(controls.get("open"), dict) else None
@@ -358,9 +387,7 @@ class DetailView:
         if messenger and self.app.can("/api/message", "/api/reply"):
             set_text(self.message_button, str(messenger.get("label") or "Message…"))
             wanted.append(self.message_button)
-        ask = ask_of(actor)
-        if ask and controls.get("dismiss") and not ask.get("legacy") and self.app.can("/api/dismiss"):
-            wanted.append(self.dismiss_button)
+        # Dismiss sits on the ask card itself, beside the ways to answer it.
         if not opener or not self.app.can("/api/open"):
             wanted.append(self.viewer_button)
         self.show_buttons(wanted)
@@ -434,6 +461,12 @@ class DetailView:
         self.cards["ask"] = Card(self, "ask", border=AMBER)
         self.ask_key = None
         self.ask_widgets: dict = {}
+        waiting = self.cards["waiting"] = Card(self, "waiting", border=LILAC)
+        waiting.title.configure(fg=LILAC)
+        self.waiting_text = waiting.label()
+        self.waiting_text.pack(fill="x")
+        self.waiting_note = waiting.label(fg=FAINT, font=theme.small)
+        self.waiting_note.pack(fill="x", pady=(px(6), 0))
         mission = self.cards["mission"] = Card(self, "mission")
         self.mission_text = mission.label()
         self.mission_text.pack(fill="x")
@@ -446,7 +479,7 @@ class DetailView:
         self.now_icon.pack(side="left")
         self.now_title = tk.Label(row, text="", bg=CARD, fg=IVORY, font=theme.strong, anchor="w", justify="left")
         self.now_title.pack(side="left", fill="x", expand=True, padx=(px(6), 0))
-        self.wrapping(self.now_title, px(150))
+        self.wrapping(self.now_title, px(120))
         self.now_detail = now.label(mono=True)
         self.now_started = 0.0
         said = self.cards["said"] = Card(self, "said")
@@ -502,17 +535,7 @@ class DetailView:
             child.destroy()
         self.wrap_labels = [(label, margin) for label, margin in self.wrap_labels if label.winfo_exists()]
         widgets = self.ask_widgets = {}
-        text = card.label(font=theme.body)
-        text.configure(text=ask_text(ask))
-        text.pack(fill="x")
-        command = str(ask.get("command") or "").strip()
-        if command:
-            box = card.label(mono=True)
-            box.configure(text=command)
-            box.pack(fill="x", pady=(px(8), 0))
         app = self.app
-        source = source_of(actor)
-        app_name = APP_NAMES.get(source, "its app")
         answer_here = ask.get("answerHere")
         request = app.request_for(ask) if answer_here == "respond" else None
         questions = [item for item in ask.get("questions") or [] if isinstance(item, dict)]
@@ -520,15 +543,25 @@ class DetailView:
             questions = [{"id": item.get("id"), "text": item.get("question") or item.get("header") or "",
                           "options": [option.get("label") for option in item.get("options") or [] if isinstance(option, dict)]}
                          for item in (request.get("params") or {}).get("questions") or [] if isinstance(item, dict)]
+        # The ask's own words are shown once: not again as the first of its questions.
+        repeated = bool(questions) and str(questions[0].get("text") or "").strip() == ask_text(ask)
+        if not repeated:
+            text = card.label(font=theme.body)
+            text.configure(text=ask_text(ask))
+            text.pack(fill="x")
+        command = str(ask.get("command") or "").strip()
+        if command:
+            box = card.label(mono=True)
+            box.configure(text=command)
+            box.pack(fill="x", pady=(px(8), 0))
+        source = source_of(actor)
+        app_name = APP_NAMES.get(source, "its app")
         status = StatusLine(card.body, theme)
         widgets["status"] = status
         choices: dict[int, tk.StringVar] = {}
-        # A single question whose text is already the ask's text is not repeated.
-        if len(questions) == 1 and str(questions[0].get("text") or "").strip() == ask_text(ask):
-            questions[0] = {**questions[0], "text": ""}
         for index, question in enumerate(questions):
             block = tk.Frame(card.body, bg=CARD)
-            block.pack(fill="x", pady=(px(10), 0))
+            block.pack(fill="x", pady=(px(10) if index or not repeated else 0, 0))
             if str(question.get("text") or "").strip():
                 label = card.label(block, font=theme.strong)
                 label.configure(text=str(question["text"]))
@@ -557,6 +590,8 @@ class DetailView:
         thread = actor_id(actor)
 
         def finish(_result, error) -> None:
+            if not actions.winfo_exists():
+                return  # Answered: the ask is gone and its card with it.
             for button in actions.winfo_children():
                 if isinstance(button, FlatButton):
                     button.set_enabled(True)
@@ -616,7 +651,7 @@ class DetailView:
 
                 def sent(result, error) -> None:
                     finish(result, error)
-                    if not error:
+                    if not error and box.winfo_exists():
                         box.delete("1.0", "end")
                 app.send_message(actor, words, sent)
             box.bind("<Control-Return>", lambda _event: (reply(), "break")[1])
@@ -652,7 +687,7 @@ class DetailView:
                     row.pack_forget()
                 continue
             status = steps[index].get("status")
-            mark, ink, words = ("✓", LIVELY, FAINT) if status == "done" else ("▶", GOLD, IVORY) if status == "active" \
+            mark, ink, words = ("✓", LIVELY, FAINT) if status == "done" else ("▸", GOLD, IVORY) if status == "active" \
                 else ("○", FAINT, MUTED)
             set_text(glyph, mark, fg=ink)
             set_text(text, " ".join(str(steps[index].get("text")).split()), fg=words,
@@ -806,6 +841,16 @@ class DetailView:
         names = detail_sections(self.detail, actor)
         if "ask" in names:
             self.update_ask(actor)
+        if "waiting" in names:
+            waiting = waiting_of(actor) or {}
+            parent = waiting.get("who") == "parent"
+            since = stamp_ms(waiting.get("at"))
+            self.cards["waiting"].set_title("Waiting on its parent agent" if parent else "Asked its coordinator",
+                                            age_label(since) if since else "")
+            set_text(self.waiting_text, " ".join(str(waiting.get("text") or "").split()) or
+                     "It is waiting for an answer before it goes on.")
+            set_text(self.waiting_note, "Not a question for you: the answer comes from its "
+                     + ("parent agent." if parent else "coordinator."))
         mission = self.detail.get("mission") if isinstance(self.detail.get("mission"), dict) else {}
         if "mission" in names:
             who = {"you": "by you", "coordinator": "by its coordinator", "parent": "by its parent agent"}.get(
@@ -850,6 +895,7 @@ class DetailView:
             return
         status, status_tone = status_chip(self.actor, now_ms)
         set_text(self.status_chip, status, fg=tone(status_tone))
+        self.fit_chips()
         if "now" in self.order and self.now_started:
             self.cards["now"].set_title("Now", f"running {elapsed(now_ms - self.now_started)}")
         if "ask" in self.order:
@@ -874,7 +920,7 @@ class DetailView:
         intro = tk.Label(self.welcome, text="See what every agent is doing, and answer the ones waiting on you.",
                          bg=PANEL, fg=MUTED, font=theme.body, anchor="w", justify="left")
         intro.pack(fill="x")
-        self.wrapping(intro, px(40))
+        self.wrapping(intro, px(60))
         scale = sprite_scale(3, theme.scale)
         self.tribes = tk.Canvas(self.welcome, height=(SPAN_H + 2) * scale + px(26), bg=PANEL, highlightthickness=0, bd=0)
         self.tribes.pack(fill="x", pady=(px(18), px(8)))
@@ -886,11 +932,11 @@ class DetailView:
             label = tk.Label(block, text=f"{heading} {text}", bg=PANEL, fg=IVORY, font=theme.body, anchor="w",
                              justify="left")
             label.pack(fill="x")
-            self.wrapping(label, px(40))
+            self.wrapping(label, px(60))
         self.welcome_sources = tk.Label(self.welcome, text="", bg=PANEL, fg=MUTED, font=theme.small, anchor="w",
                                         justify="left")
         self.welcome_sources.pack(fill="x", pady=(px(16), 0))
-        self.wrapping(self.welcome_sources, px(40))
+        self.wrapping(self.welcome_sources, px(60))
 
     def paint_tribes(self) -> None:
         canvas, scale, px = self.tribes, self.tribe_scale, self.theme.px
@@ -929,13 +975,13 @@ class DetailView:
         self.chat = tk.Frame(self.area.content, bg=PANEL)
         self.chat_name = tk.Label(self.chat, text="", bg=PANEL, fg=IVORY, font=theme.name, anchor="w", justify="left")
         self.chat_name.pack(fill="x", pady=(px(24), px(4)))
-        self.wrapping(self.chat_name, px(40))
+        self.wrapping(self.chat_name, px(60))
         self.chat_meta = tk.Label(self.chat, text="", bg=PANEL, fg=MUTED, font=theme.body, anchor="w", justify="left")
         self.chat_meta.pack(fill="x")
-        self.wrapping(self.chat_meta, px(40))
+        self.wrapping(self.chat_meta, px(60))
         self.chat_note = tk.Label(self.chat, text="", bg=PANEL, fg=FAINT, font=theme.small, anchor="w", justify="left")
         self.chat_note.pack(fill="x", pady=(px(10), 0))
-        self.wrapping(self.chat_note, px(40))
+        self.wrapping(self.chat_note, px(60))
         buttons = tk.Frame(self.chat, bg=PANEL)
         buttons.pack(fill="x", pady=(px(14), 0))
         self.chat_watch = FlatButton(buttons, theme, "Watch", None, kind="primary")

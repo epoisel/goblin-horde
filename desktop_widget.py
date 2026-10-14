@@ -429,7 +429,7 @@ class GoblinWidget:
         self.receive_after = self.root.after(30, self.receive_scene)
 
     def retry_now(self) -> None:
-        self.window.show_banner("Trying the viewer againâ€¦", restart=False)
+        self.window.show_banner("Trying the viewer again…", restart=False)
         self.fetch_now()
 
     def receive_scene(self) -> None:
@@ -515,9 +515,14 @@ class GoblinWidget:
                                     query=self.query, results=self.results)
         self.rows, self.counts = rows, counts
         if not self.chosen:
-            self.selected = default_selection(rows)
+            automatic = default_selection(rows)
+            if automatic or not self.query:  # A search that hides everyone keeps the goblin on show.
+                self.selected = automatic
         self.roster.render(rows, self.selected)
         note = coverage_note(self.coverage) if self.connection == "PARTIAL" else ""
+        if not note and self.connection == "LIVE" and self.board_age >= 20:
+            # The viewer answered with the last list it built while a fresher one is on its way.
+            note = f"Updated {int(self.board_age)}s ago"
         self.window.update_counts(counts, note)
         self.window.update_sources(source_chips(self.sources))
         self.update_banner()
@@ -580,10 +585,10 @@ class GoblinWidget:
         if reading:
             parts.append("Reading " + (", ".join(reading[:-1]) + " and " + reading[-1] if len(reading) > 1 else reading[0]) + ".")
         elif not self.demo:
-            parts.append("Connecting to the viewerâ€¦" if self.connection == "CONNECTING" else
+            parts.append("Connecting to the viewer…" if self.connection == "CONNECTING" else
                          "No sources are connected yet; the header shows what needs a fix.")
         parts.append("Phone access is on." if self.phone.get("enabled") else
-                     "Phone access is off; turn it on from the â‹¯ menu.")
+                     "Phone access is off; turn it on from the ⋯ menu.")
         return " ".join(parts)
 
     def sprite_action(self, actor: dict, klass: str) -> str:
@@ -725,7 +730,7 @@ class GoblinWidget:
             self.refresh()
 
     def search_catalog(self, text: str) -> None:
-        """Enter in "Find a chatâ€¦": older chats from the catalog, to open or watch."""
+        """Enter in "Find a chat…": older chats from the catalog, to open or watch."""
         self.query = text
         self.refresh_catalog()
         self.results = search_sources(self.source_catalog, text, limit=40) if text else None
@@ -913,7 +918,7 @@ class GoblinWidget:
                                        parent=self.dialog_parent())
             self.refresh_sources_soon(2500)
             self.fetch_now()
-        self.sources["codex"] = {**self.sources.get("codex", {}), "state": "starting", "detail": "Starting Codexâ€¦"}
+        self.sources["codex"] = {**self.sources.get("codex", {}), "state": "starting", "detail": "Starting Codex…"}
         self.refresh()
         self.when_done(self.executor.submit(self.api.reconnect), done)
 
@@ -998,9 +1003,9 @@ class GoblinWidget:
 
     def copy_diagnostics(self) -> None:
         """Copy a short report that is safe to share: versions, states, counts, timings; no chats or codes."""
-        widget_facts = (f"widget: {self.surface} Â· {len(self.actors)} goblins Â· scene {self.connection.lower()}, "
-                        f"{int(self.board_age)}s old Â· detail {'unavailable' if self.detail_route is False else 'ok'} Â· "
-                        f"scale {getattr(getattr(self, 'theme', None), 'scale', 1.0)} Â· "
+        widget_facts = (f"widget: {self.surface} · {len(self.actors)} goblins · scene {self.connection.lower()}, "
+                        f"{int(self.board_age)}s old · detail {'unavailable' if self.detail_route is False else 'ok'} · "
+                        f"scale {getattr(getattr(self, 'theme', None), 'scale', 1.0)} · "
                         f"errors since start: {self.error_count}")
 
         def done(result, error) -> None:
@@ -1025,7 +1030,7 @@ class GoblinWidget:
         if not self.restart_possible():
             return
         self.restarting = True
-        self.window.show_banner("Starting the viewerâ€¦", restart=False)
+        self.window.show_banner("Starting the viewer…", restart=False)
         command = [shutil.which("node") or "node", str(HERE / "goblin.mjs"), "start", "--ui", "none",
                    "--port", str(self.port), "--install-dir", str(HERE),
                    "--state-dir", os.environ.get("GOBLIN_HORDE_STATE_DIR", "")]
@@ -1159,7 +1164,7 @@ class GoblinWidget:
         if ask and not ask.get("legacy") and self.can("/api/dismiss"):
             menu.add_command(label="Dismiss alert", command=lambda: self.dismiss_ask(actor))
         if row.kind == "agent":
-            menu.add_command(label="Rename goblinâ€¦", command=lambda: self.rename(actor))
+            menu.add_command(label="Rename goblin…", command=lambda: self.rename(actor))
             menu.add_command(label="Copy name", command=lambda: (self.root.clipboard_clear(),
                                                                  self.root.clipboard_append(display_name(actor))))
         menu.tk_popup(event.x_root, event.y_root)
@@ -1168,7 +1173,7 @@ class GoblinWidget:
         menu = tk.Menu(self.root, tearoff=False)
         menu.add_command(label="Reconnect Codex", command=self.reconnect_codex)
         if (self.sources.get("claude") or {}).get("canConnect"):
-            menu.add_command(label="Connect Claude Codeâ€¦", command=self.connect_claude)
+            menu.add_command(label="Connect Claude Code…", command=self.connect_claude)
         if self.autostart.get("available"):
             self.autostart_var = tk.BooleanVar(self.root, bool(self.autostart.get("enabled")))
             menu.add_checkbutton(label="Start with Windows", variable=self.autostart_var, command=self.toggle_autostart)
