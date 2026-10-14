@@ -22,6 +22,7 @@ if (major < 20) {
 }
 
 const { ManagerError, autostart, doctor, getLocalJson, hooksInstall, hooksRemove, hooksStatus, install, locate, makeContext, start, status, stop, uninstall } = await import("./lib/manager.mjs");
+const { claudeSettingsPath } = await import("./lib/claude-hooks.mjs");
 const { appendExtensionRecord, extensionFeedDir, validateExtensionRecord } = await import("./lib/extension.mjs");
 
 const BOOLEAN = new Set(["json", "no-start", "skip-skill", "remove-settings", "claude-hooks", "no-claude-hooks", "check", "no-browser", "compact", "help", "report", "yes"]);
@@ -96,6 +97,7 @@ function printStatus(report, log) {
   if (report.sources) {
     for (const [name, source] of Object.entries(report.sources)) log(`  ${name}: ${source.state} - ${source.detail}`);
   }
+  for (const note of report.notes || []) log(note);
 }
 
 async function readStdin() {
@@ -131,11 +133,33 @@ async function emit(ctx, flags) {
   return { accepted: results.filter((item) => item.ok).length, rejected: results.filter((item) => !item.ok).length, results, checkOnly: Boolean(flags.check) };
 }
 
+/** Where the goblins ended up, for setup's last line. */
+export function finishLine(result) {
+  const again = result.startMenu ? "; find Goblin Horde in the Start menu to open it again." : ".";
+  const started = result.started;
+  if (!started) return result.startMenu ? "\nInstalled. Open Goblin Horde from the Start menu." : "\nInstalled. Start it with: node goblin.mjs start";
+  if (started.ui === "widget") return `\nAll set. Your goblins are on the desktop${again}`;
+  if (started.ui === "browser") return `\nAll set. Goblin Horde opened in your browser instead of on the desktop${started.reason ? `: ${started.reason}` : "."}`
+    + (result.startMenu ? "\nFind Goblin Horde in the Start menu to open it again." : "");
+  return `\nAll set. Goblin Horde is running at ${started.url}${again}`;
+}
+
+/** Port advice someone who double-clicked the installer can follow. */
+function busyPortAdvice(port) {
+  return [
+    `Goblin Horde uses port ${port} on this computer, and something else has it now.`,
+    "If an older Goblin Horde is open, close it (right-click a goblin, then Quit Goblin Horde) and run the installer again.",
+    `Otherwise use another port: open a terminal in this folder and run: node goblin.mjs setup --port ${port + 1}`,
+  ];
+}
+
 /**
  * `setup`: what "Install Goblin Horde.cmd" runs. It says what this computer has, asks about the two
  * changes that reach outside Goblin Horde's own folders (Claude Code's settings, starting at sign-in),
- * installs, and opens the goblins. Without a terminal to answer (or with --yes) it takes the defaults:
- * connect Claude Code when it is installed, and do not start at sign-in.
+ * installs, and opens the goblins. Each question defaults to how things are now, so running the
+ * installer again to update changes neither: sign-in start stays as it is, and a "no" to Claude Code
+ * (remembered in the install marker) stays a "no". Without a terminal to answer (or with --yes) it
+ * takes those defaults; on a first install that means connect Claude Code and do not start at sign-in.
  */
 async function setup(ctx, options, { assumeYes = false } = {}) {
   const log = ctx.log;
@@ -148,6 +172,14 @@ async function setup(ctx, options, { assumeYes = false } = {}) {
     return answer ? answer.startsWith("y") : fallback;
   };
   try {
+    // The installer double-clicked inside the installed app folder: it is installed already, so just open it.
+    const { samePath } = await import("./lib/paths.mjs");
+    if (ctx.sourceDir && samePath(locate(ctx, options).installDir, ctx.sourceDir, ctx.platform)) {
+      log("Goblin Horde is already installed in this folder; opening it. To update, run the installer from a newer download.");
+      const started = await start(ctx, options);
+      for (const line of started.messages || []) log(line);
+      return 0;
+    }
     log("Goblin Horde setup\n");
     const report = await doctor(ctx, options);
     const check = (name) => report.checks.find((item) => item.name === name) || {};
@@ -157,25 +189,37 @@ async function setup(ctx, options, { assumeYes = false } = {}) {
     found("orca", "Orca");
     log(`  ${check("desktop-widget").state === "ok" ? "✓" : "·"} Desktop goblins (Python with Tkinter)\n`);
     if (check("port").state === "conflict") {
-      log(`Port ${report.port} is busy: ${check("port").detail}`);
+      log(check("port").detail);
+      for (const line of busyPortAdvice(report.port)) log(line);
       return 1;
     }
     if (check("desktop-widget").state !== "ok") {
-      log("The desktop goblins need Python 3 from python.org (keep the \"tcl/tk\" option ticked). Until then,");
+      log("The desktop goblins need Python 3 from python.org (the default options are fine; \"Add python.exe to PATH\"");
+      log("is not needed). After installing it, open Goblin Horde again from the Start menu. Until then,");
       log("Goblin Horde opens in your browser instead, which shows the same parties.");
       if (await ask("Open the Python download page?", false)) ctx.openUrl("https://www.python.org/downloads/");
     }
+    const loc = locate(ctx, options);
     let claudeHooks;
     if (check("claude").present && check("claude-hooks").state !== "ok") {
+      const declined = Boolean(loc.marker?.claudeHooks?.declined);
       log("Claude Code is on this computer. To show its sessions, Goblin Horde adds a few entries to Claude Code's");
-      log("settings (a backup is kept; undo any time with: node goblin.mjs hooks remove).");
-      claudeHooks = await ask("Show Claude Code sessions too?", true);
+      log(`settings in ${claudeSettingsPath(loc.claudeDir)} (a backup is kept; undo any time with: node goblin.mjs hooks remove).`);
+      if (declined) log("You chose not to connect it before. Connect later from the widget menu (Connect Claude Code…) or with: node goblin.mjs hooks install");
+      const yes = await ask("Show Claude Code sessions too?", !declined);
+      // Kept as it is (not removed again) when the remembered "no" is simply confirmed.
+      claudeHooks = yes ? true : declined ? undefined : false;
     }
-    const autostart = report.platform === "win32" ? await ask("Start Goblin Horde when you sign in to Windows?", false) : undefined;
+    let signIn;
+    if (report.platform === "win32") {
+      let now = false;
+      try { now = autostart(ctx, options).enabled; } catch { /* No Startup folder here. */ }
+      signIn = await ask("Start Goblin Horde when you sign in to Windows?", now);
+    }
     log("");
-    const result = await install(ctx, { ...options, claudeHooks, autostart });
+    const result = await install(ctx, { ...options, claudeHooks, autostart: signIn });
     for (const line of [...result.messages, ...(result.started?.messages || [])]) log(line);
-    log("\nAll set. Your goblins are on the desktop" + (result.startMenu ? "; find Goblin Horde in the Start menu to open it again." : "."));
+    log(finishLine(result));
     return 0;
   } finally {
     prompt?.close();

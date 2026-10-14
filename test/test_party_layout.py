@@ -239,15 +239,16 @@ class LaunchpadBoardTests(unittest.TestCase):
         # Orca reports a blocked agent, which the server counts as working.
         blocked = {"id": "orca-blocked", "source": "orca", "parentThreadId": "orca:ws", "status": "blocked",
                    "attention": "working", "updatedAt": NOW - 1_000, "activities": []}
-        self.assertEqual(member_status(old_question).word, "ASKED YOU")
+        # A question the feed calls quiet has aged out: the member no longer says it asks you.
+        self.assertEqual(member_status(old_question).word, "DONE")
         self.assertGreater(member_status(blocked).rank, 4)
         active, recent, _older = launchpad_board([old_question, blocked], [], now_ms=NOW)
         self.assertEqual([card.id for card in active], ["orca:ws"])
         self.assertEqual((active[0].needs, active[0].failed, active[0].working), (0, 0, 1))
         self.assertEqual([card.id for card in recent], ["old-ask"])
         self.assertEqual((recent[0].needs, recent[0].active), (0, False))
-        # Animation keeps its own reading.
-        self.assertEqual(goblin_action(old_question), "waiting")
+        # The goblin rests too, rather than ringing its bell for a question that has aged out.
+        self.assertEqual(goblin_action(old_question), "idle")
 
     def test_board_falls_back_to_local_status_without_feed_attention(self):
         asking = {"id": "asks", "source": "codex", "status": "idle", "needsInput": True, "updatedAt": NOW}

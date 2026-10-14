@@ -10,7 +10,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MARKER, WIDGET_READY, WIDGET_UNAVAILABLE_EXIT, doctor, findMacPythonTk, findPythonTk, install, launchWidget, makeContext, readManifest, start, status, stop, uninstall } from "../lib/manager.mjs";
+import { MARKER, SHOW_REQUEST, WIDGET_READY, WIDGET_UNAVAILABLE_EXIT, doctor, findMacPythonTk, findPythonTk, install, launchWidget, makeContext, readManifest, start, status, stop, uninstall } from "../lib/manager.mjs";
 import { ownedScript } from "../lib/processes.mjs";
 
 const sourceDir = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -151,17 +151,132 @@ test("a slow macOS widget that is still alive is kept, not replaced by the brows
   } finally { box.cleanup(); }
 });
 
-test("Windows start is unchanged: pythonw with no output and no wait", async () => {
+test("Windows start waits for the widget's ready line and keeps its output in widget.log", async () => {
   const box = folders();
   try {
-    const fake = fakeSpawn({ pid: 77 });
+    const fake = fakeSpawn({ output: `${WIDGET_READY}\n`, pid: 77 });
     const ctx = makeContext({ platform: "win32", env: {}, spawn: fake.spawn });
-    const result = await launchWidget(ctx, box.loc, "C:\\Python\\pythonw.exe", "instance-1");
-    assert.deepEqual(result, { ok: true, pid: 77, message: "The desktop goblins are starting." });
-    assert.equal(fake.calls[0].options.stdio, "ignore");
+    const result = await launchWidget(ctx, box.loc, "C:\\Python\\pythonw.exe", "instance-1", { waitMs: 2000 });
+    assert.deepEqual(result, { ok: true, pid: 77, message: "The desktop goblins are running." });
+    assert.ok(Array.isArray(fake.calls[0].options.stdio), "pythonw writes to the log, not nowhere");
     assert.equal(fake.calls[0].options.windowsHide, true);
-    assert.equal(existsSync(join(box.loc.stateDir, "run", "widget.log")), false);
+    assert.equal(readFileSync(join(box.loc.stateDir, "run", "widget.log"), "utf8"), `${WIDGET_READY}\n`);
   } finally { box.cleanup(); }
+});
+
+test("Windows start falls back to the browser, saying why, when the widget exits or crashes", async () => {
+  const box = folders();
+  try {
+    const reason = "Transparent desktop goblins are unavailable: couldn't connect to display";
+    const unavailable = await launchWidget(makeContext({ platform: "win32", env: {}, spawn: fakeSpawn({ output: `${reason}\n`, exitCode: WIDGET_UNAVAILABLE_EXIT }).spawn }),
+      box.loc, "C:\\Python\\pythonw.exe", "instance-1", { waitMs: 5000 });
+    assert.equal(unavailable.ok, false);
+    assert.ok(unavailable.message.startsWith(reason), unavailable.message);
+    assert.match(unavailable.message, /browser viewer/);
+    const crashed = await launchWidget(makeContext({ platform: "win32", env: {}, spawn: fakeSpawn({ output: "ModuleNotFoundError: No module named 'goblin_cues'\n", exitCode: 1 }).spawn }),
+      box.loc, "C:\\Python\\pythonw.exe", "instance-1", { waitMs: 5000 });
+    assert.equal(crashed.ok, false);
+    assert.match(crashed.message, /stopped while starting: ModuleNotFoundError/);
+    assert.ok(crashed.message.includes(join(box.loc.stateDir, "run", "widget.log")));
+  } finally { box.cleanup(); }
+});
+
+// A default python.org install: "Add python.exe to PATH" unticked, so only the launcher is on PATH.
+const PY_LAUNCHER = "C:\\Windows\\py.exe";
+const REAL_PYTHON = "C:\\Users\\you\\AppData\\Local\\Programs\\Python\\Python313\\python.exe";
+const REAL_PYTHONW = "C:\\Users\\you\\AppData\\Local\\Programs\\Python\\Python313\\pythonw.exe";
+const STORE_STUB = "C:\\Users\\you\\AppData\\Local\\Microsoft\\WindowsApps\\python.exe";
+
+function windows({ onPath = {}, files = [REAL_PYTHON, REAL_PYTHONW], tk = true } = {}) {
+  const probed = [];
+  const ctx = makeContext({
+    platform: "win32", env: {},
+    which: (name) => onPath[name] || "",
+    exists: (path) => files.includes(path),
+    probe: (file, args) => {
+      probed.push([file, ...args]);
+      if (file === STORE_STUB) return "Python was not found; run without arguments to install from the Microsoft Store\n";
+      return tk && (file === PY_LAUNCHER || file === REAL_PYTHON) ? `${REAL_PYTHON}\r\n` : "";
+    },
+    listProcesses: () => [], openUrl: () => {}, log: () => {},
+  });
+  return { ctx, probed };
+}
+
+test("Windows finds python.org Python through the py launcher when python is not on PATH", () => {
+  const { ctx, probed } = windows({ onPath: { py: PY_LAUNCHER, pyw: "C:\\Windows\\pyw.exe", python: STORE_STUB } });
+  assert.equal(findPythonTk(ctx), REAL_PYTHONW);
+  assert.deepEqual(probed, [[PY_LAUNCHER, "-3", "-c", "import sys, tkinter; print(sys.executable)"]]);
+});
+
+test("Windows still prefers pythonw on PATH, and never runs the Microsoft Store stub", () => {
+  const onPath = { pythonw: REAL_PYTHONW, py: PY_LAUNCHER, python: STORE_STUB };
+  const { ctx, probed } = windows({ onPath });
+  assert.equal(findPythonTk(ctx), REAL_PYTHONW);
+  assert.deepEqual(probed.map(([file]) => file), [REAL_PYTHON]);
+  const stubOnly = windows({ onPath: { python: STORE_STUB, python3: STORE_STUB }, files: [STORE_STUB] });
+  assert.equal(findPythonTk(stubOnly.ctx), "");
+  assert.deepEqual(stubOnly.probed, [], "the stub opens the Store; it is never run");
+});
+
+test("Windows reports no widget when the launcher's Python has no Tkinter", () => {
+  const { ctx } = windows({ onPath: { py: PY_LAUNCHER }, tk: false });
+  assert.equal(findPythonTk(ctx), "");
+});
+
+test("doctor with only py on PATH shows the desktop widget available; without Python it says what to install", async () => {
+  const root = "C:\\nonexistent-goblin-horde-test\\you";
+  const flags = { installDir: `${root}\\app`, stateDir: `${root}\\state`, port: 43997 };
+  const env = { CLAUDE_CONFIG_DIR: `${root}\\.claude`, CODEX_HOME: `${root}\\.codex`, LOCALAPPDATA: `${root}\\local` };
+  const found = await doctor({ ...windows({ onPath: { py: PY_LAUNCHER } }).ctx, env, home: root }, flags);
+  const ok = found.checks.find((check) => check.name === "desktop-widget");
+  assert.equal(ok.state, "ok");
+  assert.ok(ok.detail.includes(REAL_PYTHONW), ok.detail);
+  const none = (await doctor({ ...windows().ctx, env, home: root }, flags)).checks.find((check) => check.name === "desktop-widget");
+  assert.equal(none.state, "missing");
+  assert.match(none.detail, /python\.org/);
+  assert.match(none.detail, /"Add python\.exe to PATH" is not needed/);
+  assert.match(none.detail, /Start menu/);
+});
+
+test("start with only the py launcher on PATH launches the desktop goblins with the pythonw beside the real Python", { skip: process.platform !== "win32" }, async () => {
+  const root = mkdtempSync(join(tmpdir(), "goblin-py-launcher-"));
+  try {
+    const home = join(root, "home");
+    const flags = { installDir: join(root, "app"), stateDir: join(root, "state"), port: 43996, skipSkill: true };
+    const env = { PATH: process.env.PATH, Path: process.env.Path, PATHEXT: process.env.PATHEXT, SystemRoot: process.env.SystemRoot,
+      LOCALAPPDATA: join(root, "local"), CLAUDE_CONFIG_DIR: join(home, "claude-config"), CODEX_HOME: join(home, "codex-home") };
+    const serverCommand = `"${process.execPath}" "${join(flags.installDir, "server.mjs")}"`;
+    // The viewer is listed as already running, so start launches only the widget; ids are far above real ones.
+    const procs = [{ pid: 999_999_981, command: serverCommand, started: "s" }];
+    const spawned = [];
+    const opened = [];
+    const base = windows({ onPath: { py: PY_LAUNCHER } }).ctx;
+    const ctx = makeContext({
+      ...base, env, home, sourceDir, nodePath: process.execPath,
+      listProcesses: () => procs.slice(), openUrl: (url) => opened.push(url), writeShortcut: () => {},
+      exists: (path) => base.exists(path) || existsSync(path),
+      spawn: (command, args, options) => {
+        spawned.push({ command, args });
+        writeSync(options.stdio[1], `${WIDGET_READY}\n`);
+        procs.push({ pid: 999_999_982, command: `"${command}" "${args[0]}" --port 43996`, started: "w" });
+        const child = new EventEmitter();
+        child.pid = 999_999_982;
+        child.unref = () => {};
+        return child;
+      },
+    });
+    await install(ctx, { ...flags, noStart: true });
+    const result = await start(ctx, flags);
+    assert.equal(result.ui, "widget");
+    assert.deepEqual(spawned.map((call) => call.command), [REAL_PYTHONW]);
+    assert.deepEqual(opened, []);
+    // A second start (the Start menu entry, say) asks the running widget to come forward instead.
+    const again = await start(ctx, flags);
+    assert.equal(spawned.length, 1);
+    assert.match(again.messages.join("\n"), /already running; they will come to the front/);
+    assert.ok(existsSync(join(flags.stateDir, "run", SHOW_REQUEST)));
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("doctor on macOS names the Python it will use, or what to install", async () => {
@@ -265,7 +380,7 @@ for (const [label, shown] of [["the Python it ran", SPACED_PYTHON],
       assert.equal((await status(mac.ctx, mac.flags)).widget?.pid, FAKE_PIDS.widget);
       const again = await start(mac.ctx, mac.flags);
       assert.equal(mac.spawned.length, 1, "a repeated start does not launch a second widget");
-      assert.ok(again.messages.includes("The desktop goblins are already running."));
+      assert.ok(again.messages.includes("The desktop goblins are already running; they will come to the front."));
 
       const updated = await install(mac.ctx, { ...mac.flags, noStart: true });
       assert.ok(updated.messages.includes("Stopped the running copy to update it."));

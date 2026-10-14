@@ -128,7 +128,13 @@ test("a long run of word characters is filtered in linear time", () => {
 test("unknown events, unsafe ids, and quiet notifications are not recorded", () => {
   assert.equal(normalizeHookEvent({ hook_event_name: "PreCompact", session_id: SESSION }), null);
   assert.equal(normalizeHookEvent({ hook_event_name: "Stop", session_id: "../../etc/passwd" }), null);
-  assert.equal(normalizeHookEvent({ hook_event_name: "Notification", session_id: SESSION, notification_type: "idle_prompt" }), null);
+  assert.equal(normalizeHookEvent({ hook_event_name: "Notification", session_id: SESSION, notification_type: "auth_success" }), null);
+  // Back at the prompt is kept (only its type: never the notification's message or title).
+  const idle = normalizeHookEvent({ hook_event_name: "Notification", session_id: SESSION, notification_type: "idle_prompt",
+    message: "Claude is waiting for your input PRIVATE", title: "PRIVATE" });
+  assert.equal(idle.notice, "idle_prompt");
+  assert.ok(!JSON.stringify(idle).includes("PRIVATE"));
+  assert.equal(cleanRecord({ ...idle, notice: "made_up" }).notice, undefined);
   assert.equal(normalizeHookEvent("not an object"), null);
   assert.equal(normalizeHookEvent(null), null);
   assert.equal(cleanRecord({ v: 2, id: "abcdef12", at: 1, event: "Stop", session: SESSION }), null);
@@ -502,4 +508,41 @@ test("a StopFailure names its reason from the documented error field, and an old
   assert.equal(later.status, "failed", "the stream still says it stopped with an error");
   // Older Claude Code versions sent error_type.
   assert.equal(records(hook("StopFailure", { error_type: "rate_limit" }))[0].errorType, "rate_limit");
+});
+
+test("an interrupted turn or a denied permission is over once Claude Code is back at its prompt", () => {
+  const base = [hook("UserPromptSubmit", {}, NOW), hook("PreToolUse", { tool_name: "Bash", tool_use_id: "b1", tool_input: { command: "x" } }, NOW + 1)];
+  const idle = (at) => hook("Notification", { notification_type: "idle_prompt" }, at);
+  const main = (list, now = NOW + 120_000) => buildClaudeSessions(records(...list), { now })[0].agents[0];
+  // Esc: no Stop, no PostToolUse. Without the idle notice it looks busy for two hours.
+  assert.equal(main(base).attention, "working");
+  const interrupted = main([...base, idle(NOW + 61_000)]);
+  assert.equal(interrupted.attention, "quiet");
+  assert.equal(interrupted.turnStates.at(-1).status, "interrupted");
+  assert.ok(interrupted.activities.every((item) => item.status !== "inProgress"));
+  assert.notEqual(interrupted.status, "failed");
+  // A denied permission never gets its PostToolUse; without the idle notice it needs you for six hours.
+  const denied = [...base, hook("PermissionRequest", { tool_name: "Bash", tool_use_id: "b1" }, NOW + 2)];
+  assert.equal(main(denied).attention, "needs");
+  const settled = main([...denied, idle(NOW + 62_000)]);
+  assert.equal(settled.attention, "quiet");
+  assert.equal(settled.needsInput, false);
+  // A finished reply that asks a question still asks it after the prompt goes idle.
+  assert.equal(main([...base, hook("Stop", { last_assistant_message: "Want me to push?" }, NOW + 3), idle(NOW + 63_000)]).attention, "needs");
+  // A new prompt after the idle notice works as before.
+  assert.equal(main([...base, idle(NOW + 61_000), hook("UserPromptSubmit", {}, NOW + 70_000)]).attention, "working");
+});
+
+
+test("back at the prompt, a subagent's interrupted turn is over too", () => {
+  const start = NOW - 10 * 60_000;
+  const sessions = buildClaudeSessions(records(
+    hook("UserPromptSubmit", {}, start),
+    hook("SubagentStart", { agent_id: "sub1", agent_type: "Explore" }, start + 1000),
+    hook("PreToolUse", { agent_id: "sub1", agent_type: "Explore", tool_name: "Grep", tool_use_id: "toolu_s1" }, start + 2000),
+    hook("Notification", { notification_type: "idle_prompt" }, start + 70_000),
+  ), { now: start + 80_000 });
+  const child = sessions[0].agents.find((agent) => agent.childOf);
+  assert.equal(child.attention, "quiet");
+  assert.notEqual(child.status, "active");
 });

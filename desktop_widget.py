@@ -15,6 +15,8 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 import sys
+import threading
+import traceback
 from typing import NamedTuple
 
 import desktop_platform
@@ -26,7 +28,7 @@ from goblin_motion import ActionPulse, MemberStatus, goblin_action, member_statu
 from goblin_parting import (OUTCOME_COLORS, PartingNotes, RetirementTracker, note_lines, outcome_word,
                             parting_note)
 from party_layout import (age_label, compact_active, coverage_note, family_ink, launchpad_board, loop_groups,
-                          model_badge, model_of, party_models, party_scope, priority_for, project_for, reachable,
+                          join_reason, model_badge, model_of, party_models, party_scope, priority_for, project_for, reachable,
                           search_sources, stable_layout, tile_plan, watched_cards)
 from stream_windows import (StreamWindow, WIDTH as STREAM_WIDTH, HEIGHT as STREAM_HEIGHT, monitor_areas,
                             monitor_work_area, screen_geometry, workflow_for)
@@ -81,6 +83,14 @@ PLACEMENT_LIMIT = 200
 STREAM_GRIP = (103, 8, STREAM_WIDTH - 8, 80)
 # The one explicit "open every window" action; expanding and polls leave ×-closed streams shut.
 RALLY_LABEL = "Rally whole party (reopen closed)"
+# "Close goblins" closes only this widget; this also stops the viewer it talks to.
+QUIT_LABEL = "Quit Goblin Horde (goblins and viewer)"
+# The manager's `start` leaves this file in the state folder's run/ when the widget is already
+# running (lib/manager.mjs SHOW_REQUEST); the widget checks every second and comes forward.
+SHOW_REQUEST = "show-widget"
+SHOW_CHECK_MS = 1000
+# Failed callbacks are noted in run/widget.log: every one of the first few, then one in a hundred.
+LOGGED_ERRORS = 20
 # Expanding a party opens at most this many stream windows; members who need you or failed always open.
 # The rest wait on the roster (click one to open it); the rally opens everyone.
 STREAM_LIMIT = 3
@@ -177,6 +187,47 @@ def state_file() -> Path:
     if not target.exists() and legacy.is_file():
         target.write_bytes(legacy.read_bytes())
     return target
+
+
+def run_folder() -> Path:
+    """The state folder's run/, where the manager keeps its records and the widget's log."""
+    return state_file().parent / "run"
+
+
+def note_widget_error(line: str) -> None:
+    """Add one line to run/widget.log. A widget started by the manager writes its output there
+    already, so stderr is used when there is one; pythonw started any other way has none."""
+    try:
+        if sys.stderr is not None:
+            sys.stderr.write(line + "\n")
+            sys.stderr.flush()
+            return
+    except (OSError, ValueError):
+        pass
+    try:
+        folder = run_folder()
+        folder.mkdir(parents=True, exist_ok=True)
+        with open(folder / "widget.log", "a", encoding="utf-8") as log:
+            log.write(line + "\n")
+    except OSError:
+        pass  # Nowhere to write; the count still reaches the diagnostic report.
+
+
+def claude_settings_label() -> str:
+    """The Claude Code settings file the viewer would change, written the way this system names it.
+    The manager passes the viewer and the widget the same CLAUDE_CONFIG_DIR."""
+    folder = os.environ.get("CLAUDE_CONFIG_DIR") or ""
+    if folder and Path(folder).is_absolute():
+        return str(Path(folder) / "settings.json")
+    return "%USERPROFILE%\\.claude\\settings.json" if sys.platform == "win32" else "~/.claude/settings.json"
+
+
+def error_line(count: int, kind, trace) -> str:
+    """Type and place only: an error's own message can quote chat text."""
+    frames = traceback.extract_tb(trace) if trace is not None else []
+    where = f"{Path(frames[-1].filename).name}:{frames[-1].lineno} in {frames[-1].name}" if frames else "unknown place"
+    name = getattr(kind, "__name__", "Error")
+    return f"{time.strftime('%Y-%m-%d %H:%M:%S')} widget error #{count}: {name} at {where}"
 
 
 def write_settings(target: Path, text: str) -> None:
@@ -416,6 +467,16 @@ class PartyDock:
             bind_context(surface, lambda _event: owner.show_party_menu())
         self.window.bind("<Escape>", lambda _event: owner.hide_party()
                          if self.mode == "compact" else None)
+        # Alt+F4 must never destroy a window the widget keeps using (see on_close_request).
+        self.window.protocol("WM_DELETE_WINDOW", self.on_close_request)
+
+    def on_close_request(self) -> None:
+        """Alt+F4 on the roster collapses it to the tab; on the tab it hides the tab. The widget keeps
+        running either way, and opening Goblin Horde from the Start menu brings it back."""
+        if self.mode == "compact":
+            self.owner.hide_party()
+        else:
+            self.withdraw()
 
     def place(self, width: int, height: int) -> None:
         place_at_anchor(self.owner, self.window, width, height)
@@ -877,6 +938,7 @@ class NotesPanel:
         for surface in (self.text, self.scrollbar, body):
             surface.bind("<MouseWheel>", self.on_wheel)
         self.window.bind("<Escape>", lambda _event: self.withdraw())
+        self.window.protocol("WM_DELETE_WINDOW", self.withdraw)  # Alt+F4 closes it like ×.
 
     def show(self, focus_id: str = "") -> None:
         self.shown = True
@@ -1078,8 +1140,10 @@ class Launchpad:
             surface.bind("<ButtonPress-1>", self.start_drag)
             surface.bind("<B1-Motion>", self.drag)
             surface.bind("<ButtonRelease-1>", self.end_drag)
-        for surface in (self.header, self.title, self.status, self.body):
+        for surface in (self.header, self.title, self.status):
             bind_context(surface, lambda _event: self.show_menu())
+        # On a party row the menu offers joining or separating it; elsewhere it is the launchpad menu.
+        bind_context(self.body, self.show_row_menu)
         self.body.bind("<Button-1>", self.on_click)
         self.body.bind("<Motion>", self.on_hover)
         self.body.bind("<Leave>", lambda _event: self.clear_hover())
@@ -1091,6 +1155,8 @@ class Launchpad:
         self.entry.bind("<Up>", lambda _event: self.move_selection(-1))
         self.entry.bind("<MouseWheel>", self.on_wheel)
         self.window.bind("<Key>", self.type_to_search)
+        # Alt+F4 collapses the launchpad to its tab, as HIDE does, instead of destroying it.
+        self.window.protocol("WM_DELETE_WINDOW", owner.hide_party)
 
     # Visibility -----------------------------------------------------------
     def show(self) -> None:
@@ -1240,6 +1306,7 @@ class Launchpad:
         c = self.body
         c.delete("all")
         self.hitboxes = []
+        self.row_parties = []
         self.sprites = []
         self.row_tops = []
         width = LAUNCHPAD_WIDTH - 12
@@ -1422,7 +1489,8 @@ class Launchpad:
     def signal_label(card) -> str:
         """The pill under a party's name, the same words as the browser launchpad."""
         if card.needs:
-            questions = sum(len((member.get("turnStates") or [{}])[-1].get("questions") or []) for member in card.members)
+            questions = sum(len((member.get("turnStates") or [{}])[-1].get("questions") or []) for member in card.members
+                            if member.get("attention") != "quiet")
             return f"NEEDS YOU · {questions} QUESTION{'S' if questions != 1 else ''}" if questions else f"NEEDS YOU · {card.needs} WAITING"
         if card.failed:
             for member in card.members:
@@ -1447,7 +1515,8 @@ class Launchpad:
         c.create_rectangle(4, y, 10, bottom, fill=color, outline="")
         self.hitboxes.append((4, y, width - 4, bottom,
                               lambda: owner.choose_party(card.id, card.name, "compact"),
-                              f"{card.name} · {card.project} · open roster"))
+                              f"{card.name} · {card.project} · open roster · right-click to join or separate"))
+        self.row_parties.append((4, y, width - 4, bottom, card.id, card.name))
         members = card.members[:4]
         goblins_left = width - 10 - len(members) * GOBLIN_STEP
         for index, member in enumerate(members):
@@ -1460,7 +1529,8 @@ class Launchpad:
                                   lambda member_id=str(member.get("id")): owner.choose_party(
                                       card.id, card.name, "compact", focus_id=member_id, peek=True),
                                   " · ".join(part for part in (owner.display_name(member), tribe_title(member),
-                                                               model_badge(member, with_effort=True), status.word)
+                                                               model_badge(member, with_effort=True), status.word,
+                                                               join_reason(member))
                                              if part) + " · peek this goblin"))
         extra = card.agent_count - len(members)
         if extra > 0:
@@ -1509,6 +1579,7 @@ class Launchpad:
         c.create_rectangle(4, y, width - 4, bottom, fill="#2b4a39" if highlighted else "#1a3026",
                            outline=GOLD if selected or highlighted else "#2a4436")
         target = source or {"id": party_id, "name": name}
+        self.row_parties.append((4, y, width - 4, bottom, party_id, name))
         self.hitboxes.append((4, y, width - 4, bottom, lambda: self.open_source(target, "compact"),
                               f"{name} · {project} · {age_label(updated_ms)} · open roster"))
         chip_left = self.chip(width - 8, y + 3, "EXPAND", lambda: self.open_source(target, "expanded"),
@@ -1647,6 +1718,45 @@ class Launchpad:
             self.owner.dock_y = self.window.winfo_y() + self.window.winfo_height()
             self.owner.save_position()
 
+    def show_row_menu(self, event: tk.Event) -> None:
+        x, y = self.body.canvasx(event.x), self.body.canvasy(event.y)
+        row = next((item for item in reversed(getattr(self, "row_parties", [])) if item[0] <= x <= item[2] and item[1] <= y <= item[3]), None)
+        if not row or self.owner.demo:
+            self.show_menu()
+            return
+        _l, _t, _r, _b, party_id, name = row
+        owner = self.owner
+        menu = tk.Menu(self.window, tearoff=False)
+        separable = [(party, owner.source_label_for(party)) for party, chat in owner.joined_parties.items() if chat == party_id]
+        is_chat = not party_id.startswith(("orca:", "claude:", "ext:"))
+        if is_chat:
+            for party, label in separable:
+                menu.add_command(label=f"Separate {label[:40]} from this chat",
+                                 command=lambda party=party: owner.set_join(party, ""))
+            if not separable:
+                menu.add_command(label="Nothing is joined to this chat", state="disabled")
+        else:
+            joined_to = owner.joined_parties.get(party_id)
+            if joined_to:
+                menu.add_command(label="Separate from its Codex chat", command=lambda: owner.set_join(party_id, ""))
+            chats = tk.Menu(menu, tearoff=False)
+            for chat in owner.recent_chats(12):
+                chat_id = str(chat.get("id"))
+                chats.add_command(label=fit_text(self.small_font, str(chat.get("name") or chat_id), 320),
+                                  command=lambda chat_id=chat_id: owner.set_join(party_id, chat_id))
+            if not owner.recent_chats(1):
+                chats.add_command(label="No Codex chats yet", state="disabled")
+            menu.add_cascade(label=f"Join {name[:32]} to a Codex chat", menu=chats)
+        if party_id in owner.manual_links or any(party in owner.manual_links for party, _ in separable):
+            menu.add_separator()
+            for party in [party_id, *(party for party, _ in separable)]:
+                if party in owner.manual_links:
+                    menu.add_command(label="Back to automatic joining" + ("" if party == party_id else f" ({owner.source_label_for(party)[:30]})"),
+                                     command=lambda party=party: owner.set_join(party, None))
+        menu.add_separator()
+        menu.add_command(label="More…", command=self.show_menu)
+        menu.tk_popup(self.window.winfo_pointerx(), self.window.winfo_pointery())
+
     def show_menu(self) -> None:
         owner = self.owner
         menu = tk.Menu(self.window, tearoff=False)
@@ -1667,9 +1777,12 @@ class Launchpad:
         if owner.autostart.get("available"):
             menu.add_command(label=("✓ " if owner.autostart.get("enabled") else "") + "Start with Windows",
                              command=owner.toggle_autostart)
+        menu.add_command(label=f"Phone access (Wi-Fi): {'On' if owner.phone.get('enabled') else 'Off'}", command=owner.toggle_phone)
+        menu.add_command(label="New pairing code (forget phones)", command=owner.reset_pairing)
         menu.add_command(label="Copy diagnostic report", command=owner.copy_diagnostics)
         menu.add_separator()
         menu.add_command(label="Close goblins", command=owner.close)
+        menu.add_command(label=QUIT_LABEL, command=owner.quit_all)
         menu.tk_popup(self.window.winfo_pointerx(), self.window.winfo_pointery())
 
 
@@ -1694,6 +1807,8 @@ class GoblinWidget:
     # Replaced, never mutated in place, so these class defaults stay empty.
     dismissed: dict = {}
     placements: dict = {}
+    error_count = 0  # Callbacks that failed since start, for the diagnostic report.
+    show_after = None
 
     def __init__(self, thread_id: str, port: int, demo: bool = False) -> None:
         self.thread_id = thread_id or "all"
@@ -1730,6 +1845,8 @@ class GoblinWidget:
         self.text_advanced_at: dict[str, float] = {}
         self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="goblin-horde")
         self.roster_only: set[str] = set()  # Members left on the roster when a party opened calmly.
+        self.joined_parties: dict[str, str] = {}  # Orca or Claude party -> the Codex chat it joined.
+        self.manual_links: dict[str, str] = {}  # The person's own choices: party -> chat, or "" for separate.
         # Parties the person watches: always read by the server and kept on the launchpad.
         self.watched_ids: list[str] = []
         self.watch_pending = None
@@ -1778,6 +1895,7 @@ class GoblinWidget:
         # Which feeds the viewer can see (Codex, Claude Code, Orca, extensions), refreshed every 30 seconds.
         self.sources: dict = {}
         self.autostart: dict = {}  # {available, enabled}: starting at Windows sign-in.
+        self.phone: dict = {}  # {enabled, listening, url, adapter, problem}: phone access over Wi-Fi, off by default.
         self.welcomed = False  # The launchpad's welcome card stays until "Got it".
         self.sources_pending = None
         self.sources_after = None
@@ -1801,6 +1919,10 @@ class GoblinWidget:
             self.root.destroy()
             raise
         desktop_platform.prepare_app(self.root, on_quit=self.close)
+        # pythonw has no console: a failed callback is counted and noted in run/widget.log instead.
+        self.root.report_callback_exception = self.report_callback_error
+        # Alt+F4 on the goblin line collapses to the tab instead of ending the widget unsaved.
+        self.root.protocol("WM_DELETE_WINDOW", self.hide_party)
         self.root.title("Goblin Horde")
         self.load_settings()
         self.refresh_parted()
@@ -1852,6 +1974,7 @@ class GoblinWidget:
         self.motion_menu_index = self.menu.index("end")
         self.menu.add_separator()
         self.menu.add_command(label="Close goblins", command=self.close)
+        self.menu.add_command(label=QUIT_LABEL, command=self.quit_all)
         self.menu.entryconfigure(2, label="Hold this page" if self.rotating else "Resume page rotation")
         self.party_dock = PartyDock(self)
         self.launchpad = Launchpad(self)
@@ -1873,6 +1996,59 @@ class GoblinWidget:
         self.sources_after = self.root.after(400, self.poll_sources)
         if self.board_after is None:  # Showing the launchpad above may already have started it.
             self.board_after = self.root.after(120, self.poll_board)
+        self.take_show_request()  # One left from before this start is already answered.
+        self.show_after = self.root.after(SHOW_CHECK_MS, self.check_show_request)
+
+    # Coming back when every window was closed ---------------------------------------
+    def take_show_request(self) -> bool:
+        """Whether `start` asked this running widget to come forward; the request is used up."""
+        try:
+            (run_folder() / SHOW_REQUEST).unlink()
+            return True
+        except OSError:
+            return False
+
+    def check_show_request(self) -> None:
+        self.show_after = None
+        if self.closing:
+            return
+        try:
+            if self.take_show_request():
+                self.come_forward()
+        finally:
+            if not self.closing:
+                self.show_after = self.root.after(SHOW_CHECK_MS, self.check_show_request)
+
+    def come_forward(self) -> None:
+        """Show the view the person last had: a hidden party or launchpad opens again, and an
+        open roster or set of streams is raised."""
+        mode = self.display_mode
+        if mode == "hidden":
+            self.restore_hidden_party()
+        elif mode == "compact" and (self.thread_id != "all" or self.demo):
+            self.condense_party()
+        elif mode == "expanded" and (self.thread_id != "all" or self.demo):
+            self.expand_party()
+        else:
+            self.show_overview()
+
+    def report_callback_error(self, kind, _value, trace) -> None:
+        """Tk's handler for a callback that raised. The loops reschedule themselves regardless."""
+        self.error_count += 1
+        if self.error_count <= LOGGED_ERRORS or self.error_count % 100 == 0:
+            note_widget_error(error_line(self.error_count, kind, trace))
+
+    def quit_all(self) -> None:
+        """Stop the viewer too, then close. The request has its own thread, not the pool that close()
+        cancels, and Python waits for it before exiting."""
+        if not self.demo:
+            def ask() -> None:
+                try:
+                    self.post_local("/api/quit")
+                except Exception:
+                    pass  # Already stopped, or not ours to stop; the goblins close either way.
+            threading.Thread(target=ask, name="goblin-horde-quit").start()
+        self.close()
 
     def load_settings(self) -> None:
         """Restore saved settings. Each group is applied on its own, so one bad value never drops the rest."""
@@ -2235,23 +2411,50 @@ class GoblinWidget:
         self.catalog_after = None
         if self.closing:
             return
-        if self.catalog_pending is None:
-            self.catalog_pending = self.executor.submit(self.fetch_catalog)
-        if not self.catalog_pending.done():
-            self.catalog_after = self.root.after(150, self.load_catalog)
-            return
+        delay = 60_000
         try:
-            catalog = self.catalog_pending.result()
-            self.source_catalog = catalog.get("threads") or []
-            self.catalog_unavailable = [str(name) for name in catalog.get("unavailable") or []]
-            self.take_watched(catalog.get("watched"))
-            self.catalog_failed = False
-        except Exception:
-            self.catalog_failed = not self.source_catalog
-        self.catalog_pending = None
-        self.catalog_at = time.monotonic()
-        self.launchpad.refresh()
-        self.catalog_after = self.root.after(60_000, self.load_catalog)
+            if self.catalog_pending is None:
+                self.catalog_pending = self.executor.submit(self.fetch_catalog)
+            if not self.catalog_pending.done():
+                delay = 150
+                return
+            try:
+                catalog = self.catalog_pending.result()
+                self.source_catalog = catalog.get("threads") or []
+                self.catalog_unavailable = [str(name) for name in catalog.get("unavailable") or []]
+                self.take_watched(catalog.get("watched"))
+                self.catalog_failed = False
+            except Exception:
+                self.catalog_failed = not self.source_catalog
+            self.catalog_pending = None
+            self.catalog_at = time.monotonic()
+            self.launchpad.refresh()
+        finally:
+            # Scheduled even after a failed refresh; a nested refresh_catalog may have done it already.
+            if not self.closing and self.catalog_after is None:
+                self.catalog_after = self.root.after(delay, self.load_catalog)
+
+    # Party links -------------------------------------------------------------
+    def recent_chats(self, limit: int) -> list[dict]:
+        """The newest Codex chats in the catalog, for "Join to a Codex chat"."""
+        chats = [source for source in self.source_catalog if source.get("source") == "codex" and source.get("id")]
+        return sorted(chats, key=lambda source: -float(source.get("updatedAt") or 0))[:limit]
+
+    def source_label_for(self, party_id: str) -> str:
+        source = next((item for item in self.source_catalog if str(item.get("id")) == party_id), None)
+        return str((source or {}).get("name") or party_id)
+
+    def set_join(self, party_id: str, chat_id: str | None) -> None:
+        """Join a party to a chat, keep it separate (""), or go back to automatic (None); the server remembers."""
+        def done(result, error) -> None:
+            if error:
+                messagebox.showwarning("Goblin Horde", f"That did not change: {error}", parent=self.root)
+                return
+            self.manual_links = {str(key): str(value) for key, value in (result.get("manualLinks") or {}).items()}
+            self.kick_board()
+            if self.thread_id != "all":
+                self.fetch_now()
+        self.when_done(self.executor.submit(self.post_local, "/api/join", {"party": party_id, "chat": chat_id}), done)
 
     # Sources -----------------------------------------------------------------
     def poll_sources(self) -> None:
@@ -2259,21 +2462,26 @@ class GoblinWidget:
         self.sources_after = None
         if self.closing:
             return
-        if self.sources_pending is None and not self.demo:
-            self.sources_pending = self.executor.submit(self.get_local, "/api/capabilities")
-        if self.sources_pending is not None:
-            if not self.sources_pending.done():
-                self.sources_after = self.root.after(200, self.poll_sources)
-                return
-            try:
-                capabilities = self.sources_pending.result()
-                self.sources = capabilities.get("sources") or {}
-                self.autostart = capabilities.get("autostart") or {}
-            except Exception:
-                pass  # The board already says when the viewer itself is not answering.
-            self.sources_pending = None
-            self.launchpad.refresh()
-        self.sources_after = self.root.after(30_000, self.poll_sources)
+        delay = 30_000
+        try:
+            if self.sources_pending is None and not self.demo:
+                self.sources_pending = self.executor.submit(self.get_local, "/api/capabilities")
+            if self.sources_pending is not None:
+                if not self.sources_pending.done():
+                    delay = 200
+                    return
+                try:
+                    capabilities = self.sources_pending.result()
+                    self.sources = capabilities.get("sources") or {}
+                    self.autostart = capabilities.get("autostart") or {}
+                    self.phone = capabilities.get("phone") or {}
+                except Exception:
+                    pass  # The board already says when the viewer itself is not answering.
+                self.sources_pending = None
+                self.launchpad.refresh()
+        finally:
+            if not self.closing and self.sources_after is None:
+                self.sources_after = self.root.after(delay, self.poll_sources)
 
     def refresh_sources_soon(self, delay: int = 1500) -> None:
         if self.sources_after:
@@ -2328,7 +2536,7 @@ class GoblinWidget:
         if not messagebox.askyesno(
                 "Connect Claude Code",
                 "Show Claude Code sessions here?\n\nThis adds Goblin Horde entries to your Claude Code settings "
-                "(~/.claude/settings.json). Your other settings and hooks stay as they are, and a backup is kept beside it.\n\n"
+                f"({claude_settings_label()}). Your other settings and hooks stay as they are, and a backup is kept beside it.\n\n"
                 "Undo any time with: node goblin.mjs hooks remove", parent=self.root):
             return
 
@@ -2356,10 +2564,56 @@ class GoblinWidget:
                 self.autostart = result.get("autostart") or self.autostart
         self.when_done(self.executor.submit(self.post_local, "/api/autostart", {"enabled": enable}), done)
 
+    def toggle_phone(self) -> None:
+        """Turn phone access over Wi-Fi on (after an explicit yes) or off; off signs every phone out."""
+        enable = not self.phone.get("enabled")
+        if enable and not messagebox.askyesno(
+                "Phone access",
+                "Turn on phone access?\n\nThis computer starts answering on your Wi-Fi. A phone on the same network that "
+                "enters the pairing code can read these chats, send replies to Codex, and approve or decline Codex "
+                "commands.\n\nIt uses plain HTTP, so only turn it on at home or on another network you trust. "
+                "Turn it off here any time.", parent=self.root):
+            return
+
+        def done(result, error) -> None:
+            if error:
+                messagebox.showwarning("Goblin Horde", f"Phone access did not change: {error}", parent=self.root)
+                return
+            self.phone = result.get("phone") or self.phone
+            if not enable:
+                messagebox.showinfo("Goblin Horde", "Phone access is off. Paired phones were signed out.", parent=self.root)
+            elif self.phone.get("listening"):
+                messagebox.showinfo(
+                    "Goblin Horde",
+                    f"Phone access is on ({self.phone.get('adapter') or 'Wi-Fi'}).\n\nOn your phone, open:\n"
+                    f"{self.phone.get('url', '')}\n\nThen enter this pairing code:\n{result.get('code', '')}", parent=self.root)
+            else:
+                messagebox.showwarning("Goblin Horde", str(self.phone.get("problem") or "No Wi-Fi address is available yet."),
+                                       parent=self.root)
+        self.when_done(self.executor.submit(self.post_local, "/api/phone", {"enabled": enable}), done)
+
+    def reset_pairing(self) -> None:
+        """A new pairing code: every paired phone is signed out and must pair again."""
+        if not messagebox.askyesno("New pairing code", "Make a new pairing code?\n\nEvery paired phone is signed out "
+                                   "and must pair again with the new code.", parent=self.root):
+            return
+
+        def done(result, error) -> None:
+            if error:
+                messagebox.showwarning("Goblin Horde", f"The pairing code did not change: {error}", parent=self.root)
+                return
+            self.phone = result.get("phone") or self.phone
+            where = f"\n\nOn your phone, open {self.phone['url']}" if self.phone.get("listening") and self.phone.get("url") else \
+                "\n\nPhone access is off; turn it on from this menu to pair a phone."
+            messagebox.showinfo("Goblin Horde", f"New pairing code: {result.get('code', '')}\n\nPaired phones were signed out."
+                                + where, parent=self.root)
+        self.when_done(self.executor.submit(self.post_local, "/api/phone/reset"), done)
+
     def copy_diagnostics(self) -> None:
         """Copy a short report that is safe to share: versions, states, counts, timings; no chats or codes."""
         widget_facts = f"widget: home {self.home_view} · view {self.display_mode} · {len(self.streams)} streams · " \
-                       f"board {self.board_connection.lower()}, {int(self.board_age)}s old"
+                       f"board {self.board_connection.lower()}, {int(self.board_age)}s old · " \
+                       f"errors since start: {self.error_count}"
 
         def done(result, error) -> None:
             if error:
@@ -2767,6 +3021,7 @@ class GoblinWidget:
             picker.add_command(label="Clear this party's parting notes", command=self.clear_notes)
         picker.add_command(label=self.motion_label(), command=self.toggle_reduced_motion)
         picker.add_command(label="Close goblins", command=self.close)
+        picker.add_command(label=QUIT_LABEL, command=self.quit_all)
         if actor_id in self.streams:
             stream = self.streams[actor_id]
             picker.add_command(label="Rename this goblin…",
@@ -3350,8 +3605,11 @@ class GoblinWidget:
     def poll(self) -> None:
         if self.closing:
             return
-        self.fetch_now()
-        self.poll_after = self.root.after(3000, self.poll)
+        try:
+            self.fetch_now()
+        finally:
+            if not self.closing:
+                self.poll_after = self.root.after(3000, self.poll)
 
     def fetch_now(self) -> None:
         if self.closing or self.paused or self.demo:
@@ -3464,27 +3722,35 @@ class GoblinWidget:
         self.board_after = None
         if self.closing:
             return
-        future = self.board_pending
-        if future is not None and future.done():
-            self.board_pending = None
-            try:
-                self.take_board_scene(future.result())
-            except Exception:
-                # Keep the last good rows in place and say how old they are.
-                self.board_connection = "STALE" if self.board_success else "OFFLINE"
-            self.launchpad.refresh()
-            if self.party_dock.mode == "hidden":
-                self.party_dock.refresh()
-        elif (future is None and not self.paused and self.board_wanted()
-              # Following all parties, the main poll reads the same scene and hands it to the board.
-              and (self.thread_id != "all" or self.demo)
-              and time.monotonic() - self.board_requested >= BOARD_SECONDS):
-            self.board_requested = time.monotonic()
-            self.board_pending = self.executor.submit(self.fetch_scene, "all")
-        self.board_after = self.root.after(150 if self.board_pending else 1000, self.poll_board)
+        try:
+            future = self.board_pending
+            if future is not None and future.done():
+                self.board_pending = None
+                try:
+                    self.take_board_scene(future.result())
+                except Exception:
+                    # Keep the last good rows in place and say how old they are.
+                    self.board_connection = "STALE" if self.board_success else "OFFLINE"
+                self.launchpad.refresh()
+                if self.party_dock.mode == "hidden":
+                    self.party_dock.refresh()
+            elif (future is None and not self.paused and self.board_wanted()
+                  # Following all parties, the main poll reads the same scene and hands it to the board.
+                  and (self.thread_id != "all" or self.demo)
+                  and time.monotonic() - self.board_requested >= BOARD_SECONDS):
+                self.board_requested = time.monotonic()
+                self.board_pending = self.executor.submit(self.fetch_scene, "all")
+        finally:
+            # A refresh that fails must not end the board's updates.
+            if not self.closing and self.board_after is None:
+                self.board_after = self.root.after(150 if self.board_pending else 1000, self.poll_board)
 
     def take_board_scene(self, scene: dict) -> None:
         self.take_watched(scene.get("watched"))
+        if isinstance(scene.get("joinedParties"), dict):
+            self.joined_parties = {str(key): str(value) for key, value in scene["joinedParties"].items()}
+        if isinstance(scene.get("manualLinks"), dict):
+            self.manual_links = {str(key): str(value) for key, value in scene["manualLinks"].items()}
         self.board_actors = [actor for actor in scene.get("agents") or [] if actor.get("id")]
         self.board_coverage = scene.get("coverage") or {}
         self.board_connection = "PARTIAL" if scene.get("warning") else "LIVE"
@@ -3517,6 +3783,14 @@ class GoblinWidget:
     def animate(self) -> None:
         if self.closing:
             return
+        # The beat is rescheduled even when a step fails, so one bad frame never freezes the goblins.
+        try:
+            self.animate_step()
+        finally:
+            if not self.closing:
+                self.animate_after = self.root.after(360, self.animate)
+
+    def animate_step(self) -> None:
         self.phase += 1
         now = time.monotonic()
         self.finish_exits()
@@ -3536,15 +3810,14 @@ class GoblinWidget:
                 and (self.visible_text_complete(now)
                      or now - self.page_changed_at >= MAX_PAGE_HOLD_SECONDS)):
             self.change_page(1)
-        self.animate_after = self.root.after(360, self.animate)
 
     def close(self) -> None:
         if self.closing:
             return
         self.closing = True
         self.save_position()
-        for callback in (self.restore_after, self.poll_after, self.receive_after,
-                         self.animate_after, self.catalog_after, self.board_after, self.sources_after):
+        for callback in (self.restore_after, self.poll_after, self.receive_after, self.animate_after,
+                         self.catalog_after, self.board_after, self.sources_after, self.show_after):
             if callback:
                 self.root.after_cancel(callback)
         for stream in self.streams.values():

@@ -3,7 +3,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { codexCommand, findOnWindowsPath, nativeCodexBeside } from "../lib/codex-bin.mjs";
+import { CODEX_NOT_FOUND, codexCommand, codexSourceState, findOnWindowsPath, nativeCodexBeside } from "../lib/codex-bin.mjs";
 
 const ARGS = ["app-server", "--listen", "stdio://"];
 const files = (...paths) => {
@@ -55,4 +55,19 @@ test("CODEX_CLI_PATH wins, and a .cmd with no native binary runs through cmd.exe
   // An .exe path, found or configured, runs as is; nothing found leaves the bare name to fail as "not found".
   assert.equal(codexCommand(ARGS, { platform: "win32", env: { CODEX_CLI_PATH: "D:\\codex.exe" }, isFile: () => false }).command, "D:\\codex.exe");
   assert.equal(codexCommand(ARGS, { platform: "win32", env: { PATH: "C:\\none" }, isFile: () => false }).command, "codex");
+});
+
+test("a computer without the Codex CLI is told it is optional, not shown a fault to fix", () => {
+  const now = 1_800_000_000_000;
+  const missing = codexSourceState({ state: "unavailable", lastError: CODEX_NOT_FOUND, nextRetryAt: now + 60_000 }, { now });
+  assert.equal(missing.state, "not-installed");
+  assert.equal(missing.detail, "Optional: install the Codex CLI to see Codex chats.");
+  // Each quiet retry briefly reads "starting"; it is still not installed.
+  assert.equal(codexSourceState({ state: "restarting", lastError: CODEX_NOT_FOUND, nextRetryAt: 0 }, { now }).state, "not-installed");
+  const crashed = codexSourceState({ state: "unavailable", lastError: "Codex stopped (exit code 3).", nextRetryAt: now + 5000 }, { now, restarts: 2 });
+  assert.equal(crashed.state, "unavailable");
+  assert.match(crashed.detail, /Retrying in 5s/);
+  assert.equal(crashed.restarts, 2);
+  assert.equal(codexSourceState({ state: "ready", lastError: "", nextRetryAt: 0 }, { now }).state, "ok");
+  assert.equal(codexSourceState({ state: "starting", lastError: "", nextRetryAt: 0 }, { now }).state, "starting");
 });
