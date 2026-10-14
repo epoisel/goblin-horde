@@ -733,6 +733,10 @@ class GoblinWidget:
         self.kick_detail()
         self.save_settings_soon()
 
+    def focus_roster(self) -> None:
+        """The keyboard goes back to the roster, where Up and Down choose the goblin."""
+        self.roster.canvas.focus_set()
+
     def select_first(self, section: str) -> None:
         row = next((row for row in self.rows if row.kind == "agent" and row.section == section), None)
         if row is not None:

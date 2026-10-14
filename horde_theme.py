@@ -189,15 +189,20 @@ class FlatButton(tk.Label):
             self.bind(key, self._key)
         self.bind("<FocusIn>", self._focused)
 
+    def pressable(self) -> bool:
+        """Whether a press does anything now: enabled, with a command, and on screen. A button left on a
+        hidden card keeps the focus it had, but Space or Return on it does nothing."""
+        try:
+            return bool(self.enabled and self.command and self.winfo_exists() and self.winfo_viewable())
+        except tk.TclError:
+            return False
+
     def _focusable(self, _path: str = "") -> str:
         """Tab stops here only while pressing it would do something (a shown-only option tag never)."""
-        try:
-            return "1" if self.enabled and self.command and self.winfo_viewable() else "0"
-        except tk.TclError:
-            return "0"
+        return "1" if self.pressable() else "0"
 
     def _key(self, _event=None) -> str:
-        if self.enabled and self.command:
+        if self.pressable():
             self.command()
         return "break"
 
@@ -229,7 +234,7 @@ class FlatButton(tk.Label):
 
     def _release(self, event) -> None:
         inside = 0 <= event.x < self.winfo_width() and 0 <= event.y < self.winfo_height()
-        if inside and self.enabled and self.command:
+        if inside and self.pressable():
             self.command()
 
     def set_enabled(self, enabled: bool) -> None:

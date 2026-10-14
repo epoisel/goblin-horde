@@ -542,6 +542,34 @@ class DetailView:
             self.cards[name].frame.pack(fill="x", padx=px(18), pady=(px(12), 0))
         self.order = list(names)
 
+    def focus_inside(self) -> bool:
+        """Whether the keyboard focus (or the focus this window gets back when it is next active) is on
+        something in the detail pane."""
+        for getter in (self.frame.focus_get, self.frame.focus_lastfor):
+            try:
+                widget = getter()
+            except (tk.TclError, KeyError):  # A menu that is open has no Python widget of its own.
+                continue
+            while widget is not None:
+                if widget is self.frame:
+                    return True
+                widget = getattr(widget, "master", None)
+        return False
+
+    def leave_focus(self) -> None:
+        """Another goblin is shown: a key meant for the one before must not land on this one's controls."""
+        if self.focus_inside():
+            self.app.focus_roster()
+
+    def clear_ask(self) -> None:
+        """The ask card's controls are destroyed, never just hidden, once its goblin or its ask is gone, so
+        no key press or late callback can answer an ask that is no longer on screen."""
+        for child in self.cards["ask"].body.winfo_children():
+            child.destroy()
+        self.wrap_labels = [(label, margin) for label, margin in self.wrap_labels if label.winfo_exists()]
+        self.ask_key = None
+        self.ask_widgets = {}
+
     def update_ask(self, actor: dict) -> None:
         ask = ask_of(actor) or {}
         card = self.cards["ask"]
@@ -557,12 +585,19 @@ class DetailView:
                bool(controls.get("dismiss", True)), bool(self.app.request_for(ask)))
         if key == self.ask_key:
             return
+        self.clear_ask()
         self.ask_key = key
-        for child in card.body.winfo_children():
-            child.destroy()
-        self.wrap_labels = [(label, margin) for label, margin in self.wrap_labels if label.winfo_exists()]
         widgets = self.ask_widgets = {}
         app = self.app
+
+        def live(action):
+            """An answer goes out only while this very ask, of the goblin on screen, is shown."""
+            def run(*args):
+                if self.ask_key is key and self.mode == "agent" and "ask" in self.order \
+                        and actor_id(self.actor) == key[0] and (ask_of(self.actor) or {}).get("key") == key[1]:
+                    return action(*args)
+                return None
+            return run
         answer_here = ask.get("answerHere")
         request = app.request_for(ask) if answer_here == "respond" else None
         questions = [item for item in ask.get("questions") or [] if isinstance(item, dict)]
@@ -650,7 +685,7 @@ class DetailView:
                         answers[str(question.get("id") or index)] = value
                     busy()
                     app.respond(actor, request_id, answers=answers, done=finish)
-                FlatButton(actions, theme, "Send answer", send_answers, kind="primary").pack(side="left")
+                FlatButton(actions, theme, "Send answer", live(send_answers), kind="primary").pack(side="left")
             else:
                 def decide(decision: str) -> None:
                     busy()
@@ -660,9 +695,9 @@ class DetailView:
                                "Approve once")
                 decline = next((option for option in options if option.lower().startswith(("decline", "deny", "no"))),
                                "Decline")
-                FlatButton(actions, theme, approve, lambda: decide("accept"), kind="primary").pack(side="left")
-                FlatButton(actions, theme, decline, lambda: decide("decline"), kind="secondary").pack(side="left",
-                                                                                                     padx=(px(6), 0))
+                FlatButton(actions, theme, approve, live(lambda: decide("accept")), kind="primary").pack(side="left")
+                FlatButton(actions, theme, decline, live(lambda: decide("decline")), kind="secondary").pack(
+                    side="left", padx=(px(6), 0))
         elif answer_here in ("reply", "orca-send") and app.can("/api/message", "/api/reply"):
             box = tk.Text(card.body, height=3, wrap="word", bg=ENTRY, fg=IVORY, insertbackground=GOLD, relief="flat",
                           font=theme.body, padx=px(8), pady=px(6), highlightthickness=1, highlightbackground=LINE,
@@ -684,9 +719,10 @@ class DetailView:
                     if not error and box.winfo_exists():
                         box.delete("1.0", "end")
                 app.send_message(actor, words, sent)
-            box.bind("<Control-Return>", lambda _event: (reply(), "break")[1])
+            send = live(reply)
+            box.bind("<Control-Return>", lambda _event: (send() if box.winfo_viewable() else None, "break")[1])
             label = "Reply" if answer_here == "reply" else "Type into its terminal"
-            FlatButton(actions, theme, label, reply, kind="primary").pack(side="left")
+            FlatButton(actions, theme, label, send, kind="primary").pack(side="left")
         else:
             agent = (self.detail or {}).get("agent") or {}
             opener = ((agent.get("controls") or {}).get("open")) if isinstance(agent.get("controls"), dict) else None
@@ -696,7 +732,7 @@ class DetailView:
                 tk.Label(actions, text=f"Answer it in {app_name}.", bg=CARD, fg=MUTED, font=theme.body).pack(side="left")
         if not ask.get("legacy") and app.can("/api/dismiss") and (
                 ((self.detail or {}).get("agent") or {}).get("controls", {}) or {}).get("dismiss", True):
-            FlatButton(actions, theme, "Dismiss", self.on_dismiss, kind="quiet").pack(side="right")
+            FlatButton(actions, theme, "Dismiss", live(self.on_dismiss), kind="quiet").pack(side="right")
 
     def update_plan(self, plan: dict) -> None:
         steps = plan_steps(plan)
@@ -869,12 +905,13 @@ class DetailView:
         now = now_ms if now_ms is not None else time.time() * 1000
         changed = actor_id(actor) != self.agent_id or self.mode != "agent"
         if changed:
+            self.leave_focus()
             self.agent_id = actor_id(actor)
             for row in self.trail_rows.values():
                 row.frame.destroy()
             self.trail_rows.clear()
             self.trail_order = []
-            self.ask_key = None
+            self.clear_ask()
             self.said_open = False
             self.sprite_painted = None
             if self.composer.winfo_manager():
@@ -893,6 +930,8 @@ class DetailView:
         names = detail_sections(self.detail, actor)
         if "ask" in names:
             self.update_ask(actor)
+        elif self.ask_key is not None:
+            self.clear_ask()  # Answered, dismissed, or gone: its controls go with it.
         if "waiting" in names:
             waiting = waiting_of(actor) or {}
             parent = waiting.get("who") == "parent"
@@ -1009,6 +1048,9 @@ class DetailView:
             canvas.itemconfigure(f"tribe-{index}-image", image=image)
 
     def show_welcome(self, sources_note: str = "") -> None:
+        if self.mode != "welcome":
+            self.leave_focus()
+        self.clear_ask()
         self.mode = "welcome"
         self.agent_id = ""
         self.actor = {}
@@ -1048,10 +1090,13 @@ class DetailView:
 
     def show_chat(self, source: dict, watched: bool, members: int = 0) -> None:
         """A watched chat with nobody at work, or a chat found by search."""
+        party = str(source.get("id") or "")
+        if self.mode != "chat" or party != self.chat_party:
+            self.leave_focus()
+        self.clear_ask()
         self.mode = "chat"
         self.agent_id = ""
         self.actor = {}
-        party = str(source.get("id") or "")
         self.chat_party = party
         if self.composer.winfo_manager():
             self.composer.pack_forget()

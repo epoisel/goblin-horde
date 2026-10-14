@@ -286,6 +286,105 @@ class HordeWindowTests(unittest.TestCase):
         self.assertEqual(tag._focusable(), "0", "an option that can only be chosen in Claude Code is not a Tab stop")
         self.assertEqual(buttons(widget.detail_view.cards["ask"].body, "Dismiss")[0]._focusable(), "1")
 
+    # A key press answers only the ask on screen ---------------------------------------------------------
+    def ask_widgets(self, widget) -> list:
+        found, pending = [], [widget.detail_view.cards["ask"].body]
+        while pending:
+            item = pending.pop()
+            pending.extend(item.winfo_children())
+            found.append(item)
+        return found
+
+    def press_keys(self, widget, *targets) -> None:
+        """Space and Return on whatever has the focus, and on each of `targets` that still exists."""
+        for key in ("<space>", "<Return>", "<KP_Enter>"):
+            for target in (widget.root.focus_get() or widget.root, *targets):
+                if target.winfo_exists():
+                    target.event_generate(key)
+        settle(widget)
+        time.sleep(0.2)  # A respond would go out on a worker thread; give it the time to land.
+        settle(widget)
+
+    def test_down_from_an_ask_button_leaves_no_key_that_answers_the_goblin_left_behind(self):
+        widget = self.make()
+        self.click_row(widget, "demo-chat-image-pipeline")
+        view = widget.detail_view
+        approve = buttons(view.cards["ask"].body, "Approve once")[0]
+        command = approve.command
+        approve.focus_force()
+        settle(widget)
+        approve.event_generate("<Down>")
+        quiet(widget)
+        settle(widget)
+        self.assertEqual(widget.selected, "demo-chat-csv-export")
+        self.assertNotIn("ask", view.order)
+        self.assertFalse(approve.winfo_exists(), "the old ask's buttons are gone, not just hidden")
+        self.assertIs(widget.root.focus_get(), widget.roster.canvas, "the focus follows the selection to the roster")
+        self.press_keys(widget, approve)
+        command()  # Even a press already on its way finds its ask gone.
+        settle(widget)
+        time.sleep(0.2)
+        settle(widget)
+        self.assertEqual([item["id"] for item in widget.api.world.requests], ["demo-request-7"])
+        self.assertIsNotNone(widget.api.world.find("demo-chat-image-pipeline")["ask"])
+
+    def test_a_hidden_reply_box_never_sends_to_the_goblin_left_behind(self):
+        widget = self.make()
+        self.click_row(widget, "demo-chat-release-notes")
+        box = widget.detail_view.ask_widgets["reply"]
+        box.insert("1.0", "Convert them.")
+        box.focus_force()
+        settle(widget)
+        reply = buttons(widget.detail_view.cards["ask"].body, "Reply")[0]
+        command = reply.command
+        widget.move_selection(1)  # Chosen by the window itself; the arrow keys stay in the box.
+        quiet(widget)
+        settle(widget)
+        self.assertNotEqual(widget.selected, "demo-chat-release-notes")
+        self.assertFalse(box.winfo_exists())
+        self.assertNotIn(widget.root.focus_get(), self.ask_widgets(widget))
+        command()
+        settle(widget)
+        time.sleep(0.2)
+        settle(widget)
+        self.assertIsNotNone(widget.api.world.find("demo-chat-release-notes")["ask"], "nothing was sent")
+        self.assertFalse(any(row["title"].startswith("You:") for row in
+                             widget.api.world.details.get("demo-chat-release-notes", {}).get("trail", [])))
+
+    def test_a_button_on_a_hidden_card_does_nothing(self):
+        widget = self.make()
+        self.click_row(widget, "demo-chat-image-pipeline")
+        view = widget.detail_view
+        approve = buttons(view.cards["ask"].body, "Approve once")[0]
+        view.cards["ask"].frame.pack_forget()
+        settle(widget)
+        approve._key()
+        approve._release(SimpleNamespace(x=1, y=1))
+        settle(widget)
+        time.sleep(0.2)
+        settle(widget)
+        self.assertEqual([item["id"] for item in widget.api.world.requests], ["demo-request-7"])
+
+    def test_a_new_ask_never_takes_the_focus(self):
+        widget = self.make()
+        self.click_row(widget, "demo-chat-image-pipeline")
+        view = widget.detail_view
+        approve = buttons(view.cards["ask"].body, "Approve once")[0]
+        approve.focus_force()
+        settle(widget)
+        # The same goblin asks again: a new request with a new key replaces the one in focus.
+        world = widget.api.world
+        world.requests[0]["id"] = "demo-request-8"
+        actor = world.find("demo-chat-image-pipeline")
+        actor["ask"] = {**actor["ask"], "requestId": "demo-request-8", "key": "demo-ask-image-2", "at": actor["ask"]["at"] + 1}
+        load(widget)
+        load_detail(widget)
+        fresh = buttons(view.cards["ask"].body, "Approve once")[0]
+        self.assertIsNot(fresh, approve)
+        self.assertNotIn(widget.root.focus_get(), self.ask_widgets(widget))
+        self.press_keys(widget)
+        self.assertEqual([item["id"] for item in world.requests], ["demo-request-8"])
+
     def test_a_refused_reply_offers_one_way_to_open_the_chat(self):
         widget = self.make()
         self.click_row(widget, "demo-chat-release-notes")
