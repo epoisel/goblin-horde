@@ -17,10 +17,10 @@ import tkinter as tk
 
 from goblin_sprite import KINDS, SPAN_H, SPAN_W, TOP_ROOM, place_sprite, sprite_scale
 from goblin_motion import stamp_ms
-from horde_model import (APP_NAMES, SOURCE_NAMES, actor_class, actor_id, age_label, ask_of, ask_text,
-                         clock_label, detail_now, detail_sections, elapsed, family_ink, model_badge, party_scope,
-                         plan_counts, plan_steps, progress_of, project_name, screen_tail, source_of, status_chip,
-                         trail_result, display_name, waiting_of, waiting_steps)
+from horde_model import (APP_NAMES, SOURCE_NAMES, actor_class, actor_id, age_label, ago, ask_of, ask_text,
+                         clock_label, detail_now, detail_sections, elapsed, family_ink, is_done_step, is_thinking,
+                         model_badge, party_scope, plan_counts, plan_steps, progress_of, project_name, quiet_for,
+                         screen_tail, source_of, status_chip, trail_result, display_name, waiting_of, waiting_steps)
 from horde_theme import (AMBER, CARD, CORAL, ENTRY, FAINT, GOLD, HOVER, IVORY, LILAC, LINE, LIVELY, MONO_BG,
                          MUTED, PANEL, FlatButton, ScrollArea, Theme, WheelRouter, chip, copy_menu, fit_text, tone)
 
@@ -506,6 +506,8 @@ class DetailView:
         self.now_detail = now.label(mono=True)
         self.now_started = 0.0
         self.now_waiting = False
+        self.now_mode = "running"  # running, waiting, done (the last step), or think
+        self.now_heading = "Now"
         said = self.cards["said"] = Card(self, "said")
         self.said_text = said.label()
         self.said_text.pack(fill="x")
@@ -729,20 +731,30 @@ class DetailView:
                 row.pack(fill="x", pady=(0, px(3)))
 
     def now_aside(self, now_ms: float) -> str:
+        """The Now card's live time: how long a step has run or waited, how long ago the last step
+        finished, or how long it has been thinking since its last visible step."""
         if not self.now_started:
             return ""
-        return f"{'waiting' if self.now_waiting else 'running'} {elapsed(now_ms - self.now_started)}"
+        if self.now_mode == "done":
+            return ago(self.now_started, now_ms)
+        if self.now_mode == "think":
+            return f"{quiet_for(now_ms - self.now_started)} since the last step"
+        return f"{'waiting' if self.now_mode == 'waiting' else 'running'} {elapsed(now_ms - self.now_started)}"
 
     def update_now(self, now: dict, now_ms: float) -> None:
-        """What it is doing, with a live timer; a step waiting for the person's OK says so, in amber."""
+        """What it is doing, with a live timer; a step waiting for the person's OK says so, in amber. With
+        nothing running, the step that just finished shows as the "Last step", with how long ago."""
         card = self.cards["now"]
         kind = str(now.get("kind") or "tool")
         self.now_waiting = bool(now.get("waiting"))
-        set_text(self.now_icon, NOW_GLYPHS.get(kind, "▶"), fg=AMBER if self.now_waiting else LIVELY)
+        self.now_mode = "waiting" if self.now_waiting else "done" if is_done_step(now) else "think" if is_thinking(now) else "running"
+        ink = AMBER if self.now_waiting else MUTED if self.now_mode == "done" else LIVELY
+        set_text(self.now_icon, NOW_GLYPHS.get(kind, "▶"), fg=ink)
         set_text(self.now_title, " ".join(str(now.get("title") or "").split()))
         self.now_started = stamp_ms(now.get("startedAt")) or 0.0
-        card.set_title("Now", self.now_aside(now_ms))
-        card.aside.configure(fg=AMBER if self.now_waiting else LIVELY)
+        self.now_heading = "Last step" if self.now_mode == "done" else "Now"
+        card.set_title(self.now_heading, self.now_aside(now_ms))
+        card.aside.configure(fg=AMBER if self.now_waiting else FAINT if self.now_mode == "done" else LIVELY)
         detail = str(now.get("detail") or "").strip()
         set_text(self.now_detail, detail)
         if detail and not self.now_detail.winfo_manager():
@@ -938,7 +950,7 @@ class DetailView:
         set_text(self.status_chip, status, fg=tone(status_tone))
         self.fit_chips()
         if "now" in self.order and self.now_started:
-            self.cards["now"].set_title("Now", self.now_aside(now_ms))
+            self.cards["now"].set_title(self.now_heading, self.now_aside(now_ms))
         if "ask" in self.order:
             ask = ask_of(self.actor) or {}
             since = stamp_ms(ask.get("at"))

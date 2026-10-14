@@ -63,7 +63,7 @@ class HordeWindowTests(unittest.TestCase):
     def test_needs_you_comes_first_with_the_actual_question_and_is_selected(self):
         widget = self.make()
         sections = [(row.title, row.count) for row in widget.rows if row.kind == "section"]
-        self.assertEqual(sections[:2], [("Needs you", 4), ("Working", 8)])
+        self.assertEqual(sections[:2], [("Needs you", 4), ("Working", 10)])
         self.assertEqual(widget.selected, "demo-chat-release-notes", "the longest-waiting ask is chosen")
         # A reply shows its question, not the sentence before it; a permission names what it would run.
         self.assertTrue(self.row_text(widget, "demo-chat-release-notes", "line").startswith("Should I convert the older"))
@@ -218,6 +218,41 @@ class HordeWindowTests(unittest.TestCase):
         self.assertEqual(held.result_labels[0].cget("text"), "waiting for you", "the timer never turns it back to running")
         # A question hides Now altogether: the ask card says what it waits for.
         self.click_row(widget, "claude-agent:demo-migration-plan")
+        self.assertNotIn("now", widget.detail_view.order)
+
+    def test_a_finished_step_reads_as_the_last_step_and_thinking_says_since_when(self):
+        widget = self.make()
+        # The roster: a past step with how long ago, and Thinking with how long since the last step.
+        self.assertEqual(self.row_text(widget, "demo-chat-pr-review", "line"), "Ran gh pr view 214 · 2m ago")
+        self.assertRegex(self.row_text(widget, "demo-chat-cache-headers", "line"), r"^Thinking · 3[6-9]s$")
+        self.click_row(widget, "demo-chat-pr-review")
+        view = widget.detail_view
+        self.assertEqual(view.cards["now"].title.cget("text"), "Last step")
+        self.assertEqual(view.cards["now"].aside.cget("text"), "2m ago")
+        self.assertEqual(view.now_title.cget("text"), "Ran gh pr view 214")
+        self.assertEqual(view.status_chip.cget("text"), "Working", "a finished step is not a running timer")
+        view.tick(time.time() * 1000 + 60_000)
+        self.assertEqual(view.cards["now"].aside.cget("text"), "3m ago")
+        # A trail step with no known time shows none.
+        self.assertEqual(view.trail_rows["v1"].time.cget("text"), "")
+        self.assertNotEqual(view.trail_rows["v3"].time.cget("text"), "")
+        self.click_row(widget, "demo-chat-cache-headers")
+        self.assertEqual(widget.detail_view.cards["now"].title.cget("text"), "Now")
+        self.assertTrue(widget.detail_view.cards["now"].aside.cget("text").endswith("since the last step"))
+
+    def test_an_idle_session_is_out_of_working_and_says_how_long_it_has_been_quiet(self):
+        widget = self.make()
+        working = [row.key for row in widget.rows if row.section == "working"]
+        self.assertNotIn("claude-agent:demo-pricing-rules", working)
+        heading = next(row for row in widget.rows if row.key == "section:done")
+        widget.on_row_click(heading)
+        settle(widget)
+        row = next(row for row in widget.rows if row.key == "claude-agent:demo-pricing-rules")
+        self.assertEqual(row.section, "done")
+        self.assertEqual(row.line.tone, "done")
+        self.assertEqual(self.row_text(widget, "claude-agent:demo-pricing-rules", "line"), "No activity for 66m")
+        self.click_row(widget, "claude-agent:demo-pricing-rules")
+        self.assertEqual(widget.detail_view.status_chip.cget("text"), "Idle · no activity for 66m")
         self.assertNotIn("now", widget.detail_view.order)
 
     def test_a_goblin_that_just_finished_is_in_view_and_stays_selected(self):

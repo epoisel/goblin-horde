@@ -182,9 +182,32 @@ def age_label(stamp, now_ms: float | None = None) -> str:
 
 
 def clock_label(stamp) -> str:
-    """The local time of day of a trail step, '14:05'."""
+    """The local time of day of a trail step, '14:05'; '' for a step with no known time."""
     then = stamp_ms(stamp)
     return time.strftime("%H:%M", time.localtime(then / 1000)) if then else ""
+
+
+def quiet_for(ms: float) -> str:
+    """How long something has been so, as short as a line can afford: '35s', '4m', '66m', '3h 20m', '2d'."""
+    seconds = max(0, int((ms or 0) // 1000))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 100:
+        return f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 48:
+        return f"{hours}h {minutes:02d}m" if hours < 10 and minutes else f"{hours}h"
+    return f"{hours // 24}d"
+
+
+def ago(stamp, now_ms: float) -> str:
+    """When a past step happened, for a line: 'just now', '2m ago', '3h 20m ago'."""
+    then = stamp_ms(stamp)
+    if not then:
+        return ""
+    passed = now_ms - then
+    return "just now" if passed < 60_000 else f"{quiet_for(passed)} ago"
 
 
 def start_of_day(now_ms: float) -> float:
@@ -372,6 +395,38 @@ def now_of(actor: dict) -> dict | None:
     return current if isinstance(current, dict) and current.get("title") else None
 
 
+def is_done_step(current: dict | None) -> bool:
+    """A `now` that names the step that just finished ("Ran npm test"), not one still running."""
+    return bool(current) and current.get("done") is True
+
+
+def is_thinking(current: dict | None) -> bool:
+    return bool(current) and str(current.get("kind") or "") == "think"
+
+
+def now_line(current: dict, now_ms: float) -> str:
+    """A `now` as a roster line: a running step by its title ("Running npm test"), a finished one as a
+    past step ("Ran npm test · 2m ago"), and Thinking with how long since its last visible step."""
+    title = " ".join(str(current.get("title") or "").split())
+    since = stamp_ms(current.get("startedAt"))
+    if is_done_step(current):
+        when = ago(since, now_ms)
+        return f"{title} · {when}" if when else title
+    if is_thinking(current) and since:
+        return f"{title} · {quiet_for(now_ms - since)}"
+    return title
+
+
+def idle_since(actor: dict) -> float:
+    """When an agent whose turn was left open fell silent (Claude Code sends `idleSince`), or 0."""
+    return stamp_ms(actor.get("idleSince")) or 0.0
+
+
+def idle_text(actor: dict, now_ms: float) -> str:
+    since = idle_since(actor)
+    return f"No activity for {quiet_for(now_ms - since)}" if since else ""
+
+
 def progress_of(actor: dict) -> dict | None:
     progress = actor.get("progress")
     if not isinstance(progress, dict):
@@ -460,9 +515,12 @@ class Line(NamedTuple):
     text: str
 
 
-def row_line(actor: dict, klass: str | None = None) -> Line:
-    """ask > waitingOn > failure > now > the newest step. Each tone has its own colour."""
+def row_line(actor: dict, klass: str | None = None, now_ms: float | None = None) -> Line:
+    """ask > waitingOn > failure > now > the newest step. Each tone has its own colour. A finished step
+    reads as a past one ("Ran npm test · 2m ago"); an agent left idle mid-turn says how long it has been
+    quiet ("No activity for 66m"), muted."""
     klass = klass or actor_class(actor)
+    now = now_ms if now_ms is not None else time.time() * 1000
     ask = ask_of(actor)
     if ask:
         return Line("ask", ask_line(ask, source_of(actor)))
@@ -473,7 +531,9 @@ def row_line(actor: dict, klass: str | None = None) -> Line:
         return Line("failed", failure_text(actor))
     current = now_of(actor)
     if current:
-        return Line("now", " ".join(str(current["title"]).split()))
+        return Line("now", now_line(current, now))
+    if klass != WORKING and idle_since(actor):
+        return Line("done", idle_text(actor, now))
     if klass == WORKING:
         activities = actor.get("activities") or []
         if activities and isinstance(activities[-1], dict) and failed_step(activities[-1]):
@@ -657,7 +717,7 @@ def agent_row(actor: dict, klass: str, *, depth: int = 0, section: str, now_ms: 
     if (not meta or meta == title) and source_of(actor) == "claude" and not _is_subagent(actor):
         meta = project_name(actor)  # A session named for its prompt still says which folder it works in.
     return Row("agent", actor_id(actor), title, depth, actor, party, section,
-               line=row_line(actor, klass), right=right, meta=meta, context=context, klass=klass)
+               line=row_line(actor, klass, now_ms), right=right, meta=meta, context=context, klass=klass)
 
 
 def build_roster(actors: list[dict], *, now_ms: float | None = None, catalog: list[dict] | tuple = (),
@@ -686,7 +746,7 @@ def build_roster(actors: list[dict], *, now_ms: float | None = None, catalog: li
     def wanted(actor: dict) -> bool:
         if not terms:
             return True
-        line = row_line(actor, classes[actor_id(actor)]).text
+        line = row_line(actor, classes[actor_id(actor)], now).text
         return _matches(terms, display_name(actor, aliases), names.get(party_scope(actor), ""),
                         project_name(actor), line, SOURCE_NAMES.get(source_of(actor), ""))
 
@@ -1105,9 +1165,15 @@ def status_chip(agent: dict, now_ms: float | None = None) -> tuple[str, str]:
     if klass == WORKING:
         waiting = waiting_of(agent)
         current = now_of(agent)
+        # Only a step that is running has a timer here; a finished step or Thinking is timed in the Now card,
+        # since its time says how long ago something happened, not how long the agent has worked.
+        if not waiting and (is_done_step(current) or is_thinking(current)):
+            return "Working", "now"
         since = stamp_ms((current or waiting or {}).get("startedAt") or (waiting or {}).get("at"))
         word = "Waiting on coordinator" if waiting else "Working"
         return (f"{word} · {elapsed(now - since)}" if since else word), "waiting" if waiting else "now"
+    if idle_since(agent):
+        return f"Idle · no activity for {quiet_for(now - idle_since(agent))}", "done"
     stamp = updated_ms(agent)
     return (f"Done · {age_label(stamp, now)}" if stamp else "Done"), "done"
 

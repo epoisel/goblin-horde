@@ -108,7 +108,9 @@ class DemoWorld:
         self.build_release_notes()
         self.build_image_pipeline()
         self.build_search_workspace()
+        self.build_review_chat()
         self.build_done()
+        self.build_idle_session()
         self.chat("demo-chat-weekly-metrics", "Weekly metrics report", "D:/src/analytics", 3 * 1440, MINI)
         self.watched = ["demo-chat-weekly-metrics"]
         for index, (name, folder, days) in enumerate((
@@ -486,6 +488,61 @@ class DemoWorld:
                        activities=[step("update", "Update", "Imported 1,204 synonym pairs.")]),
                  {"said": {"text": "Imported 1,204 synonym pairs and re-built the index.", "at": self.ago(20)},
                   "screen": {"lines": ["Imported 1,204 synonym pairs.", "", "> "], "at": self.ago(20)}})
+
+    def build_review_chat(self) -> None:
+        """A Codex chat running in the Codex app with nothing running this moment: its line names the step
+        that just finished ("Ran gh pr view 214 · 2m ago"), timed from its session file; and one thinking."""
+        chat, cwd = "demo-chat-pr-review", "D:/src/billing-api"
+        self.chat(chat, "Review the billing PR", cwd, 0.5, SOL)
+        command = "gh pr view 214 --json title,statusCheckRollup"
+        self.add(agent(chat, "Review the billing PR", "codex", updated=self.ago(0.5), model=SOL, cwd=cwd,
+                       runningElsewhere=True,
+                       activities=[step("update", "Update", "Reading the pull request before reviewing it.")],
+                       now={"kind": "command", "title": "Ran gh pr view 214", "detail": command,
+                            "startedAt": self.ago(2), "done": True},
+                       progress={"done": 1, "total": 4, "current": "Check the CI results"}),
+                 {"mission": {"text": "Review pull request 214 (CSV export for invoices): check CI, read the diff, and "
+                                      "leave review comments.", "from": "you", "at": self.ago(9)},
+                  "plan": {"steps": [{"text": "Read the pull request", "status": "done"},
+                                     {"text": "Check the CI results", "status": "active"},
+                                     {"text": "Read the diff", "status": "pending"},
+                                     {"text": "Write the review", "status": "pending"}],
+                           "at": self.ago(8), "source": "plan"},
+                  "now": {"kind": "command", "title": "Ran gh pr view 214", "detail": command, "startedAt": self.ago(2),
+                          "done": True},
+                  "said": {"text": "The PR adds the export endpoint and a button; CI shows one flaky check I'll look at.",
+                           "at": self.ago(2.5)},
+                  # Steps whose time the session file gave show it; the oldest one has none, and shows none.
+                  "trail": [trail("v3", "command", command, self.ago(2), detail=command, exitCode=0, durationMs=1_400,
+                                  output="title: CSV export for invoices\nchecks: 11 passed, 1 failed (lint:docs)"),
+                            trail("v2", "message", "The PR adds the export endpoint and a button.", self.ago(2.5),
+                                  detail="The PR adds the export endpoint and a button; CI shows one flaky check."),
+                            trail("v1", "read", "Read CONTRIBUTING.md", None, detail="CONTRIBUTING.md")]})
+        thinker = "demo-chat-cache-headers"
+        self.chat(thinker, "Tune the cache headers", "D:/src/web-portal", 0.2, MINI)
+        self.add(agent(thinker, "Tune the cache headers", "codex", updated=self.ago(0.2), model=MINI, cwd="D:/src/web-portal",
+                       runningElsewhere=True, activities=[],
+                       now={"kind": "think", "title": "Thinking", "startedAt": self.ago(0.6)}),
+                 {"mission": {"text": "Set long cache lifetimes on hashed assets and none on index.html.", "from": "you",
+                              "at": self.ago(0.7)}})
+
+    def build_idle_session(self) -> None:
+        """A Claude Code session whose turn was left open (Esc, or a closed terminal) an hour ago: idle,
+        not working, and its line says so."""
+        session, cwd = "demo-pricing-rules", "D:/src/pricing-engine"
+        party, main = f"claude:{session}", f"claude-agent:{session}"
+        self.chat(party, "Refactor the pricing rules", cwd, 66, OPUS, "claude")
+        self.add(agent(main, "Refactor the pricing rules", "claude", updated=self.ago(66), party=party,
+                       nickname="Claude Code", model=OPUS, cwd=cwd, status="idle", attention="quiet", turn="idle",
+                       idleSince=self.ago(66),
+                       activities=[step("command", "Ran a local command", detail="npm test -- pricing")]),
+                 {"mission": {"text": "Split the pricing rules into one module per region.", "from": "you",
+                              "at": self.ago(80)},
+                  "trail": [trail("p2", "command", "npm test -- pricing", self.ago(66), detail="npm test -- pricing",
+                                  exitCode=0, durationMs=8_200),
+                            trail("p1", "edit", "Edited rules/eu.ts", self.ago(70), detail="rules/eu.ts", added=40,
+                                  removed=12)],
+                  "files": [{"path": "rules/eu.ts", "added": 40, "removed": 12, "at": self.ago(70)}]})
 
     def build_done(self) -> None:
         self.chat("demo-chat-api-client", "Regenerate the API client", "D:/src/web-portal", 4, MINI)

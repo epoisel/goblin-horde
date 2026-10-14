@@ -6,12 +6,13 @@ import unittest
 
 from goblin_motion import goblin_action
 from horde_demo import DemoWorld
-from horde_model import (DONE, FAILED, NEEDS, WORKING, RosterMemory, actor_class, age_short, ask_of, build_roster,
+from horde_model import (DONE, FAILED, NEEDS, WORKING, RosterMemory, actor_class, age_short, ago, ask_of, build_roster,
                          clamp_window, coverage_note, default_selection, detail_from_actor, detail_now, detail_sections,
                          display_name, duration, elapsed, final_question, join_reason, model_badge, motion_view,
-                         move_selection, party_tree, progress_label, reachable, read_settings, row_line, search_sources,
-                         settings_to_save, source_chips, sources_hint, status_chip, strip_items, strip_label,
-                         strip_labels, strip_tooltip, trail_result, waiting_steps, with_public_steps)
+                         move_selection, now_line, party_tree, progress_label, quiet_for, reachable, read_settings,
+                         row_line, search_sources, settings_to_save, source_chips, sources_hint, status_chip,
+                         strip_items, strip_label, strip_labels, strip_tooltip, trail_result, waiting_steps,
+                         with_public_steps)
 
 # Noon, local time, so "today" never straddles midnight in a test.
 NOW = time.mktime((2026, 10, 14, 12, 0, 0, 0, 0, -1)) * 1000
@@ -315,6 +316,58 @@ class DetailTests(unittest.TestCase):
         self.assertEqual(status_chip(working, NOW), ("Working · 12s", "now"))
         waiting = agent("a", waitingOn={"who": "coordinator", "at": NOW - 3000})
         self.assertEqual(status_chip(waiting, NOW), ("Waiting on coordinator · 3s", "waiting"))
+        # A finished step or Thinking has no running timer: its time says how long ago, not how long it worked.
+        finished = agent("a", now={"kind": "command", "title": "Ran npm test", "startedAt": NOW - 120_000, "done": True})
+        self.assertEqual(status_chip(finished, NOW), ("Working", "now"))
+        self.assertEqual(status_chip(agent("a", now={"kind": "think", "title": "Thinking", "startedAt": NOW - 3_960_000}), NOW),
+                         ("Working", "now"))
+        idle = agent("claude-agent:s", source="claude", attention="quiet", status="idle", idleSince=NOW - 66 * MIN,
+                     updatedAt=NOW - 66 * MIN, turnStates=[{"status": "idle", "questions": []}])
+        self.assertEqual(status_chip(idle, NOW), ("Idle · no activity for 66m", "done"))
+
+
+class LiveLineTests(unittest.TestCase):
+    """Every line says something true: a finished step as a past one, Thinking with how long since the
+    last visible step, and a session left idle as idle, never as working."""
+
+    def test_spans_and_ages_read_short(self):
+        self.assertEqual([quiet_for(ms) for ms in (0, 35_000, 4 * MIN, 66 * MIN, 200 * MIN, 12 * 60 * MIN, 50 * 60 * MIN)],
+                         ["0s", "35s", "4m", "66m", "3h 20m", "12h", "2d"])
+        self.assertEqual(ago(NOW - 20_000, NOW), "just now")
+        self.assertEqual(ago(NOW - 2 * MIN, NOW), "2m ago")
+        self.assertEqual(ago(None, NOW), "")
+
+    def test_a_finished_step_reads_as_a_past_step(self):
+        done = {"kind": "command", "title": "Ran gh pr view 214", "startedAt": NOW - 2 * MIN - 5_000, "done": True}
+        self.assertEqual(row_line(agent("a", now=done), now_ms=NOW), ("now", "Ran gh pr view 214 · 2m ago"))
+        self.assertEqual(now_line({**done, "startedAt": NOW - 5_000}, NOW), "Ran gh pr view 214 · just now")
+        self.assertEqual(now_line({**done, "startedAt": 0}, NOW), "Ran gh pr view 214", "no time, no age")
+        self.assertEqual(actor_class(agent("a", now=done)), WORKING, "a working chat between steps is still working")
+        thinking = {"kind": "think", "title": "Thinking", "startedAt": NOW - 4 * MIN}
+        self.assertEqual(row_line(agent("a", now=thinking), now_ms=NOW).text, "Thinking · 4m")
+        running = {"kind": "command", "title": "Running npm test", "startedAt": NOW - 4 * MIN}
+        self.assertEqual(row_line(agent("a", now=running), now_ms=NOW).text, "Running npm test", "a running step keeps its title")
+
+    def test_an_idle_session_is_quiet_and_says_how_long(self):
+        idle = agent("claude-agent:s", source="claude", attention="quiet", status="idle", idleSince=NOW - 66 * MIN,
+                     updatedAt=NOW - 66 * MIN, turnStates=[{"status": "idle", "questions": []}],
+                     activities=[{"kind": "command", "title": "Ran a local command", "status": "completed"}])
+        self.assertEqual(actor_class(idle), DONE)
+        self.assertEqual(row_line(idle, now_ms=NOW), ("done", "No activity for 66m"))
+        rows, counts = build_roster([idle, agent("w")], now_ms=NOW, done_open=True)
+        found = next(row for row in rows if row.key == "claude-agent:s")
+        self.assertEqual(found.section, "done", "out of Working, into Done today")
+        self.assertEqual(found.line, ("done", "No activity for 66m"))
+        self.assertEqual(counts.working, 1)
+        self.assertEqual(detail_now({"now": None}, idle), None)
+
+    def test_the_demo_has_a_finished_step_a_thinking_chat_and_an_idle_session(self):
+        world = DemoWorld("default", now_ms=NOW)
+        rows, _counts = build_roster(world.scene(NOW)["agents"], now_ms=NOW, done_open=True)
+        lines = {row.key: row.line.text for row in rows if row.kind == "agent"}
+        self.assertEqual(lines["demo-chat-pr-review"], "Ran gh pr view 214 · 2m ago")
+        self.assertEqual(lines["demo-chat-cache-headers"], "Thinking · 36s")
+        self.assertEqual(lines["claude-agent:demo-pricing-rules"], "No activity for 66m")
 
 
 class ReviewFindingTests(unittest.TestCase):
