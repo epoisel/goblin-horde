@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendClaudeRecord, buildClaudeSessions, ClaudeReader, CLAUDE_LIMITS, cleanRecord, normalizeHookEvent } from "../lib/claude.mjs";
 import { closingQuestion } from "../lib/asks.mjs";
+import { claudePanePairs, identityMark } from "../lib/links.mjs";
 
 // Synthetic sessions only: invented projects, paths, and commands.
 const NOW = 1_800_000_000_000;
@@ -488,6 +489,33 @@ test("the hook entrypoint keeps a huge payload's record within one log line", ()
     assert.ok(lines[0].length <= CLAUDE_LIMITS.lineChars);
     const kept = JSON.parse(lines[0]).todos.length;
     assert.ok(kept >= 1 && kept < 30, `a list too long for one line is shortened, not dropped (${kept})`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a session's recent prompts and replies prove which Orca pane it runs in", () => {
+  const dir = mkdtempSync(join(tmpdir(), "goblin-claude-asks-"));
+  try {
+    const FAKE = ["ghp", "abcdefghijklmnopqrstuvwxyz0123"].join("_");
+    const prompt = `Ship the CSV export for billing-api; push with ${FAKE} when the tests pass.`;
+    for (const record of records(
+      hook("UserPromptSubmit", { prompt: "An earlier prompt about the importer module." }, NOW),
+      hook("Stop", { last_assistant_message: "The importer now reads quoted fields correctly." }, NOW + 1),
+      hook("UserPromptSubmit", { prompt }, NOW + 2),
+      hook("SubagentStop", { agent_id: "sub1", last_assistant_message: "A helper's report goes to its parent, not to any pane." }, NOW + 3),
+    )) appendClaudeRecord(record, { dir });
+    const reader = new ClaudeReader({ dir, ttlMs: 0, clock: () => NOW + 10_000 });
+    const words = reader.recentWords(MAIN);
+    assert.equal(words.length, 3);
+    assert.ok(words.every((text) => !text.includes(FAKE)), "the words are the filtered records");
+    assert.ok(!words.some((text) => /helper's report/.test(text)));
+    assert.deepEqual(reader.recentWords(`${MAIN}:sub1`), [], "a subagent is never a pane");
+    assert.deepEqual(reader.recentWords("claude-agent:unknown"), []);
+    // The pane Orca reports with the same prompt, unfiltered, is this session; a pane with other words is not.
+    const session = reader.snapshot().sessions[0].agents.find((agent) => agent.id === MAIN);
+    const pane = { id: "orca-agent:p1", source: "orca", role: "claude · working", pane: "p1", cwd: "/work/billing-api" };
+    const proof = (paneWords) => ({ paneMarks: () => paneWords.map(identityMark), sessionMarks: (agent) => reader.recentWords(agent.id).map(identityMark) });
+    assert.deepEqual([...claudePanePairs([pane, session], proof([prompt]))], [[pane.id, MAIN]]);
+    assert.equal(claudePanePairs([pane, session], proof(["Refactor the invoice mailer and its templates."])).size, 0);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

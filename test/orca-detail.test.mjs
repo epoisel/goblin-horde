@@ -9,6 +9,7 @@ import {
   OrcaReader, detectTerminalPrompt, orcaAskInCommand, orcaInteractiveAsk, orcaNow, pendingCoordinatorQuestion, taskProgress,
 } from "../lib/orca.mjs";
 import { classifyOrca } from "../lib/feed.mjs";
+import { identityMark } from "../lib/links.mjs";
 
 const CLAUDE_PERMISSION = [
   "● I'll run the tests now.",
@@ -308,6 +309,16 @@ test("text typed into a terminal is one plain line, and a token wrapped across s
   assert.ok(screen.lines.join("").includes("[secret removed]"));
   assert.equal(screen.lines[0], "$ git push");
   assert.equal(screen.lines.at(-1), "ok");
+});
+
+test("a pane's newest prompt and reply are kept only as marks, to prove which Claude Code session it is", async () => {
+  const prompt = "Ship the CSV export for billing-api and add a test for the header row.";
+  const fake = fakeOrca({ agents: [agent("tab:a", "term_a", { state: "working", displayName: "Exporter", prompt, lastAssistantMessage: "ok" })] });
+  const reader = new OrcaReader({ run: fake.run, ttlMs: 0, clock: () => NOW });
+  const [pane] = (await reader.snapshot()).workspaces[0].agents;
+  assert.deepEqual(reader.marksFor(pane.id), [identityMark(prompt)], "a reply too short to tell agents apart is no mark");
+  assert.equal("prompt" in pane, false, "the prompt itself stays off the actor");
+  assert.deepEqual(reader.marksFor("orca-agent:tab:gone"), []);
 });
 
 test("Orca refusing the orchestration calls leaves agents quiet, not alarming", async () => {

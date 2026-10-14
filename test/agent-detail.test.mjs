@@ -14,8 +14,8 @@ const CWD = "C:\\work\\billing-api";
 const CHAT = "019a-chat-0001";
 const HELPER = "019a-helper-0002";
 
-function world({ twin = false, desktop = false } = {}) {
-  const log = { turns: [], launched: [], switched: [], sent: [], replies: [] };
+function world({ twin = false, desktop = false, proof = twin, orcaHangs = false } = {}) {
+  const log = { turns: [], launched: [], switched: [], sent: [], replies: [], orcaSnapshots: 0 };
   const codexActor = { id: CHAT, source: "codex", name: "Ship CSV export", cwd: CWD, status: "notLoaded", attention: "working", updatedAt: 1000,
     turnStates: [{ id: "t2", status: "inProgress" }], activities: [] };
   const helperActor = { id: HELPER, source: "codex", name: "Check importer", cwd: CWD, parentThreadId: CHAT, attention: "quiet", turnStates: [], activities: [] };
@@ -46,12 +46,17 @@ function world({ twin = false, desktop = false } = {}) {
     },
     listRequests: () => [],
   };
+  // What each side recorded: the pane's newest prompt matches the session's only when `proof` says so.
+  const marks = { [claudeMain.id]: ["mark-ship-csv"], [pane.id]: [proof ? "mark-ship-csv" : "mark-another-agent"] };
+  const workspaces = () => ({ workspaces: [{ id: "orca:d29yaw", name: "billing-api", agents: [orcaActor, ...(twin ? [pane] : [])] }] });
   const service = new AgentDetailService({
     scene: async () => scene,
     codex,
-    claude: { snapshot: () => ({ sessions: [{ agents: [claudeMain, claudeChild] }, { agents: [claudeDesktop] }] }), records: () => [] },
+    claude: { snapshot: () => ({ sessions: [{ agents: [claudeMain, claudeChild] }, { agents: [claudeDesktop] }] }), records: () => [], marks: (id) => marks[id] || [] },
     orca: {
-      snapshot: async () => ({ workspaces: [{ id: "orca:d29yaw", name: "billing-api", agents: [orcaActor, ...(twin ? [pane] : [])] }] }),
+      snapshot: async () => { log.orcaSnapshots++; return orcaHangs ? new Promise(() => {}) : workspaces(); },
+      lastSnapshot: () => workspaces(),
+      marksFor: (id) => marks[id] || [],
       detail: async (id) => ({ agent: orcaActor, mission: { text: "Fix the header", from: "coordinator", at: 1 }, plan: null, now: { kind: "think", title: "Thinking", startedAt: 1 },
         said: { text: "On it.", at: 1 }, trail: [], files: [], screen: { lines: ["$ npm test"], at: 2 }, id }),
       switchTo: async (terminal) => { log.switched.push(terminal); return { opened: true }; },
@@ -107,6 +112,7 @@ test("a Claude Code session in an Orca pane opens and takes messages through tha
   const detail = await service.detail("claude-agent:sess-1");
   assert.deepEqual(detail.agent.controls.open, { kind: "orca-terminal", label: "Open in Orca" });
   assert.equal(detail.agent.controls.message.kind, "orca-send");
+  assert.equal(detail.agent.controls.message.hint, "Types into the Orca terminal \"Claude pane\" and presses Enter");
   assert.deepEqual(await service.open("claude-agent:sess-1"), { opened: true, kind: "orca-terminal" });
   assert.deepEqual(await service.message("claude-agent:sess-1", "  Use v2 of the API  "), { sent: true, kind: "orca-send" });
   assert.deepEqual(log.switched, ["term_p"]);
@@ -114,6 +120,26 @@ test("a Claude Code session in an Orca pane opens and takes messages through tha
   const child = await service.detail("claude-agent:sess-1:a1b2c3");
   assert.equal(child.agent.controls.message, null, "a subagent is never messaged directly");
   await assert.rejects(service.message("claude-agent:sess-1:a1b2c3", "hi"), (error) => error.statusCode === 409);
+});
+
+test("an unrelated Claude pane in the same folder is never typed into or opened for a session", async () => {
+  // Session sess-1 runs in a plain terminal; another agent's Orca Claude pane works in the same folder.
+  const { service, log } = world({ twin: true, proof: false });
+  const detail = await service.detail("claude-agent:sess-1");
+  assert.deepEqual(detail.agent.controls, { open: null, message: null, dismiss: false });
+  await assert.rejects(service.message("claude-agent:sess-1", "Use v2 of the API"), (error) => error.statusCode === 409);
+  await assert.rejects(service.open("claude-agent:sess-1"), (error) => error.statusCode === 409);
+  assert.deepEqual(log.sent, []);
+  assert.deepEqual(log.switched, []);
+});
+
+test("a Claude Code session's detail never waits on Orca: the last Orca answer in hand is enough", async () => {
+  const { service, log } = world({ twin: true, orcaHangs: true });
+  const timeout = new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error("waited on Orca")), 2000); timer.unref?.(); });
+  const detail = await Promise.race([service.detail("claude-agent:sess-1"), timeout]);
+  assert.equal(detail.agent.controls.message.kind, "orca-send");
+  assert.deepEqual(await Promise.race([service.message("claude-agent:sess-1", "continue"), timeout]), { sent: true, kind: "orca-send" });
+  assert.equal(log.orcaSnapshots, 0);
 });
 
 test("a session the Claude app runs opens with the app's own link, nothing else", async () => {
@@ -273,14 +299,15 @@ test("the Claude app's session index maps a Claude Code session to the app's own
 });
 
 test("a session's Orca pane and its git branch are found without guessing", () => {
-  const session = { cwd: "C:\\work\\billing-api" };
-  const pane = { terminal: "term_p", cwd: "c:/work/billing-api/", role: "claude · working", status: "working" };
-  assert.equal(orcaTwin(session, [pane], [session]), pane);
-  assert.equal(orcaTwin(session, [pane, { ...pane, terminal: "term_q" }], [session]), null, "two panes: which one is unknown");
-  assert.equal(orcaTwin(session, [pane], [session, { cwd: session.cwd }]), null, "two sessions in one folder: which one is unknown");
-  assert.equal(orcaTwin(session, [{ ...pane, role: "codex · working" }], [session]), null);
-  assert.equal(orcaTwin(session, [{ ...pane, terminal: "" }], [session]), null);
-  assert.equal(orcaTwin({ cwd: "" }, [pane], []), null);
+  const session = { id: "claude-agent:s1", source: "claude", cwd: "C:\\work\\billing-api" };
+  const pane = { id: "orca-agent:p", source: "orca", pane: "p", terminal: "term_p", cwd: "c:/work/billing-api/", role: "claude · working", status: "working" };
+  const proof = { paneMarks: (agent) => (agent.id === pane.id ? ["m1"] : []), sessionMarks: (agent) => (agent.id === session.id ? ["m1"] : []) };
+  assert.equal(orcaTwin(session, [pane], [session], proof), pane);
+  assert.equal(orcaTwin(session, [pane], [session]), null, "one pane in the session's folder is no proof");
+  assert.equal(orcaTwin(session, [{ ...pane, role: "codex · working" }], [session], proof), null);
+  assert.equal(orcaTwin(session, [{ ...pane, terminal: "" }], [session], proof), null);
+  assert.equal(orcaTwin(session, [{ ...pane, status: "unavailable" }], [session], proof), null);
+  assert.equal(orcaTwin({ cwd: "" }, [pane], [], proof), null);
   const files = { [join("C:\\repo", ".git", "HEAD")]: "ref: refs/heads/ship-csv\n", [join("C:\\wt", ".git")]: "gitdir: C:\\repo\\.git\\worktrees\\wt\n",
     [join("C:\\repo\\.git\\worktrees\\wt", "HEAD")]: "ref: refs/heads/fix-header\n", [join("C:\\detached", ".git", "HEAD")]: "0123456789abcdef\n" };
   const read = (path) => { if (path in files) return files[path]; throw new Error("ENOENT"); };

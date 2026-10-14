@@ -11,7 +11,7 @@ import { withApprovalGuess } from "./lib/rollout.mjs";
 import { readDescendants } from "./lib/descendants.mjs";
 import { classifyCodex, composeAllScene, listedThread, noteReadFailure, planCodexReads, pruneCache } from "./lib/feed.mjs";
 import { WatchList } from "./lib/watch.mjs";
-import { DiscoveryGate, LinkStore, drivenTerminals, joinParties, joinSubset } from "./lib/links.mjs";
+import { DiscoveryGate, LinkStore, claudePanePairs, drivenTerminals, identityMark, joinParties, joinSubset } from "./lib/links.mjs";
 import { OrcaReader } from "./lib/orca.mjs";
 import { ClaudeReader, goblinStateDir } from "./lib/claude.mjs";
 import { ExtensionReader, EXTENSION_PARTY, extensionFeedDir } from "./lib/extension.mjs";
@@ -417,13 +417,20 @@ const links = new LinkStore({ dir: stateDir });
 // Looking for the chat behind an unlinked Orca pane can take several slow reads; no scene waits on it.
 const discovery = new DiscoveryGate();
 
+// What proves an Orca pane is a Claude Code session: the same recent prompt or reply on both sides.
+const sessionMarks = (agent) => { try { return claude.recentWords(agent.id).map(identityMark).filter(Boolean); } catch { return []; } };
+const proof = { paneMarks: (pane) => orca.marksFor(pane.id), sessionMarks };
+/** The link store's choices, with the Orca panes proven to be Claude Code sessions among `agents`. */
+const linksFor = (agents) => ({ auto: links.auto, manual: links.manual, pairs: claudePanePairs(agents, proof) });
+
 /** Every Orca and Claude Code member, joined to the chats that drive them. */
 async function joinedMembers() {
   const [orcaResult] = await Promise.allSettled([orca.snapshot()]);
   const orcaAgents = orcaResult.status === "fulfilled" ? orcaResult.value.workspaces.flatMap((workspace) => workspace.agents) : [];
   let claudeAgents = [];
   try { claudeAgents = claude.snapshot().sessions.flatMap((session) => session.agents); } catch { /* Claude Code feed unavailable. */ }
-  return joinParties([...orcaAgents, ...claudeAgents], links);
+  const members = [...orcaAgents, ...claudeAgents];
+  return joinParties(members, linksFor(members));
 }
 // An installed copy has its manager's marker beside it; a copy run from a download folder does not.
 const installed = existsSync(join(here, "goblin-horde-install.json"));
@@ -533,7 +540,8 @@ async function allScene() {
   // scene still finds its party.
   const claudeAgents = claudeResult.status === "fulfilled" ? claudeResult.value.sessions.flatMap((session) => session.agents) : [];
   const codexMembers = (codex.checked?.records || []).map(({ thread }) => ({ ...thread, source: "codex" }));
-  const { agents, joined } = joinSubset(scene.agents, [...codexMembers, ...orcaAgents, ...claudeAgents], links);
+  const members = [...codexMembers, ...orcaAgents, ...claudeAgents];
+  const { agents, joined } = joinSubset(scene.agents, members, linksFor(members));
   // Watched parties are always read and kept on the launchpad, whatever their age.
   return { ...scene, agents, joinedParties: Object.fromEntries(joined), manualLinks: Object.fromEntries(links.manual),
     watched: [...watchList.ids] };
@@ -587,7 +595,7 @@ const agentRoute = agentRoutes(new AgentDetailService({
     sendReply: (id, text) => reader.sendReply(id, text),
     listRequests: (id) => reader.listRequests(id),
   },
-  claude: { snapshot: () => claude.snapshot(), records: () => claude.records },
+  claude: { snapshot: () => claude.snapshot(), records: () => claude.records, marks: (id) => sessionMarks({ id }) },
   orca, extensions,
   claudeDetail: new ClaudeDetailReader({ configDir: claudeConfigDir() }),
   codexPlans: new CodexPlanReader(),
