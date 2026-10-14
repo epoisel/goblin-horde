@@ -242,6 +242,74 @@ test("screens are read once per state change, a few at a time, and never hold th
   assert.equal(stuck.calls.filter((call) => call.startsWith("terminal read")).length, 1, "a read still running is not started again");
 });
 
+test("a prompt answered in the terminal stops asking although Orca still says waiting", async () => {
+  let now = NOW;
+  const fake = fakeOrca({ agents: [agent("tab:a", "term_a", { state: "waiting", displayName: "Exporter", toolName: "Bash", toolInput: "npm test" }),
+    agent("tab:c", "term_c", { state: "waiting", displayName: "Docs" })],
+  screens: { term_a: CLAUDE_PERMISSION, term_c: IDLE_AFTER_ANSWER } });
+  const reader = new OrcaReader({ run: fake.run, ttlMs: 0, clock: () => now, inboxTtlMs: 60_000, tasksTtlMs: 60 * 60_000 });
+  const reads = (terminal) => fake.calls.filter((call) => call === `terminal read --terminal=${terminal} --screen --json`).length;
+  assert.equal(byName(await reader.snapshot()).Exporter.ask.kind, "permission");
+  // Approved: the menu is gone, the tool runs, and Orca keeps "waiting" (same updatedAt) until its next event.
+  fake.state.screens.term_a = ["● I'll run the tests now.", "", "  ⎿  Running…"];
+  now += 2000;
+  assert.equal(byName(await reader.snapshot()).Exporter.ask.kind, "permission", "not reread within a few seconds");
+  now += 4000;
+  const answered = byName(await reader.snapshot()).Exporter;
+  assert.equal(answered.ask, null);
+  assert.equal(answered.needsInput, false);
+  assert.equal(classifyOrca(answered, { now }), "working");
+  assert.equal(answered.now.title, "Running npm test", "the approved step is what it is doing");
+  assert.equal(reads("term_a"), 2);
+  // Nothing on screen is not reread, and an idle agent never is.
+  now += 60_000;
+  await reader.snapshot();
+  assert.equal(reads("term_a"), 2);
+  assert.equal(reads("term_c"), 1);
+  assert.equal(byName(await reader.snapshot()).Docs.status, "idle");
+});
+
+test("Orca's approval record is a permission ask until the screen shows the menu is gone", async () => {
+  assert.deepEqual(orcaInteractiveAsk(JSON.stringify({ approval: { tool: "Bash", summary: "npm run deploy -- --env staging" } })),
+    { kind: "permission", text: "Allow Bash to run this command?", command: "npm run deploy -- --env staging", tool: "Bash" });
+  assert.equal(orcaInteractiveAsk(JSON.stringify({ approval: { tool: "Read", summary: "C:\\work\\billing-api\\notes.md" } })).text, "Allow Read to open notes.md?");
+  assert.equal(orcaInteractiveAsk(JSON.stringify({ approval: { summary: "x" } })), null);
+  let now = NOW;
+  const approval = JSON.stringify({ approval: { tool: "Bash", summary: "npm test" } });
+  const fake = fakeOrca({ agents: [agent("tab:a", "term_a", { state: "waiting", displayName: "Exporter", interactivePrompt: approval, toolName: "Bash", toolInput: "npm test" })],
+    screens: { term_a: ["● Starting."] } });
+  const reader = new OrcaReader({ run: fake.run, ttlMs: 0, clock: () => now, inboxTtlMs: 60_000, tasksTtlMs: 60 * 60_000 });
+  // Read a moment after the request: the dialog may not be drawn yet, so the record stands.
+  const early = byName(await reader.snapshot()).Exporter;
+  assert.equal(early.ask.kind, "permission");
+  assert.equal(early.ask.text, "Allow Bash to run this command?");
+  assert.equal(early.ask.command, "npm test");
+  fake.state.screens.term_a = CLAUDE_PERMISSION;
+  now += 6000;
+  const shown = byName(await reader.snapshot()).Exporter;
+  assert.equal(shown.ask.key, early.ask.key, "the screen adds options, not a new ask");
+  assert.deepEqual(shown.ask.options, ["Yes", "Yes, and don't ask again for npm test commands", "No, and tell Claude what to do differently"]);
+  fake.state.screens.term_a = ["  ⎿  Running…"];
+  now += 6000;
+  assert.equal(byName(await reader.snapshot()).Exporter.ask, null);
+});
+
+test("text typed into a terminal is one plain line, and a token wrapped across screen rows is still removed", async () => {
+  const fake = party();
+  const reader = new OrcaReader({ run: fake.run, ttlMs: 0, clock: () => NOW });
+  await reader.send("term_a", "first\u0007 \u001b[31mred\u001b[0m\u0085next\u2028line\u2029end\tok");
+  const [{ text }] = fake.state.sent;
+  assert.doesNotMatch(text, /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/);
+  assert.match(text, /^first\s+\[31mred \[0m next line end ok$/);
+  const token = ["ghp", "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ab"].join("_");
+  fake.state.screens.term_a = ["$ git push", `Pushing with the saved key ${token.slice(0, 14)}`, `${token.slice(14)} and done`, "ok"];
+  const screen = await reader.screen("term_a");
+  assert.ok(screen.lines.every((line) => !line.includes("ABCDEFGHIJ") && !line.includes("KLMNOPQRST")), screen.lines.join("\n"));
+  assert.ok(screen.lines.join("").includes("[secret removed]"));
+  assert.equal(screen.lines[0], "$ git push");
+  assert.equal(screen.lines.at(-1), "ok");
+});
+
 test("Orca refusing the orchestration calls leaves agents quiet, not alarming", async () => {
   const fake = fakeOrca({ agents: [agent("tab:a", "term_a", { state: "waiting", displayName: "Exporter" })], fail: (key) => !key.startsWith("worktree") && !key.startsWith("terminal list") });
   const reader = new OrcaReader({ run: fake.run, ttlMs: 0, clock: () => NOW });
