@@ -174,11 +174,15 @@ class RosterView:
     def __init__(self, parent: tk.Misc, app, theme: Theme, wheel: WheelRouter) -> None:
         self.app = app
         self.theme = theme
-        self.frame = tk.Frame(parent, bg=PANEL, width=theme.px(self.WIDTH), bd=0, highlightthickness=0)
+        # Tab reaches the roster (then Up and Down choose a goblin); a quiet ring around it shows it has the
+        # keys. The ring is the frame's, so the canvas keeps its full height for rows and scrolling.
+        self.frame = tk.Frame(parent, bg=PANEL, width=theme.px(self.WIDTH), bd=0, highlightthickness=theme.px(1),
+                              highlightbackground=PANEL, highlightcolor=PANEL)
         self.frame.grid_propagate(False)
-        # Tab reaches the roster (then Up and Down choose a goblin); a quiet ring shows it has the keys.
-        self.canvas = tk.Canvas(self.frame, bg=PANEL, bd=0, highlightthickness=theme.px(1), highlightbackground=PANEL,
-                                highlightcolor=FOCUS_RING, takefocus=1, yscrollincrement=theme.px(20))
+        self.canvas = tk.Canvas(self.frame, bg=PANEL, bd=0, highlightthickness=0, takefocus=1,
+                                yscrollincrement=theme.px(20))
+        self.canvas.bind("<FocusIn>", lambda _event: self.frame.configure(highlightbackground=FOCUS_RING))
+        self.canvas.bind("<FocusOut>", lambda _event: self.frame.configure(highlightbackground=PANEL))
         self.bar = ttk.Scrollbar(self.frame, orient="vertical", style="Horde.Vertical.TScrollbar",
                                  command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self._on_scroll)
