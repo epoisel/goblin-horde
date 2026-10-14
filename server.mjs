@@ -5,7 +5,8 @@ import { stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
-import { markRunningElsewhere, transformThread } from "./lib/transform.mjs";
+import { carryNowStart, codexAsk, markRunningElsewhere, transformThread, withCodexNow } from "./lib/transform.mjs";
+import { DismissStore, settleActor, settleView } from "./lib/dismiss.mjs";
 import { withApprovalGuess } from "./lib/rollout.mjs";
 import { readDescendants } from "./lib/descendants.mjs";
 import { classifyCodex, composeAllScene, listedThread, noteReadFailure, planCodexReads, pruneCache } from "./lib/feed.mjs";
@@ -160,7 +161,8 @@ class CodexReader {
     let message;
     try { message = JSON.parse(line); } catch { return; }
     if (message.method && message.id != null) {
-      this.serverRequests.set(String(message.id), { id: message.id, method: message.method, params: message.params || {} });
+      // receivedAt dates the ask, so its key (and any dismissal of it) holds while it stays pending.
+      this.serverRequests.set(String(message.id), { id: message.id, method: message.method, params: message.params || {}, receivedAt: Date.now() });
       return;
     }
     if (message.method === "serverRequest/resolved") {
@@ -229,7 +231,12 @@ class CodexReader {
     links.observe(threadId, drivenTerminals(thread.turns));
     // A turn running in the Codex app may be held on an approval this reader never sees; its session
     // file can tell, however long ago the chat last changed (the timestamp freezes while it waits).
-    return withApprovalGuess(markRunningElsewhere(transformThread(thread)), thread.path);
+    return withCodexNow(withApprovalGuess(markRunningElsewhere(transformThread(thread)), thread.path));
+  }
+
+  /** A Codex member with its current ask: pending requests change between reads of the chat. */
+  withAsk(actor) {
+    return actor?.source === "codex" ? { ...actor, ask: codexAsk(actor, { requests: this.listRequests(actor.id) }) } : actor;
   }
 
   /**
@@ -276,7 +283,8 @@ class CodexReader {
           if (saved) fresh.push(saved);
           return;
         }
-        const actor = entry.value;
+        // A step still running keeps the time it was first seen.
+        const actor = carryNowStart(this.threadReads.get(summary.id)?.thread, entry.value);
         this.threadFailures.delete(summary.id);
         const hasRequest = this.listRequests(actor.id).length > 0 || Boolean(actor.awaitingApproval);
         const record = {
@@ -400,6 +408,10 @@ const orca = new OrcaReader();
 const claude = new ClaudeReader();
 const extensions = new ExtensionReader({ dir: extensionFeedDir(stateDir) });
 const watchList = new WatchList({ dir: stateDir });
+// Alerts the person dismissed; applied to every response in `shown` (see lib/dismiss.mjs).
+const dismissals = new DismissStore({ dir: stateDir });
+const settleOptions = () => ({ isDismissed: (id, key) => dismissals.isDismissed(id, key), now: Date.now() });
+const settled = (view) => settleView(view, settleOptions());
 // Which Codex chat drives which Orca terminals, and the person's own join or keep-separate choices.
 const links = new LinkStore({ dir: stateDir });
 // Looking for the chat behind an unlinked Orca pane can take several slow reads; no scene waits on it.
@@ -471,7 +483,7 @@ async function capabilities() {
         detail: hooks.error || (hooks.disabled ? "Claude Code hooks are turned off in its settings." : hooks.state === "missing"
           ? "Claude Code hooks are not installed. Run: node goblin.mjs hooks install" : hooks.broken
             ? "The Claude Code hook points to a missing Node or receiver. Run: node goblin.mjs hooks install"
-            : hooks.state === "partial" ? `Some Claude Code hooks are missing: ${hooks.missing.join(", ")}.` : "Recording public Claude Code activity."),
+            : hooks.state === "partial" ? `Some Claude Code hooks are missing: ${hooks.missing.join(", ")}.` : "Recording Claude Code activity on this computer."),
         sessions: claudeSnapshot.sessions.length, lastEventAt: lastClaude || 0, replies: false,
         // The widget offers to connect it in one click when this copy is installed (its hook needs a fixed path).
         canConnect: hooks.state !== "installed" && hooks.state !== "unreadable" && installed,
@@ -789,6 +801,21 @@ const handler = async (request, response) => {
       return json(response, 200, { watched: ids });
     } catch (error) { return fail(response, error.statusCode || 500, error.message || "Unable to change what is watched."); }
   }
+  if (url.pathname === "/api/dismiss" && request.method === "POST") {
+    // Only this computer dismisses alerts, from the viewer's own page with a JSON body.
+    const refusal = localOnlyRefusal({ local: isLocal(request), origin, headers: request.headers });
+    if (refusal) return json(response, refusal.status, { error: refusal.error });
+    try {
+      const data = await readBody(request);
+      const id = String(data.id || "");
+      const { key, at } = dismissals.dismiss(id, String(data.key || ""));
+      // The cached scene is settled on the way out, so the next poll already shows the dismissal.
+      const cached = allSceneCached?.agents?.find((item) => item.id === id);
+      const actor = cached ? settleActor(cached, settleOptions()) : null;
+      return json(response, 200, { id, key, dismissedAsk: actor?.dismissedAsk || { key, at }, ask: publicView({ ask: actor?.ask ?? null }).ask,
+        ...(actor && "attention" in actor ? { attention: actor.attention } : {}) });
+    } catch (error) { return fail(response, error.statusCode || 500, error.message || "Unable to dismiss that alert."); }
+  }
   if (["/api/reply", "/api/respond"].includes(url.pathname) && request.method === "POST") {
     if (!isLocal(request) && !hasSession(request)) return json(response, 401, { error: "Pair this phone with the viewer first." });
     if (request.headers.origin !== origin || !String(request.headers["content-type"] || "").startsWith("application/json"))
@@ -828,8 +855,8 @@ const handler = async (request, response) => {
         phone: { available: phone.listening, pairedSessions: pairing.sessionCount?.() ?? null } });
       return json(response, 200, report);
     }
-    // Activity leaves only through publicView: filtered for everyone, trimmed further for a phone.
-    const shown = (data) => json(response, 200, publicView(data, { phone: !isLocal(request) }));
+    // Activity leaves only through publicView: asks settled, filtered for everyone, trimmed further for a phone.
+    const shown = (data) => json(response, 200, publicView(settled(data), { phone: !isLocal(request) }));
     if (url.pathname === "/api/scene") {
       const threadId = url.searchParams.get("id") || defaultThreadId;
       // The watch list is always the current one, even on a scene built before the last change.
@@ -851,14 +878,14 @@ const handler = async (request, response) => {
       const scene = await reader.readScene(threadId);
       const { agents: everyone } = await joinedMembers();
       const joinedHere = everyone.filter((agent) => agent.joined && agent.parentThreadId === threadId);
-      return shown({ ...scene, agents: [...(scene.agents || []), ...joinedHere], requests: reader.listRequests(threadId),
-        checkedAt: Date.now() });
+      return shown({ ...scene, root: reader.withAsk(scene.root), agents: [...(scene.agents || []).map((agent) => reader.withAsk(agent)), ...joinedHere],
+        requests: reader.listRequests(threadId), checkedAt: Date.now() });
     }
     if (url.pathname === "/api/thread") {
       const threadId = url.searchParams.get("id") || defaultThreadId;
       if (!/^[a-zA-Z0-9_-]{8,100}$/.test(threadId)) return json(response, 400, { error: "Choose a valid thread" });
       if (!(await canViewThread(threadId))) return json(response, 403, { error: "That chat is not available in this viewer." });
-      return shown({ thread: await reader.readThread(threadId), checkedAt: Date.now() });
+      return shown({ thread: reader.withAsk(await reader.readThread(threadId)), checkedAt: Date.now() });
     }
 
     // The pixel goblins share one sprite file with the desktop widget.

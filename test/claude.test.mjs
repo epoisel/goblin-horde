@@ -29,25 +29,33 @@ function records(...inputs) {
   }).filter(Boolean);
 }
 
-test("hook records keep public activity and drop prompts, tool input, output, errors, and transcripts", () => {
-  const secretPrompt = "please deploy with password hunter2-PRIVATE";
-  const inputs = [
-    hook("UserPromptSubmit", { prompt: secretPrompt, prompt_text: secretPrompt }),
-    hook("PreToolUse", { tool_name: "Bash", tool_use_id: "toolu_01", tool_input: { command: "curl -H 'Authorization: Bearer abcdefSECRETTOKEN123456' https://internal.example", description: "call private endpoint" } }),
+test("hook records keep what each call works on, filtered, and never output, errors, or notification text", () => {
+  const PASSWORD = ["Hunter2", "Secret!"].join("");
+  const [prompt, pre, post, failed, notice, crash] = records(
+    hook("UserPromptSubmit", { prompt: `Ship the CSV export for billing-api. The password is ${PASSWORD} for staging.` }),
+    hook("PreToolUse", { tool_name: "Bash", tool_use_id: "toolu_01", tool_input: { command: "curl -H 'Authorization: Bearer abcdefSECRETTOKEN123456' https://api.example.test/v1", description: "call the endpoint" } }),
     hook("PostToolUse", { tool_name: "Bash", tool_use_id: "toolu_01", tool_input: { command: "cat ~/.ssh/config" }, tool_output: "Host private-box\n  HostName 10.0.0.5", tool_response: { stdout: "PRIVATE-OUTPUT" } }),
-    hook("PostToolUseFailure", { tool_name: "Read", tool_use_id: "toolu_02", tool_input: { file_path: "C:\\Users\\someone\\private\\notes.md" }, error: "EACCES PRIVATE-ERROR" }),
+    hook("PostToolUseFailure", { tool_name: "Read", tool_use_id: "toolu_02", tool_input: { file_path: "C:\\work\\billing-api\\notes.md" }, error: "EACCES PRIVATE-ERROR" }),
     hook("Notification", { notification_type: "permission_prompt", message: "Claude needs permission to run rm -rf PRIVATE-DIR", title: "Permission" }),
     hook("StopFailure", { error_type: "server_error", error_message: "upstream PRIVATE-ERROR-DETAIL" }),
-  ];
-  const stored = JSON.stringify(records(...inputs));
-  for (const fragment of ["hunter2", "Bearer", "SECRETTOKEN", "internal.example", "private endpoint", "ssh", "10.0.0.5", "PRIVATE-OUTPUT",
-    "PRIVATE-ERROR", "PRIVATE-DIR", "transcript", "someone\\\\private", "Permission\""]) {
+  );
+  // The prompt excerpt and the command are kept for this computer, with the credentials removed.
+  assert.match(prompt.prompt, /^Ship the CSV export for billing-api\. The password is \[secret removed\]/);
+  assert.equal(prompt.transcript, "/home/someone/.claude/projects/x/transcript.jsonl");
+  assert.match(pre.detail, /^curl -H 'Authorization: Bearer \[secret removed\]' https:\/\/api\.example\.test\/v1$/);
+  assert.equal(pre.transcript, undefined, "only the session's own events say where its transcript is");
+  // A result, a failure, a notice, and a crash carry no text of their own.
+  assert.equal(post.detail, undefined);
+  assert.equal(failed.target, "notes.md");
+  const stored = JSON.stringify([prompt, pre, post, failed, notice, crash]);
+  for (const fragment of [PASSWORD, "SECRETTOKEN", "ssh", "10.0.0.5", "PRIVATE-OUTPUT", "PRIVATE-ERROR", "PRIVATE-DIR", "Permission\"", "call the endpoint"]) {
     assert.ok(!stored.includes(fragment), `stored records leaked ${fragment}`);
   }
-  const read = records(hook("PreToolUse", { tool_name: "Read", tool_use_id: "toolu_03", tool_input: { file_path: "/home/someone/secret-project/src/app.js" } }))[0];
+  // Read keeps the full path as its detail and the base name as its target.
+  const read = records(hook("PreToolUse", { tool_name: "Read", tool_use_id: "toolu_03", tool_input: { file_path: "/work/billing-api/src/app.js" } }))[0];
   assert.equal(read.target, "app.js");
-  assert.ok(!JSON.stringify(read).includes("secret-project"));
-  // A file name that suggests a credential is not named at all.
+  assert.equal(read.detail, "/work/billing-api/src/app.js");
+  // A file name that suggests a credential is not named in titles.
   assert.equal(records(hook("PreToolUse", { tool_name: "Read", tool_input: { file_path: "/work/.env.local" } }))[0].target, "a private file");
   // Non-file tools never carry a target, even when their input has a path.
   assert.equal(records(hook("PreToolUse", { tool_name: "Bash", tool_input: { file_path: "/work/app.js", command: "x" } }))[0].target, undefined);
@@ -65,7 +73,8 @@ test("the final reply is a bounded, redacted excerpt and a closing question is n
   const long = `${"Done with the refactor. ".repeat(80)}\nKey: ${FAKE_ANTHROPIC_KEY} and ${FAKE_GITHUB_TOKEN}\nShould I also update the docs?`;
   const [record] = records(hook("Stop", { last_assistant_message: long, stop_hook_active: false }));
   assert.ok(record.message.length <= CLAUDE_LIMITS.excerptChars);
-  assert.equal(record.question, "Should I also update the docs?");
+  // The question keeps the sentence before it for context, filtered like the rest.
+  assert.match(record.question, /\[secret removed\] Should I also update the docs\?$/);
   const redacted = redactSecrets(`token=abc123 Bearer abcdefghijklmnopqrstu ${FAKE_SK_LIVE_KEY} ${FAKE_AWS_KEY_ID}`);
   assert.ok(!["abc123", "abcdefghijklmnopqrstu", "ABCDEFGHIJKLMNOPQRST", FAKE_AWS_KEY_ID].some((part) => redacted.includes(part)), redacted);
   assert.ok(!JSON.stringify(record).includes(FAKE_ANTHROPIC_PREFIX));
