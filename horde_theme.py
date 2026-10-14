@@ -60,6 +60,24 @@ def fit_text(font, value: str, max_width: int) -> str:
     return value[:low].rstrip() + "…" if low else "…"
 
 
+def fit_text_end(font, value: str, max_width: int) -> str:
+    """One line that fits ``max_width`` pixels, keeping its end and starting with … when it had to be
+    cut: "…module 43" for names that differ only at the end."""
+    value = " ".join(str(value).split())
+    if max_width <= 0:
+        return ""
+    if font.measure(value) <= max_width:
+        return value
+    low, high = 0, len(value)
+    while low < high:  # The longest ending that fits after its ellipsis.
+        middle = (low + high + 1) // 2
+        if font.measure("…" + value[len(value) - middle:].lstrip()) <= max_width:
+            low = middle
+        else:
+            high = middle - 1
+    return "…" + value[len(value) - low:].lstrip() if low else "…"
+
+
 def wrap_text(font, value: str, max_width: int) -> list[str]:
     """Word-wrapped lines no wider than ``max_width``; a word too long for a line is broken."""
     words = " ".join(str(value).split()).split(" ")

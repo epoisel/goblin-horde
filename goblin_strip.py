@@ -14,8 +14,8 @@ import tkinter as tk
 import desktop_platform
 from desktop_platform import bind_context, float_window, make_transparent, screen_geometry
 from goblin_sprite import SPAN_H, SPAN_W, TOP_ROOM, place_sprite, sprite_scale
-from horde_model import DONE, FAILED, NEEDS, StripItem, actor_id, clip, display_name, strip_label, strip_tooltip
-from horde_theme import AMBER, CORAL, FAINT, GOLD, INK, IVORY, LINE, LIVELY, MUTED, PANEL, Theme, fit_text
+from horde_model import DONE, FAILED, NEEDS, StripItem, actor_id, clip, display_name, strip_labels, strip_tooltip
+from horde_theme import AMBER, CORAL, FAINT, GOLD, INK, IVORY, LINE, LIVELY, MUTED, PANEL, Theme, fit_text, fit_text_end
 
 SLOT_COLUMNS = SPAN_W  # A goblin and the cue beside its head.
 BUBBLES = {NEEDS: ("?", AMBER, INK), FAILED: ("!", CORAL, INK), DONE: ("✓", PANEL, FAINT)}
@@ -107,6 +107,11 @@ class GoblinStrip:
         c.create_text(x + pill_w // 2, middle, text=label, fill=ink, font=theme.small_strong)
         self.slots.append((x, x + pill_w, "pill", ""))
         x += pill_w + px(10)
+        # A short name under each goblin: the part that tells it from its neighbours, not a prefix they share.
+        room = m["slot"] - px(4)
+        names = strip_labels([item.actor for item in self.items], self.app.aliases,
+                             lambda text: fit_text(theme.small, clip(text, 18), room),
+                             lambda text: fit_text_end(theme.small, text, room))
         for index, item in enumerate(self.items):
             if item.gap:
                 x += m["gap"]
@@ -123,10 +128,8 @@ class GoblinStrip:
                           outline=back if item.klass in (NEEDS, FAILED) else LINE, tags=bubble_tag)
             c.create_text(center, px(4) + half_h, text=glyph, fill=front, font=theme.small_strong,
                           tags=(bubble_tag, f"{bubble_tag}-text"))
-            # A short name under each goblin, on a dark tab so it reads on any wallpaper.
-            # The part of the name that tells this goblin from its neighbours, not a prefix they all share.
-            name = clip(strip_label(item.actor, self.app.aliases), 18)
-            shown = fit_text(theme.small, name, m["slot"] - px(4))
+            # The name on a dark tab, so it reads on any wallpaper.
+            shown = names[index]
             text_w = theme.small.measure(shown) + px(8)
             name_top = m["sprite_top"] + m["sprite_h"] + px(1)
             name_center = left + m["slot"] // 2

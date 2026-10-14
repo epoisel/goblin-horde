@@ -11,7 +11,7 @@ from horde_model import (DONE, FAILED, NEEDS, WORKING, RosterMemory, actor_class
                          display_name, duration, elapsed, final_question, join_reason, model_badge, motion_view,
                          move_selection, party_tree, progress_label, reachable, read_settings, row_line, search_sources,
                          settings_to_save, source_chips, sources_hint, status_chip, strip_items, strip_label,
-                         strip_tooltip, trail_result, waiting_steps, with_public_steps)
+                         strip_labels, strip_tooltip, trail_result, waiting_steps, with_public_steps)
 
 # Noon, local time, so "today" never straddles midnight in a test.
 NOW = time.mktime((2026, 10, 14, 12, 0, 0, 0, 0, -1)) * 1000
@@ -415,6 +415,19 @@ class ReviewFindingTests(unittest.TestCase):
         child = {"id": "claude-agent:s:a", "source": "claude", "childOf": "claude-agent:s", "nickname": "Explore: Find fixtures"}
         self.assertEqual(strip_label(child), "Find fixtures")
         self.assertEqual(strip_label(child, {"claude-agent:s:a": "Scout"}), "Scout")
+
+    def test_strip_labels_that_would_read_the_same_are_told_apart(self):
+        fit = lambda text: text[:8] + "…" if len(text) > 9 else text  # noqa: E731 - nine characters of room
+        fit_end = lambda text: "…" + text[-8:] if len(text) > 9 else text  # noqa: E731
+        session = lambda n, cwd, name: {"id": f"claude-agent:{n}", "source": "claude", "name": name, "cwd": cwd}  # noqa: E731
+        apart = [session(1, "C:/src/proj-1", "Task number 1: refactor"), session(2, "C:/src/proj-2", "Task number 2: refactor")]
+        self.assertEqual(strip_labels(apart, {}, fit, fit_end), ["proj-1", "proj-2"], "different folders tell them apart")
+        same_folder = [session(1, "C:/src/api", "Add tests for the parser"), session(2, "C:/src/api", "Add tests for the lexer")]
+        self.assertEqual(strip_labels(same_folder, {}, fit, fit_end), ["…e parser", "…he lexer"], "else how the names end")
+        distinct = [session(1, "C:/src/api", "Fix login"), session(2, "C:/src/api", "Ship CSV")]
+        self.assertEqual(strip_labels(distinct, {}, fit, fit_end), ["Fix login", "Ship CSV"])
+        named = strip_labels(apart, {"claude-agent:1": "Task numbers"}, fit, fit_end)
+        self.assertEqual(named[0], "Task num…", "a name the person chose is kept")
 
     def test_the_welcome_says_what_the_feed_chips_can_do(self):
         self.assertEqual(sources_hint({"claude": {"state": "not-connected", "canConnect": True}}),

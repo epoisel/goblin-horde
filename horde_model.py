@@ -924,6 +924,31 @@ def strip_label(actor: dict, aliases: dict | None = None) -> str:
     return name
 
 
+def strip_labels(actors: list[dict], aliases: dict | None, fit, fit_end) -> list[str]:
+    """The labels the strip shows, as they fit under each goblin. `fit(text)` and `fit_end(text)` cut a
+    text to the room there is, from its end or its start ("Task numb…", "…module 43"). Goblins whose
+    labels would read the same are told apart by their project folder when those differ, else by how
+    their names end. A name the person gave a goblin is never changed."""
+    aliases = aliases or {}
+    names = [strip_label(actor, aliases) for actor in actors]
+    shown = [fit(name) for name in names]
+    groups: dict[str, list[int]] = {}
+    for index, text in enumerate(shown):
+        if not aliases.get(actor_id(actors[index])):
+            groups.setdefault(text, []).append(index)
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        for choose in (lambda i: fit(project_name(actors[i])) if project_name(actors[i]) else "",
+                       lambda i: fit_end(names[i])):
+            options = [choose(index) for index in members]
+            if all(options) and len(set(options)) == len(options):
+                for index, option in zip(members, options):
+                    shown[index] = option
+                break
+    return shown
+
+
 def strip_tooltip(actor: dict, aliases: dict | None = None) -> str:
     """Name, then what it is doing or asking, for the strip's hover tip."""
     klass = actor_class(actor)
