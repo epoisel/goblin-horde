@@ -423,7 +423,9 @@ class ReviewFindingTests(unittest.TestCase):
         apart = [session(1, "C:/src/proj-1", "Task number 1: refactor"), session(2, "C:/src/proj-2", "Task number 2: refactor")]
         self.assertEqual(strip_labels(apart, {}, fit, fit_end), ["proj-1", "proj-2"], "different folders tell them apart")
         same_folder = [session(1, "C:/src/api", "Add tests for the parser"), session(2, "C:/src/api", "Add tests for the lexer")]
-        self.assertEqual(strip_labels(same_folder, {}, fit, fit_end), ["…e parser", "…he lexer"], "else how the names end")
+        self.assertEqual(strip_labels(same_folder, {}, fit, fit_end), ["parser", "lexer"], "else the words they do not share")
+        endings = [session(1, "C:/src/api", "Run checks on service-alpha-one"), session(2, "C:/src/api", "Run checks on service-alpha-two")]
+        self.assertEqual(strip_labels(endings, {}, fit, fit_end), ["…lpha-one", "…lpha-two"], "else how the names end")
         distinct = [session(1, "C:/src/api", "Fix login"), session(2, "C:/src/api", "Ship CSV")]
         self.assertEqual(strip_labels(distinct, {}, fit, fit_end), ["Fix login", "Ship CSV"])
         named = strip_labels(apart, {"claude-agent:1": "Task numbers"}, fit, fit_end)

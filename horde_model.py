@@ -927,8 +927,9 @@ def strip_label(actor: dict, aliases: dict | None = None) -> str:
 def strip_labels(actors: list[dict], aliases: dict | None, fit, fit_end) -> list[str]:
     """The labels the strip shows, as they fit under each goblin. `fit(text)` and `fit_end(text)` cut a
     text to the room there is, from its end or its start ("Task numb…", "…module 43"). Goblins whose
-    labels would read the same are told apart by their project folder when those differ, else by how
-    their names end. A name the person gave a goblin is never changed."""
+    labels would read the same are told apart by their project folder when those differ, else by the
+    words after the ones they share ("Check the cart page" -> "cart page"), else by how their names
+    end. A name the person gave a goblin is never changed."""
     aliases = aliases or {}
     names = [strip_label(actor, aliases) for actor in actors]
     shown = [fit(name) for name in names]
@@ -939,7 +940,13 @@ def strip_labels(actors: list[dict], aliases: dict | None, fit, fit_end) -> list
     for members in groups.values():
         if len(members) < 2:
             continue
+        words = {index: names[index].split() for index in members}
+        shared = 0
+        while all(len(words[index]) > shared + 1 for index in members) and \
+                len({words[index][shared] for index in members}) == 1:
+            shared += 1
         for choose in (lambda i: fit(project_name(actors[i])) if project_name(actors[i]) else "",
+                       lambda i: fit(" ".join(words[i][shared:])) if shared else "",
                        lambda i: fit_end(names[i])):
             options = [choose(index) for index in members]
             if all(options) and len(set(options)) == len(options):
