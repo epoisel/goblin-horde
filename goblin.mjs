@@ -21,7 +21,7 @@ if (major < 20) {
   process.exit(2);
 }
 
-const { ManagerError, autostart, doctor, getLocalJson, hooksInstall, hooksRemove, hooksStatus, install, locate, makeContext, start, status, stop, uninstall } = await import("./lib/manager.mjs");
+const { ManagerError, autostart, doctor, getLocalJson, hooksInstall, hooksRemove, hooksStatus, install, locate, makeContext, managerCommand, start, status, stop, uninstall } = await import("./lib/manager.mjs");
 const { claudeSettingsPath } = await import("./lib/claude-hooks.mjs");
 const { appendExtensionRecord, extensionFeedDir, validateExtensionRecord } = await import("./lib/extension.mjs");
 
@@ -135,10 +135,10 @@ async function emit(ctx, flags) {
 }
 
 /** Where the goblins ended up, for setup's last line. */
-export function finishLine(result) {
+export function finishLine(result, manager = "node goblin.mjs") {
   const again = result.startMenu ? "; find Goblin Horde in the Start menu to open it again." : ".";
   const started = result.started;
-  if (!started) return result.startMenu ? "\nInstalled. Open Goblin Horde from the Start menu." : "\nInstalled. Start it with: node goblin.mjs start";
+  if (!started) return result.startMenu ? "\nInstalled. Open Goblin Horde from the Start menu." : `\nInstalled. Start it with: ${manager} start`;
   if (started.ui === "widget") return `\nAll set. Your goblins are on the desktop${again}`;
   if (started.ui === "browser") return `\nAll set. Goblin Horde opened in your browser instead of on the desktop${started.reason ? `: ${started.reason}` : "."}`
     + (result.startMenu ? "\nFind Goblin Horde in the Start menu to open it again." : "");
@@ -207,8 +207,8 @@ async function setup(ctx, options, { assumeYes = false } = {}) {
     if (claudeHooks === undefined && check("claude").present && check("claude-hooks").state !== "ok") {
       const declined = Boolean(loc.marker?.claudeHooks?.declined);
       log("Claude Code is on this computer. To show its sessions, Goblin Horde adds a few entries to Claude Code's");
-      log(`settings in ${claudeSettingsPath(loc.claudeDir)} (a backup is kept; undo any time with: node goblin.mjs hooks remove).`);
-      if (declined) log("You chose not to connect it before. Connect later from the widget menu (Connect Claude Code…) or with: node goblin.mjs hooks install");
+      log(`settings in ${claudeSettingsPath(loc.claudeDir)} (a backup is kept; undo any time with: ${managerCommand(ctx, loc.installDir)} hooks remove).`);
+      if (declined) log(`You chose not to connect it before. Connect later from the widget menu (Connect Claude Code…) or with: ${managerCommand(ctx, loc.installDir)} hooks install`);
       const yes = await ask("Show Claude Code sessions too?", !declined);
       // Kept as it is (not removed again) when the remembered "no" is simply confirmed.
       claudeHooks = yes ? true : declined ? undefined : false;
@@ -222,7 +222,7 @@ async function setup(ctx, options, { assumeYes = false } = {}) {
     log("");
     const result = await install(ctx, { ...options, claudeHooks, autostart: signIn });
     for (const line of [...result.messages, ...(result.started?.messages || [])]) log(line);
-    log(finishLine(result));
+    log(finishLine(result, managerCommand(ctx, result.installDir)));
     return 0;
   } finally {
     prompt?.close();

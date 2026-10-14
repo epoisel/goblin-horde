@@ -11,7 +11,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { HOOK_EVENTS, HOOK_MARKER, claudeHookReport, claudeSettingsPath } from "../lib/claude-hooks.mjs";
+import { HOOK_EVENTS, HOOK_MARKER, claudeHookReport, claudeSettingsPath, installClaudeHooks, markHooksConnected } from "../lib/claude-hooks.mjs";
 import { claudeActivityDir } from "../lib/claude.mjs";
 import { DismissStore } from "../lib/dismiss.mjs";
 import { LinkStore } from "../lib/links.mjs";
@@ -212,6 +212,29 @@ test("uninstall removes the app, its skills, and only its hooks; settings stay u
   } finally { box.cleanup(); }
 });
 
+test("a full reset also takes Goblin Horde's settings backups and the skill folders it made, and says so", async () => {
+  const box = sandbox();
+  try {
+    // The Codex home already had a skills folder of its own; the Claude config folder had none.
+    mkdirSync(join(box.codexDir, "skills", "their-skill"), { recursive: true });
+    await install(box.ctx, { ...box.flags, claudeHooks: true });
+    await install(box.ctx, box.flags); // An update keeps what the first install made.
+    const settingsPath = claudeSettingsPath(box.claudeDir);
+    for (const suffix of [".goblin-horde-backup", ".goblin-horde-backup.last"]) assert.ok(existsSync(`${settingsPath}${suffix}`), suffix);
+    const kept = await uninstall(box.ctx, box.flags);
+    assert.ok(existsSync(`${settingsPath}.goblin-horde-backup`), "backups stay without --remove-settings");
+    assert.equal(existsSync(join(box.claudeDir, "skills")), false, "the empty skills folder Goblin Horde made goes");
+    assert.ok(existsSync(join(box.codexDir, "skills", "their-skill")), "a skills folder that was there before stays");
+    assert.ok(!kept.messages.some((line) => /backup/i.test(line)));
+    await install(box.ctx, { ...box.flags, claudeHooks: true });
+    const reset = await uninstall(box.ctx, { ...box.flags, removeSettings: true });
+    for (const suffix of [".goblin-horde-backup", ".goblin-horde-backup.last"]) assert.equal(existsSync(`${settingsPath}${suffix}`), false, suffix);
+    assert.ok(reset.messages.some((line) => /Removed Goblin Horde's backups of .*settings\.json/.test(line)), reset.messages.join("\n"));
+    assert.equal(existsSync(join(box.claudeDir, "skills")), false);
+    assert.deepEqual(settingsOf(box), userSettings);
+  } finally { box.cleanup(); }
+});
+
 test("a full reset knows every file the viewer's stores keep in the state folder", () => {
   const dir = join(tmpdir(), "goblin-state-names");
   const named = new Set(stateFiles(dir).map((file) => basename(file)));
@@ -236,6 +259,53 @@ test("upgrading from 0.5 with Claude Code connected says once what the hook now 
     assert.equal(notice(await install(box.ctx, { ...box.flags, claudeHooks: false })).length, 0, "not when disconnecting");
     as05();
     assert.equal(notice(await install(box.ctx, box.flags)).length, 0, "not when it was never connected");
+  } finally { box.cleanup(); }
+});
+
+test("Claude Code connected from the window stays connected on an update, and install says so once", async () => {
+  const box = sandbox();
+  try {
+    await install(box.ctx, box.flags);
+    // The window's "Connect Claude Code…" adds this installation's hooks; the installer was not involved.
+    installClaudeHooks({ settingsPath: claudeSettingsPath(box.claudeDir), nodePath: process.execPath,
+      hookPath: join(box.flags.installDir, "claude-hook.mjs"), stateDir: box.flags.stateDir });
+    const said = (result, pattern) => result.messages.filter((line) => pattern.test(line));
+    const updated = await install(box.ctx, box.flags);
+    assert.deepEqual(said(updated, /not connected/i), [], updated.messages.join("\n"));
+    assert.equal(said(updated, /stays connected/i).length, 1, updated.messages.join("\n"));
+    assert.deepEqual(said(updated, /Connected Claude Code: added/), []);
+    assert.equal(JSON.parse(readFileSync(join(box.flags.installDir, MARKER), "utf8")).claudeHooks.installed, true);
+    assert.equal(claudeHookReport(claudeSettingsPath(box.claudeDir)).state, "installed");
+    // The window also notes the connection in the marker, every other field kept.
+    const markerPath = join(box.flags.installDir, MARKER);
+    writeFileSync(markerPath, JSON.stringify({ ...JSON.parse(readFileSync(markerPath, "utf8")), claudeHooks: { installed: false, declined: true } }));
+    assert.equal(markHooksConnected(markerPath, claudeSettingsPath(box.claudeDir)), true);
+    const marked = JSON.parse(readFileSync(markerPath, "utf8"));
+    assert.deepEqual(marked.claudeHooks, { installed: true, settingsPath: claudeSettingsPath(box.claudeDir), declined: false });
+    assert.equal(marked.installRoot, box.flags.installDir);
+    assert.equal(markHooksConnected(join(box.root, "no-marker.json"), "x"), false);
+    // Connected by install, then installed again with the same answer: it stays connected, it is not added again.
+    const again = await install(box.ctx, { ...box.flags, claudeHooks: true });
+    assert.deepEqual(said(again, /Connected Claude Code: added/), []);
+    assert.equal(said(again, /stays connected/i).length, 1);
+  } finally { box.cleanup(); }
+});
+
+test("every command install prints for a custom install folder names that folder", async () => {
+  const box = sandbox();
+  try {
+    const commands = (result) => result.messages.flatMap((line) => line.match(/node "[^"]*goblin\.mjs"[^.;)(]*/g) || []);
+    const flag = `--install-dir "${box.flags.installDir}"`;
+    const plain = await install(box.ctx, box.flags);
+    const hooked = await install(box.ctx, { ...box.flags, claudeHooks: true });
+    for (const result of [plain, hooked]) {
+      assert.ok(commands(result).length > 0, result.messages.join("\n"));
+      for (const command of commands(result)) assert.ok(command.includes(flag), command);
+      assert.ok(!result.messages.some((line) => /\bnode goblin\.mjs\b/.test(line)), "never the bare source-folder command");
+    }
+    // The installed skill tells an agent the same command.
+    const skill = readFileSync(join(box.codexDir, "skills", "goblin-horde-manager", "SKILL.md"), "utf8");
+    assert.ok(skill.includes(`goblin.mjs" ${flag}`) || skill.includes(`goblin.mjs' --install-dir '${box.flags.installDir}'`), skill.slice(0, 400));
   } finally { box.cleanup(); }
 });
 

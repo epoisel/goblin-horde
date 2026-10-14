@@ -15,7 +15,7 @@ import { DiscoveryGate, LinkStore, claudePanePairs, drivenTerminals, identityMar
 import { OrcaReader } from "./lib/orca.mjs";
 import { ClaudeReader, goblinStateDir } from "./lib/claude.mjs";
 import { ExtensionReader, EXTENSION_PARTY, extensionFeedDir } from "./lib/extension.mjs";
-import { claudeHookReport, claudeSettingsPath, installClaudeHooks } from "./lib/claude-hooks.mjs";
+import { claudeHookReport, claudeSettingsPath, installClaudeHooks, markHooksConnected } from "./lib/claude-hooks.mjs";
 import { diagnosticReport } from "./lib/diagnostics.mjs";
 import { ownsShortcut, setSignInStart, shortcutPaths } from "./lib/shortcuts.mjs";
 import { claudeConfigDir } from "./lib/paths.mjs";
@@ -770,6 +770,8 @@ const handler = async (request, response) => {
       if (!installed) return json(response, 409, { error: "Install Goblin Horde first (node goblin.mjs install), then connect Claude Code." });
       const result = installClaudeHooks({ settingsPath: claudeSettingsPath(claudeConfigDir()), nodePath: process.execPath,
         hookPath: join(here, "claude-hook.mjs"), stateDir });
+      // The installer then knows it was connected, as if it had done it (see markHooksConnected).
+      markHooksConnected(join(here, "goblin-horde-install.json"), result.settingsPath);
       return json(response, 200, { changed: result.changed, message: result.changed
         ? "Connected Claude Code. New sessions appear here; restart sessions that were already open. Undo with: node goblin.mjs hooks remove"
         : "Claude Code was already connected." });

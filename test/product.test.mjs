@@ -127,7 +127,7 @@ test("install leaves another copy's Start menu entry alone and says how to start
     assert.ok(ownsShortcut(box.menu, other), "still the other copy's");
     assert.equal(box.written.some((item) => item.link === box.menu), false);
     assert.equal(result.startMenu, false, "setup does not point at a Start menu entry that opens another copy");
-    assert.ok(result.messages.some((line) => /opens another Goblin Horde copy, so it was left as it is.*goblin\.mjs" start/.test(line)),
+    assert.ok(result.messages.some((line) => /opens another Goblin Horde copy, so it was left as it is.*goblin\.mjs" --install-dir "[^"]+" start/.test(line)),
       result.messages.join("\n"));
     // This copy's own entry is still refreshed on the next install.
     rmSync(box.menu);
