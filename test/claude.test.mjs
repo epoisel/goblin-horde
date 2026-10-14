@@ -29,7 +29,7 @@ function records(...inputs) {
   }).filter(Boolean);
 }
 
-test("hook records keep what each call works on, filtered, and never output, errors, or notification text", () => {
+test("hook records keep what each call works on, filtered, and never output, errors, or notification titles", () => {
   const PASSWORD = ["Hunter2", "Secret!"].join("");
   const [prompt, pre, post, failed, notice, crash] = records(
     hook("UserPromptSubmit", { prompt: `Ship the CSV export for billing-api. The password is ${PASSWORD} for staging.` }),
@@ -44,10 +44,11 @@ test("hook records keep what each call works on, filtered, and never output, err
   assert.equal(prompt.transcript, "/home/someone/.claude/projects/x/transcript.jsonl");
   assert.match(pre.detail, /^curl -H 'Authorization: Bearer \[secret removed\]' https:\/\/api\.example\.test\/v1$/);
   assert.equal(pre.transcript, undefined, "only the session's own events say where its transcript is");
-  // A result, a failure, a notice, and a crash carry no text of their own.
+  // A result, a failure, and a crash carry no text of their own; a needs-you notice keeps what it tells the person, filtered.
   assert.equal(post.detail, undefined);
   assert.equal(failed.target, "notes.md");
-  const stored = JSON.stringify([prompt, pre, post, failed, notice, crash]);
+  assert.equal(notice.message, "Claude needs permission to run rm -rf PRIVATE-DIR");
+  const stored = JSON.stringify([prompt, pre, post, failed, { ...notice, message: "" }, crash]);
   for (const fragment of [PASSWORD, "SECRETTOKEN", "ssh", "10.0.0.5", "PRIVATE-OUTPUT", "PRIVATE-ERROR", "PRIVATE-DIR", "Permission\"", "call the endpoint"]) {
     assert.ok(!stored.includes(fragment), `stored records leaked ${fragment}`);
   }

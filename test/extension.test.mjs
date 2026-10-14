@@ -77,6 +77,16 @@ test("records become a stable party with a lead and child goblins", () => {
   assert.equal(tester.turnStates.at(-1).error, "Two checks failed.");
 });
 
+test("a needs event with no question does not alert: there is nothing to show the person", () => {
+  const lines = [base({ event: "start", lead: true }), base({ event: "needs", at: NOW - 5_000 })];
+  const [party] = buildExtensionParties(lines.map((raw) => validateExtensionRecord(raw, { now: NOW }).record), { now: NOW });
+  const [lead] = party.agents;
+  assert.equal(lead.ask, null);
+  assert.equal(lead.needsInput, false);
+  assert.notEqual(lead.attention, "needs");
+  assert.notEqual(lead.status, "waiting");
+});
+
 test("a turn quiet for hours is stale, not working", () => {
   const records = [validateExtensionRecord(base({ event: "start", at: NOW - 3 * 3_600_000 }), { now: NOW }).record];
   const [party] = buildExtensionParties(records, { now: NOW });

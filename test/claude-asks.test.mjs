@@ -359,6 +359,48 @@ test("a notice with no captured request still names the open call, and a reply's
   assert.equal(ended.attention, "quiet");
 });
 
+test("a notice keeps Claude Code's own words, filtered and clipped, and they are the ask when nothing else is", () => {
+  const FAKE = ["ghp", "abcdefghijklmnopqrstuvwxyz0123"].join("_");
+  const [notice] = records(hook("Notification", { notification_type: "permission_prompt", title: "Needs you",
+    message: `Claude needs your permission to use Bash with ${FAKE} ${"and more ".repeat(80)}` }));
+  assert.match(notice.message, /^Claude needs your permission to use Bash with \[secret removed\]/);
+  assert.ok(notice.message.length <= 300);
+  assert.ok(!JSON.stringify(notice).includes("Needs you"), "the title is not kept");
+  // Quiet notices keep no text.
+  assert.equal(records(hook("Notification", { notification_type: "idle_prompt", message: "Claude is waiting for your input" }))[0].message, undefined);
+  // An old hook install captured no request: the notice's own words say what is asked.
+  const asked = main(records(
+    hook("UserPromptSubmit", {}, NOW),
+    hook("PreToolUse", pre("WebFetch", { url: "https://docs.example.test/csv" }, { tool_use_id: "toolu_W9" }), NOW + 1),
+    hook("Notification", { notification_type: "permission_prompt", message: "Claude needs your permission to use WebFetch" }, NOW + 6000),
+  ), NOW + 60_000);
+  assert.equal(asked.ask.text, "Claude needs your permission to use WebFetch");
+  assert.equal(asked.ask.command, "https://docs.example.test/csv");
+  const elicited = main(records(hook("UserPromptSubmit", {}, NOW),
+    hook("Notification", { notification_type: "elicitation_dialog", message: "billing-api needs the invoice period" }, NOW + 1)), NOW + 60_000);
+  assert.equal(elicited.ask.text, "billing-api needs the invoice period");
+});
+
+test("an old closing question does not come back when the session is resumed or busy elsewhere", () => {
+  const HOUR = 60 * 60_000;
+  const replied = records(
+    hook("UserPromptSubmit", {}, NOW),
+    hook("Stop", { last_assistant_message: "Exported 120 invoices. Want me to open a pull request?" }, NOW + 1000),
+  );
+  assert.equal(main(replied, NOW + 60_000).ask.kind, "reply");
+  // Resumed the next day (or a minute later): the question was from the old conversation.
+  for (const at of [NOW + 26 * HOUR, NOW + 2 * 60_000]) {
+    const resumed = main([...replied, ...records(hook("SessionStart", { source: "resume" }, at))], at + 5000);
+    assert.equal(resumed.ask, null, `resumed at +${at - NOW} ms`);
+    assert.notEqual(resumed.attention, "needs");
+  }
+  // A subagent still at work keeps the session fresh, but the question itself is over six hours old.
+  const busy = records(hook("PreToolUse", pre("Grep", { pattern: "invoice" }, { agent_id: "sub4", tool_use_id: "toolu_G4" }), NOW + 6.4 * HOUR));
+  const later = main([...replied, ...busy], NOW + 6.5 * HOUR);
+  assert.equal(later.ask, null);
+  assert.notEqual(later.attention, "needs");
+});
+
 test("an ask stops alerting after askMs of session quiet, and the key is stable for the same ask", () => {
   const list = records(
     hook("UserPromptSubmit", {}, NOW),
