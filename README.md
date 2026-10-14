@@ -6,7 +6,7 @@ Goblin Horde shows what your agents visibly did, never their private reasoning (
 
 **Full detail, on this computer only.** When you select a goblin, the viewer reads that one agent's own records here to show what Codex and Claude Code hide: the request that started its current work, its plan, what is running now, every command with its exit code, time and an output tail, the files it changed with line counts, and what it last said. A Claude Code goblin's detail comes from the newest part of its session transcript, a Codex goblin's from the chat's newest turns and its session file's plan, and an Orca goblin's from its terminal screen and Orca's orchestration inbox and task list. Nothing from these reads is saved, all of it passes the credential filter, and it is never sent to a phone: `/api/agent` answers this computer only, so a phone keeps the summaries above.
 
-> **Status: early (0.5).** It works day to day on Windows, but expect rough edges. The macOS desktop widget is implemented but **has not yet been tested on a real Mac**. See [Platform support](#platform-support) and the [macOS smoke check](#on-macos).
+> **Status: early (0.6).** It works day to day on Windows, but expect rough edges. The macOS desktop widget is implemented but **has not yet been tested on a real Mac**. See [Platform support](#platform-support) and the [macOS smoke check](#on-macos).
 
 ## Platform support
 

@@ -37,6 +37,13 @@ test("the team package holds exactly the allowlist, byte for byte", () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("the README's status line names the release package.json ships", () => {
+  const { version } = JSON.parse(readFileSync(join(sourceDir, "package.json"), "utf8"));
+  const [major, minor] = version.split(".");
+  const readme = readFileSync(join(sourceDir, "README.md"), "utf8");
+  assert.match(readme, new RegExp(String.raw`\*\*Status: early \(${major}\.${minor}\)\.\*\*`));
+});
+
 test("the privacy scan catches personal paths, addresses, credentials, and state files", () => {
   const findings = (text, file = "x.md") => scanFile(file, text).map((item) => item.rule);
   assert.deepEqual(findings("Open C:\\Users\\alice\\AppData"), ["a Windows user folder"]);
