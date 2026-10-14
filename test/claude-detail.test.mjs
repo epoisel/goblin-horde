@@ -333,7 +333,7 @@ test("a transcript's end names its session: a name the person gave, else Claude 
   assert.equal(transcriptNames([user(0, "Hi"), assistant(1, [{ type: "text", text: "Hello" }])].join("\n")), null);
   // The last prompt's first line, cleaned; a slash command or a nudge names nothing.
   assert.deepEqual(transcriptNames([user(10, "Ship the CSV export\nwith headers"), lastPrompt("Ship the CSV export\nwith headers")].join("\n")),
-    { custom: "", derived: "Ship the CSV export", derivedAt: T0 + 10_000 });
+    { custom: "", titled: "", first: "", last: "Ship the CSV export", derived: "Ship the CSV export", derivedAt: T0 + 10_000 });
   assert.equal(transcriptNames([lastPrompt("/compact"), lastPrompt("yes, continue")].join("\n")), null);
   // Claude Code's own title beats the last prompt; an older version's summary stands in when there is none.
   const titled = [lastPrompt("Fix the importer"), named("ai-title", "aiTitle", "Repair invoice importer"), lastPrompt("Fix the importer")].join("\n");
@@ -402,6 +402,22 @@ test("the naming budget goes to the newest sessions first, and an unchanged tran
   } finally { box.cleanup(); }
 });
 
+test("a session is named for the first real prompt at the head of its transcript, never a later follow-up", () => {
+  const box = sandbox();
+  try {
+    const folder = join(box.configDir, "projects", encodeProjectDir(CWD));
+    mkdirSync(folder, { recursive: true });
+    const file = join(folder, "sess-h.jsonl");
+    writeFileSync(file, `${[line({ type: "system", timestamp: ts(0) }), user(1, "<command-name>/model</command-name>"), user(2, "continue"),
+      user(3, "Repair the invoice importer"), assistant(4, [{ type: "text", text: "Which layout?" }]), user(5, "Option 2"), lastPrompt("Option 2")].join("\n")}\n`);
+    const titles = new ClaudeTitleReader({ locator: new ClaudeDetailReader({ configDir: box.configDir }), clock: () => 1000 });
+    titles.startPoll();
+    const names = titles.title({ session: "sess-h", cwd: CWD });
+    assert.equal(names.first, "Repair the invoice importer");
+    assert.equal(sessionTitle({ hook: "" }, names), "Repair the invoice importer");
+  } finally { box.cleanup(); }
+});
+
 test("a renamed session keeps its name when the transcript grows past the naming records", () => {
   const box = sandbox();
   try {
@@ -423,7 +439,7 @@ test("a renamed session keeps its name when the transcript grows past the naming
   } finally { box.cleanup(); }
 });
 
-test("sessions are named from their transcripts, a few per poll, and a newer hook prompt still wins", () => {
+test("sessions are named from their transcripts, a few per poll, and a later hook prompt never renames one", () => {
   const box = sandbox();
   try {
     const folder = join(box.configDir, "projects", encodeProjectDir(CWD));
@@ -464,12 +480,16 @@ test("sessions are named from their transcripts, a few per poll, and a newer hoo
     assert.equal(old.agents[0].name, "Repair the invoice importer");
     assert.equal(old.agents[0].id, "claude-agent:sess-a", "ids never change");
     assert.equal(old.cwd, CWD);
-    // A newer prompt the hook recorded wins over a derived name; the person's own name always wins.
+    // The transcript's first prompt names the session; a later prompt the hook recorded does not rename it.
     const prompted = feed([hookRecord("aa000003", T0 + 50_000, "UserPromptSubmit", { prompt: "Now add the archive flag" })], T0 + 60_000);
-    assert.equal(prompted.name, "Now add the archive flag");
-    assert.equal(sessionTitle({ hook: "Now add the archive flag", hookAt: 50 }, { custom: "release-train", derived: "x", derivedAt: 0 }), "release-train");
-    assert.equal(sessionTitle({ hook: "Old prompt", hookAt: 1_000 }, { custom: "", derived: "Newer prompt", derivedAt: 1_000 + 120_000 }), "Newer prompt",
-      "a transcript prompt newer than any the hook saw names the session");
+    assert.equal(prompted.name, "Repair the invoice importer");
+    // The order: the person's own name, then Claude Code's title, then the first real prompt (the
+    // transcript's, else the first the hook saw), and only then the newest prompt in view.
+    assert.equal(sessionTitle({ hook: "Fix the export" }, { custom: "release-train", titled: "Repair importer", first: "Repair it" }), "release-train");
+    assert.equal(sessionTitle({ hook: "Fix the export" }, { custom: "", titled: "Repair importer", first: "Repair it" }), "Repair importer");
+    assert.equal(sessionTitle({ hook: "Fix the export" }, { custom: "", titled: "", first: "Repair it", last: "Then add a test" }), "Repair it");
+    assert.equal(sessionTitle({ hook: "Fix the export" }, { custom: "", titled: "", first: "", last: "Then add a test" }), "Fix the export");
+    assert.equal(sessionTitle({}, { custom: "", titled: "", first: "", last: "Then add a test" }), "Then add a test");
     assert.equal(sessionTitle({}, null), "");
     // Sessions outside the scene's window are not looked at.
     let asked = 0;

@@ -258,7 +258,7 @@ test("a session becomes one party with a stable main goblin and distinct subagen
   assert.ok(later.agents.some((agent) => agent.id === explore.id));
 });
 
-test("a session is named for what it was last asked to do; its subagents for their tasks", () => {
+test("a session is named for the first thing it was asked to do; its subagents for their tasks", () => {
   const list = records(
     hook("SessionStart", { source: "startup" }, NOW),
     hook("UserPromptSubmit", { prompt: "## Add a CSV export for invoices, with tests.\nUse the streaming writer." }, NOW + 1),
@@ -277,11 +277,16 @@ test("a session is named for what it was last asked to do; its subagents for the
   assert.equal(byId[`claude-agent:${SESSION}:agent-explore`].nickname, "Explore: Find invoice fixtures");
   assert.equal(byId[`claude-agent:${SESSION}:agent-review`].name, "Code-reviewer: Review the CSV writer", "matched by type, not order");
   assert.equal(byId[`claude-agent:${SESSION}:agent-extra`].nickname, "Explore subagent", "no task left: the plain name");
-  // A nudge or a slash command says nothing new, so the name holds; a real prompt renames it.
+  // The session keeps the name of its first real prompt: no follow-up, nudge, or slash command renames it.
   const more = [...list, ...records(hook("UserPromptSubmit", { prompt: "yes, please continue" }, NOW + 7), hook("UserPromptSubmit", { prompt: "/compact" }, NOW + 8))];
   assert.equal(buildClaudeSessions(more, { now: NOW + 10_000 })[0].name, "Add a CSV export for invoices, with tests");
-  const renamed = [...more, ...records(hook("UserPromptSubmit", { prompt: "Now make the export button stream rows" }, NOW + 9))];
-  assert.equal(buildClaudeSessions(renamed, { now: NOW + 10_000 })[0].name, "Now make the export button stream rows");
+  const followUps = ["No, only delete dist/old", "Option 2", "looks good, commit it", "What about the second one?", "Now make the export button stream rows"];
+  const later = [...more, ...records(...followUps.map((prompt, index) => hook("UserPromptSubmit", { prompt }, NOW + 9 + index)))];
+  assert.equal(buildClaudeSessions(later, { now: NOW + 10_000 })[0].name, "Add a CSV export for invoices, with tests");
+  // A session whose first prompts were only nudges is named for the first one that says what it is for.
+  const nudged = records(hook("UserPromptSubmit", { prompt: "continue" }, NOW), hook("UserPromptSubmit", { prompt: "Option 2" }, NOW + 1),
+    hook("UserPromptSubmit", { prompt: "Fix the CSV export headers" }, NOW + 2), hook("UserPromptSubmit", { prompt: "Then add a test" }, NOW + 3));
+  assert.equal(buildClaudeSessions(nudged, { now: NOW + 10_000 })[0].name, "Fix the CSV export headers");
   // Without a prompt worth a name, the folder and a short id still tell sessions apart.
   assert.match(buildClaudeSessions(records(hook("SessionStart", {}, NOW)), { now: NOW + 1000 })[0].name, /^Claude · goblin-horde · [0-9a-f]{4}$/);
 });
@@ -294,6 +299,11 @@ test("prompt titles are one plain line, cut at a word, with nudges and commands 
   assert.ok(promptTitle("x".repeat(200)).length <= 60);
   for (const nudge of ["yes", "Continue.", "go ahead!", "ok", "/clear", "<command-name>/model</command-name>", "  ", "42", "[secret removed]"])
     assert.equal(promptTitle(nudge), "", nudge);
+  // Replies to the agent's own question name nothing either.
+  for (const reply of ["No, only delete dist/old", "Option 2", "option B", "looks good, commit it", "What about the second one?", "How about the other layout?",
+    "Yes, but keep the old flag", "LGTM, ship it", "Actually, use tabs", "the second one", "2"])
+    assert.equal(promptTitle(reply), "", reply);
+  assert.equal(promptTitle("Why is the nightly build slow?"), "Why is the nightly build slow?", "a real question is still a name");
 });
 
 test("hooks map cleanly to needs-you, failure, finish, and end states", () => {
