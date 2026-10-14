@@ -528,6 +528,10 @@ class GoblinWidget:
             # The viewer answered with the last list it built while a fresher one is on its way.
             note = f"Updated {int(self.board_age)}s ago"
         self.window.update_counts(counts, note)
+        # The taskbar and alt-tab say when someone is waiting.
+        title = f"Goblin Horde · {counts.needs} need{'s' if counts.needs == 1 else ''} you" if counts.needs else "Goblin Horde"
+        if self.root.title() != title:
+            self.root.title(title)
         self.window.update_sources(source_chips(self.sources))
         self.update_banner()
         items, hidden, needs = strip_items(actors, now_ms=now, memory=self.strip_memory)

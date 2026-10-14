@@ -675,8 +675,12 @@ class DetailView:
         theme, px = self.theme, self.theme.px
         while len(self.plan_rows) < len(steps):
             row = tk.Frame(card.body, bg=CARD)
-            glyph = tk.Label(row, text="", bg=CARD, font=theme.symbol, width=2, anchor="n")
-            glyph.pack(side="left", anchor="n")
+            # A fixed-width gutter, so steps line up whatever glyph (and font) marks them.
+            gutter = tk.Frame(row, bg=CARD, width=px(24), height=theme.line_height(theme.body))
+            gutter.pack_propagate(False)
+            gutter.pack(side="left", anchor="n")
+            glyph = tk.Label(gutter, text="", bg=CARD, font=theme.symbol, anchor="w")
+            glyph.pack(side="left", fill="y")
             text = card.label(row, margin=px(30))
             text.pack(side="left", fill="x", expand=True)
             self.plan_rows.append((row, glyph, text))
@@ -686,9 +690,10 @@ class DetailView:
                     row.pack_forget()
                 continue
             status = steps[index].get("status")
-            mark, ink, words = ("✓", LIVELY, FAINT) if status == "done" else ("▸", GOLD, IVORY) if status == "active" \
+            mark, ink, words = ("✓", LIVELY, FAINT) if status == "done" else ("▶", GOLD, IVORY) if status == "active" \
                 else ("○", FAINT, MUTED)
-            set_text(glyph, mark, fg=ink)
+            # The triangle runs large in the symbol font; at the small size it matches ✓ and ○.
+            set_text(glyph, mark, fg=ink, font=theme.small if status == "active" else theme.symbol)
             set_text(text, " ".join(str(steps[index].get("text")).split()), fg=words,
                      font=theme.strong if status == "active" else theme.body)
             if not row.winfo_manager():
