@@ -36,6 +36,8 @@
   "lib/models.mjs",
   "lib/orca.mjs",
   "lib/pairing.mjs",
+  "lib/phone.mjs",
+  "lib/public-view.mjs",
   "lib/paths.mjs",
   "lib/processes.mjs",
   "lib/shortcuts.mjs",
