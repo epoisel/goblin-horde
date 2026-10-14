@@ -1,6 +1,6 @@
 /**
  * Party grouping, priority, and goblin actions for the browser viewer. No DOM: the same rules as
- * the Windows widget (party_layout.py, goblin_motion.py) so both surfaces rank and animate alike.
+ * the desktop window (horde_model.py, goblin_motion.py) so both surfaces rank and animate alike.
  * Everything here reads public activity only; nothing reveals private reasoning.
  */
 

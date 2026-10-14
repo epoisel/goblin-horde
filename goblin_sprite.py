@@ -29,9 +29,9 @@ ART_EYES = {"front": "eyesFwd", "right": "eyesRight", "up": "eyesFwd", "squint":
 ART_COL, ART_ROW = 1, 1
 FEET_ROW = ART_ROW + len(ART["layers"]["body"]["rows"]) - 1
 # A goblin, its cue, its staff, its hop, and its shadow fit in SPAN_W x SPAN_H sprite pixels; layouts
-# reserve that times the scale and place the sprite origin TOP_ROOM rows below the box's top
-# (headgear and a hop reach two rows above the origin, the shadow ends 20 rows below it).
-SPAN_W = 26
+# reserve that times the scale and place the sprite origin at the box's left, TOP_ROOM rows below its
+# top (headgear and a hop reach two rows above the origin, the shadow ends 20 rows below it).
+SPAN_W = 24
 SPAN_H = 22
 TOP_ROOM = 2
 _ART_RUNS: dict[str, tuple[tuple[int, int, int, str], ...]] = {}
