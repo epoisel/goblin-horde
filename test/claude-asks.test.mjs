@@ -244,8 +244,11 @@ test("a notice with no captured request still names the open call, and a reply's
   assert.equal(actor.ask.answerHere, null);
   assert.equal(actor.attention, "needs");
   assert.equal(actor.now, null, "a finished turn is doing nothing");
-  // A new prompt moves on from it.
+  // A new prompt moves on from it, and the session ending clears it.
   assert.equal(main([...replied, ...records(hook("UserPromptSubmit", {}, NOW + 2))]).ask, null);
+  const ended = main([...replied, ...records(hook("SessionEnd", { reason: "prompt_input_exit" }, NOW + 2))]);
+  assert.equal(ended.ask, null);
+  assert.equal(ended.attention, "quiet");
 });
 
 test("an ask stops alerting after askMs of session quiet, and the key is stable for the same ask", () => {

@@ -34,8 +34,9 @@ test("a finished answer that ends in a question asks for a reply, with a sentenc
   const later = compose(actor, { now: NOW + FEED_LIMITS.askWindowMs + 1000 });
   assert.equal(later.ask, null);
   assert.equal(later.attention, "quiet");
-  // A plain answer asks nothing.
+  // A plain answer asks nothing; a chat that cannot take a reply here is answered in Codex.
   assert.equal(chat([finalTurn("Done. All tests pass.")]).ask, null);
+  assert.equal(codexAsk({ ...actor, replyAvailable: false }, { now: NOW }).answerHere, null);
 });
 
 test("a Codex subagent thread never asks the person, but its pending approvals still do", () => {
