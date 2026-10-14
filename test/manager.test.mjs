@@ -9,11 +9,16 @@ import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HOOK_EVENTS, HOOK_MARKER, claudeHookReport, claudeSettingsPath } from "../lib/claude-hooks.mjs";
+import { claudeActivityDir } from "../lib/claude.mjs";
+import { DismissStore } from "../lib/dismiss.mjs";
+import { LinkStore } from "../lib/links.mjs";
+import { CODE_FILE, PHONE_FILE } from "../lib/phone.mjs";
 import { claudeConfigDir } from "../lib/paths.mjs";
-import { MARKER, SKILL_MARKER, autostart, childEnv, install, locate, makeContext, readManifest, start, status, stop, uninstall } from "../lib/manager.mjs";
+import { WatchList } from "../lib/watch.mjs";
+import { MARKER, SKILL_MARKER, autostart, childEnv, install, locate, makeContext, readManifest, start, stateFiles, status, stop, uninstall, versionBefore } from "../lib/manager.mjs";
 import { isAlive, listProcesses, stopPid } from "../lib/processes.mjs";
 import { main, parseArgs } from "../goblin.mjs";
 
@@ -191,10 +196,46 @@ test("uninstall removes the app, its skills, and only its hooks; settings stay u
     await assert.rejects(install(box.ctx, box.flags), /did not install/);
     rmSync(join(box.claudeDir, "skills", "goblin-horde-manager"), { recursive: true });
     await install(box.ctx, box.flags);
-    await uninstall(box.ctx, { ...box.flags, removeSettings: true });
+    // Every file the viewer, the widget, and the hook write there.
+    const written = ["watched.json", "dismissed.json", "links.json", "phone.json", "goblins.json.unreadable"];
+    for (const name of written) writeFileSync(join(box.flags.stateDir, name), "{}");
+    mkdirSync(join(box.flags.stateDir, "claude"), { recursive: true });
+    writeFileSync(join(box.flags.stateDir, "claude", "activity.jsonl"), "");
+    const reset = await uninstall(box.ctx, { ...box.flags, removeSettings: true });
     assert.equal(existsSync(join(box.flags.stateDir, "pairing-code.txt")), false);
     assert.equal(existsSync(join(box.flags.stateDir, "goblins.json")), false);
+    for (const name of written) assert.equal(existsSync(join(box.flags.stateDir, name)), false, name);
+    assert.equal(existsSync(join(box.flags.stateDir, "claude")), false);
+    assert.deepEqual(readdirSync(box.flags.stateDir), ["my-notes.txt"], "only the person's own file is left");
+    assert.ok(reset.messages.some((line) => /watched chats, dismissed alerts, party links/.test(line)));
     assert.equal(readFileSync(join(box.flags.stateDir, "my-notes.txt"), "utf8"), "not ours", "unrelated files are never removed");
+  } finally { box.cleanup(); }
+});
+
+test("a full reset knows every file the viewer's stores keep in the state folder", () => {
+  const dir = join(tmpdir(), "goblin-state-names");
+  const named = new Set(stateFiles(dir).map((file) => basename(file)));
+  const stores = [new WatchList({ dir }).file, new DismissStore({ dir }).file, new LinkStore({ dir }).file];
+  for (const file of [...stores, join(dir, PHONE_FILE), join(dir, CODE_FILE), join(claudeActivityDir({ env: { GOBLIN_HORDE_STATE_DIR: dir } }), "activity.jsonl")])
+    assert.ok(named.has(basename(file)), basename(file));
+});
+
+test("upgrading from 0.5 with Claude Code connected says once what the hook now records", async () => {
+  const box = sandbox();
+  try {
+    await install(box.ctx, { ...box.flags, claudeHooks: true });
+    const markerPath = join(box.flags.installDir, MARKER);
+    const as05 = () => writeFileSync(markerPath, JSON.stringify({ ...JSON.parse(readFileSync(markerPath, "utf8")), version: "0.5.0" }));
+    const notice = (result) => result.messages.filter((line) => /also records redacted commands, prompt excerpts, questions, and todo lists/.test(line));
+    as05();
+    const upgraded = await install(box.ctx, box.flags);
+    assert.equal(notice(upgraded).length, 1, upgraded.messages.join("\n"));
+    assert.match(notice(upgraded)[0], /hooks remove/);
+    assert.equal(notice(await install(box.ctx, box.flags)).length, 0, "said once: 0.6 over 0.6 is quiet");
+    as05();
+    assert.equal(notice(await install(box.ctx, { ...box.flags, claudeHooks: false })).length, 0, "not when disconnecting");
+    as05();
+    assert.equal(notice(await install(box.ctx, box.flags)).length, 0, "not when it was never connected");
   } finally { box.cleanup(); }
 });
 
@@ -318,6 +359,15 @@ test("emit validates and records into the isolated state folder", async () => {
     assert.equal(await main(["emit", "--feed", "relay", "--check", "--record", bad, "--state-dir", box.flags.stateDir, "--install-dir", box.flags.installDir], box.ctx), 1);
     assert.ok(box.lines.some((line) => /"output" is not accepted/.test(line)));
   } finally { box.cleanup(); }
+});
+
+test("release versions compare by number, and an unknown one counts as older", () => {
+  assert.equal(versionBefore("0.5.0", "0.6.0"), true);
+  assert.equal(versionBefore("0.6.0", "0.6.0"), false);
+  assert.equal(versionBefore("0.10.0", "0.6.0"), false);
+  assert.equal(versionBefore("1.0", "0.6.0"), false);
+  assert.equal(versionBefore("", "0.6.0"), true);
+  assert.equal(versionBefore(undefined, "0.6.0"), true);
 });
 
 test("argument parsing rejects unknown options", () => {

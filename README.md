@@ -30,7 +30,7 @@ Open it again any time from the Start menu (**Goblin Horde**). To update, unzip 
 
 **On macOS or Linux** (or from a terminal on Windows), open a terminal in the unzipped folder and run `node goblin.mjs setup`, the same guided install. `node goblin.mjs install` installs without questions; add `--claude-hooks` to also show Claude Code sessions (see [Connecting Claude Code](#connecting-claude-code)). On macOS, the native desktop widget still needs a smoke test on a real Mac (see [On macOS](#on-macos)); the browser viewer is the fallback.
 
-Install copies the app into your own user folder and starts it. It never needs administrator rights, and it starts at sign-in only if you say so (change it later from the widget's ⋯ menu, **Start with Windows**, or with `node goblin.mjs autostart on|off`).
+Install copies the app into your own user folder and starts it. It never needs administrator rights, and it starts at sign-in (as the goblin strip; the Start menu entry opens the window) only if you say so (change it later from the widget's ⋯ menu, **Start with Windows**, or with `node goblin.mjs autostart on|off`).
 
 **Uninstall** on Windows by double-clicking **Uninstall Goblin Horde.cmd** (in the unzipped folder or the app folder); it asks before removing anything. Or use the installed copy's manager:
 
@@ -41,7 +41,7 @@ node ~/"Library/Application Support/GoblinHorde/app/goblin.mjs" uninstall       
 node ~/.local/share/goblin-horde/goblin.mjs uninstall                               # Linux
 ```
 
-This stops Goblin Horde and removes its app files, its manager skills, and its own Claude Code hook entries. Add `--remove-settings` to also delete your layout settings, pairing code, and recorded activity. If you installed with `--install-dir`, use the `goblin.mjs` in that folder instead.
+This stops Goblin Horde and removes its app files, its manager skills, and its own Claude Code hook entries. Add `--remove-settings` to also delete your layout settings, pairing code, watched chats, dismissed alerts, party links, and recorded activity. If you installed with `--install-dir`, use the `goblin.mjs` in that folder instead.
 
 **About the overview video.** The [overview video (GoblinHorde-Overview.mp4)](https://github.com/epoisel/goblin-horde/releases/download/v0.2.0-preview/GoblinHorde-Overview.mp4), recorded with v0.2 before the goblin tribes and model badges, is published separately as a release asset. It is not tracked in the source tree and is not inside the installer ZIP, and you do not need it to install or run Goblin Horde.
 
@@ -87,7 +87,7 @@ Use `--install-dir` and `--state-dir` (or `GOBLIN_HORDE_INSTALL_DIR` and `GOBLIN
 - `status` says what is installed, running, and connected. `doctor` checks prerequisites, the Claude Code connection, extension feeds, and the port. `doctor --report` prints a short report that is safe to paste into a bug report: versions, connection states, counts, error categories, and timings, with no chats, names, folder paths, addresses, or pairing codes. The Horde window's **⋯** menu has **Copy diagnostic report**, which copies the same report.
 - The Horde window's header names every feed: **Codex ✓ · Claude + · Orca ✓ · Feeds –**. Hover a feed for what it means and whether it takes replies here. Click **Codex ✕** to reconnect a stopped Codex at once (it is also retried by itself, after 5 seconds and then up to a minute apart), and **Claude +** to connect Claude Code after you confirm (the same change as `hooks install`, with a backup). When the viewer answers with a list it built a while ago, the header says **Updated 45s ago**, and it names any gap in what it could read.
 - `open --compact` opens the small browser view.
-- `uninstall` stops Goblin Horde, removes its app files, its manager skills, and only its own Claude Code hook entries (the ones that run this installation's receiver; another Goblin Horde copy's hooks stay). Your layout settings and phone pairing code stay for a later reinstall. `uninstall --remove-settings` also removes those and the recorded activity. Neither deletes the ZIP or the folder you unzipped.
+- `uninstall` stops Goblin Horde, removes its app files, its manager skills, and only its own Claude Code hook entries (the ones that run this installation's receiver; another Goblin Horde copy's hooks stay). Your layout settings and phone pairing code stay for a later reinstall. `uninstall --remove-settings` also removes those, the watched chats, dismissed alerts, party links, and the recorded activity. Neither deletes the ZIP or the folder you unzipped.
 
 If port 43917 is busy, install and start stop with a message saying whether another program or another Goblin Horde copy has it. Close that copy (**⋯** → **Quit Goblin Horde** in its window, or right-click its goblins) and run the installer again, or choose another port from a terminal in the unzipped folder: `node goblin.mjs setup --port 43918`. On Windows, `manage.ps1 -Action Install|Start|Stop|Status|Uninstall` still works and runs the same manager.
 
