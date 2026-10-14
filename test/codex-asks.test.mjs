@@ -183,12 +183,101 @@ test("now names the step running in an open turn, else Thinking, and nothing onc
   assert.equal(open([{ type: "fileChange", id: "f1", status: "inProgress", changes: [{ path: "/w/src/csv.js" }] }]).now.title, "Editing csv.js");
   assert.equal(open([{ type: "webSearch", id: "w1", status: "inProgress", query: "rfc 4180" }]).now.kind, "web");
   assert.equal(open([{ type: "mcpToolCall", id: "m1", status: "inProgress", server: "tracker", tool: "create_issue", arguments: {} }]).now.title, "Using create issue");
-  const thinking = open([{ type: "commandExecution", id: "c2", status: "completed", command: "ls" }]);
-  assert.deepEqual(thinking.now, { kind: "think", title: "Thinking", startedAt: NOW - 300_000 });
+  // Nothing running: the newest finished step, in the past tense, first seen at the chat's last update.
+  const finished = open([{ type: "commandExecution", id: "c2", status: "completed", command: "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -Command 'gh pr view 214'" }]);
+  assert.deepEqual(finished.now, { kind: "command", title: "Ran gh pr view 214", detail: "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -Command 'gh pr view 214'",
+    startedAt: NOW - 60_000, done: true });
+  assert.equal(open([{ type: "commandExecution", id: "c5", status: "completed", command: "npm test", exitCode: 1 }]).now.title, "Ran npm test · exit 1");
+  assert.equal(open([{ type: "fileChange", id: "f2", status: "completed", changes: [{ path: "/w/src/csv.ts" }] }]).now.title, "Edited csv.ts");
+  assert.equal(open([{ type: "agentMessage", id: "a1", phase: "commentary", text: "Checking the PR.\nThen merging." }]).now.title, "Said: Checking the PR.");
+  // Thinking only before the turn's first step.
+  assert.equal(open([]).now.title, "Thinking");
   assert.equal(withCodexNow(chat([finalTurn("Done.")])).now, null);
+  // A finished step keeps the time it was first seen too; a running step and a finished one are never the same.
+  assert.equal(carryNowStart({ ...finished, now: { ...finished.now, startedAt: NOW - 90_000 } }, finished).now.startedAt, NOW - 90_000);
+  assert.equal(carryNowStart({ ...finished, now: { ...finished.now, done: false } }, finished).now.startedAt, NOW - 60_000);
   // A step seen on an earlier read keeps its first time.
   const earlier = { ...running, now: { ...running.now, startedAt: NOW - 99_000 } };
   assert.equal(carryNowStart(earlier, running).now.startedAt, NOW - 99_000);
   const other = open([{ type: "commandExecution", id: "c3", status: "inProgress", command: "npm run build" }]);
   assert.equal(carryNowStart(earlier, other).now.startedAt, NOW - 60_000);
+});
+
+// A chat running in the Codex app: its session file's own records say what it is doing.
+const event = (secondsAgo, payload) => line(secondsAgo, "event_msg", payload);
+const item = (secondsAgo, value) => event(secondsAgo, { type: "item_completed", turn_id: "t1", item: value,
+  started_at_ms: NOW - secondsAgo * 1000 - 500, completed_at_ms: NOW - secondsAgo * 1000 });
+const turnStart = (secondsAgo) => [event(secondsAgo, { type: "task_started", turn_id: "t1" }), line(secondsAgo, "turn_context", { approval_policy: "never" }),
+  line(secondsAgo, "response_item", { type: "message", role: "user", content: [{ type: "input_text", text: "Ship it" }] })];
+const exec = (secondsAgo, id, code) => line(secondsAgo, "response_item", { type: "custom_tool_call", name: "exec", call_id: id, input: code });
+const execOutput = (secondsAgo, id) => line(secondsAgo, "response_item", { type: "custom_tool_call_output", call_id: id, output: "PRIVATE-OUTPUT" });
+const reasoning = (secondsAgo) => line(secondsAgo, "response_item", { type: "reasoning", summary: [], encrypted_content: "PRIVATE" });
+
+test("a chat running elsewhere says what it is doing from its session file, with the records' own times", () => {
+  const dir = mkdtempSync(join(tmpdir(), "goblin-codex-now-"));
+  try {
+    const file = join(dir, "rollout-2026-10-13-now.jsonl");
+    const nowOf = (...lines) => { writeFileSync(file, `${lines.join("\n")}\n`); return inspectRollout(file, { now: NOW }).now; };
+    // An earlier turn's open call never leaks into this one.
+    const earlier = [exec(3000, "old", "await tools.exec_command({ cmd: \"npm run build\" });"), ...turnStart(600)];
+    // The newest call still waiting for its output is what runs, since that record's time.
+    const running = [...earlier, reasoning(300), exec(290, "c1", "const r = await tools.exec_command({ cmd: \"npm test -- --grep csv\" });")];
+    assert.deepEqual(nowOf(...running), { kind: "command", title: "Running npm test -- --grep csv", detail: "npm test -- --grep csv", startedAt: NOW - 290_000 });
+    // Its command finished: the newest finished step, as of its own time, in the past tense.
+    const ran = [...running, item(200, { type: "CommandExecution", id: "exec-1", command: ["pwsh.exe", "-Command", "gh pr view 214"],
+      parsed_cmd: [{ type: "unknown", cmd: "gh pr view 214" }], status: "completed", exit_code: 0, aggregated_output: "PRIVATE-OUTPUT" }), execOutput(199, "c1"),
+      line(199, "token_usage_record"), event(199, { type: "token_count" })];
+    assert.deepEqual(nowOf(...ran), { kind: "command", title: "Ran gh pr view 214", detail: "pwsh.exe -Command gh pr view 214", startedAt: NOW - 200_000, done: true });
+    // Reasoning after it: Thinking, since the newest record (how long it has been quiet), never since the turn began.
+    assert.deepEqual(nowOf(...ran, reasoning(60)), { kind: "think", title: "Thinking", startedAt: NOW - 60_000 });
+    // What it said along the way, first line only.
+    const said = item(30, { type: "AgentMessage", id: "msg_1", phase: "commentary", content: [{ type: "Text", text: "The PR is green.\nMerging it next." }] });
+    assert.equal(nowOf(...ran, reasoning(60), said).title, "Said: The PR is green.");
+    // Edits: an open patch names its files; a finished change names them in the past tense.
+    const patch = line(20, "response_item", { type: "custom_tool_call", name: "apply_patch", call_id: "p1",
+      input: "*** Begin Patch\n*** Update File: src/invoices/csv.ts\n@@\n-a\n+b\n*** End Patch" });
+    assert.deepEqual(nowOf(...ran, patch), { kind: "edit", title: "Editing csv.ts", detail: "src/invoices/csv.ts", startedAt: NOW - 20_000 });
+    const edited = item(10, { type: "FileChange", id: "exec-2", changes: { "C:/work/billing-api/src/invoices/csv.ts": { type: "update", unified_diff: "PRIVATE" } }, status: "completed" });
+    assert.equal(nowOf(...ran, patch, edited, execOutput(9, "p1")).title, "Edited csv.ts");
+    // A failed command says so; a plan update and a tool call read in plain words.
+    const failed = item(5, { type: "CommandExecution", id: "exec-3", command: ["npm", "test"], parsed_cmd: [], status: "failed", exit_code: 1 });
+    assert.equal(nowOf(...ran, failed).title, "Ran npm test · exit 1");
+    const plan = line(4, "response_item", { type: "function_call", name: "update_plan", call_id: "u1", arguments: JSON.stringify({ plan: [{ step: "Ship", status: "in_progress" }] }) });
+    assert.equal(nowOf(...ran, plan).title, "Updating the plan");
+    assert.equal(nowOf(...ran, plan, line(3, "response_item", { type: "function_call_output", call_id: "u1" })).title, "Updated the plan");
+    const mcp = item(2, { type: "McpToolCall", id: "call_9", server: "tracker", tool: "create_issue", status: "completed" });
+    assert.equal(nowOf(...ran, mcp).title, "Used tracker · create_issue");
+    // Nothing yet in this turn but the person's message: Thinking since then.
+    assert.deepEqual(nowOf(...turnStart(45)), { kind: "think", title: "Thinking", startedAt: NOW - 45_000 });
+    // Nothing kept is output, reasoning, or a diff.
+    assert.doesNotMatch(JSON.stringify([nowOf(...ran), nowOf(...ran, patch, edited)]), /PRIVATE/);
+
+    // The actor keeps the file's line (withCodexNow keeps it, carryNowStart carries nothing over it).
+    writeFileSync(file, `${ran.join("\n")}\n`);
+    const thread = { id: "chat-elsewhere-01", updatedAt: (NOW - 20_000) / 1000, path: file, turns: [{ id: "t1", status: "interrupted", completedAt: null, items: [] }] };
+    const actor = withCodexNow(withApprovalGuess(markRunningElsewhere(transformThread(thread), { now: NOW }), file, { now: NOW }));
+    assert.equal(actor.runningElsewhere, true);
+    assert.deepEqual(actor.now, { kind: "command", title: "Ran gh pr view 214", detail: "pwsh.exe -Command gh pr view 214", startedAt: NOW - 200_000, done: true });
+    const before = { ...actor, now: { ...actor.now, startedAt: NOW - 999_000 } };
+    assert.equal(carryNowStart(before, actor).now.startedAt, NOW - 200_000);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a session file that has not changed since it was scanned is not read again", () => {
+  let reads = 0;
+  let info = { size: 4000, mtimeMs: Date.now() - 60_000 };
+  const text = [...turnStart(120), exec(100, "c1", "await tools.exec_command({ cmd: \"npm test\" });")].join("\n");
+  const options = { now: NOW, readTail: () => { reads++; return text; }, stat: () => info };
+  const path = "C:/codex/sessions/rollout-cached.jsonl";
+  assert.equal(inspectRollout(path, options).now.title, "Running npm test");
+  assert.equal(inspectRollout(path, options).now.title, "Running npm test");
+  assert.equal(reads, 1, "same size and time: the earlier scan is reused");
+  info = { size: 4100, mtimeMs: Date.now() - 30_000 };
+  inspectRollout(path, options);
+  assert.equal(reads, 2, "the file grew: it is read again");
+  // A file written within the last moment may change again without its time moving: never reused.
+  info = { size: 4200, mtimeMs: Date.now() };
+  inspectRollout(path, options);
+  inspectRollout(path, options);
+  assert.equal(reads, 4);
 });

@@ -60,6 +60,11 @@ test("a phone gets the kinds, counts, and times only", () => {
   // Nothing to strip is fine.
   assert.deepEqual(publicView({ agents: [{ id: "chat-0001", ask: null, now: null, progress: null }] }, { phone: true }).agents[0],
     { id: "chat-0001", ask: null, now: null, progress: null });
+  // A finished step reads in the past tense on a phone too, without its command or words.
+  const done = publicView({ agents: [{ id: "chat-0002", now: { kind: "command", title: "Ran deploy --prod", detail: "deploy --prod", startedAt: NOW, done: true } },
+    { id: "chat-0003", now: { kind: "message", title: "Said: Shipping to eu-west", startedAt: NOW, done: true } }] }, { phone: true }).agents;
+  assert.deepEqual(done[0].now, { kind: "command", startedAt: NOW, done: true, title: "Ran a command" });
+  assert.equal(done[1].now.title, "Wrote an update");
 });
 
 // ------------------------------------------------------------------ What each route gives a phone
