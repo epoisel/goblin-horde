@@ -16,6 +16,8 @@ const HELPER = "019a-helper-0002";
 
 function world({ twin = false, desktop = false, proof = twin, orcaHangs = false } = {}) {
   const log = { turns: [], launched: [], switched: [], sent: [], replies: [], orcaSnapshots: 0 };
+  let now = 50_000;
+  let fileStat = () => ({ size: 10, mtimeMs: 20 });
   const codexActor = { id: CHAT, source: "codex", name: "Ship CSV export", cwd: CWD, status: "notLoaded", attention: "working", updatedAt: 1000,
     turnStates: [{ id: "t2", status: "inProgress" }], activities: [] };
   const helperActor = { id: HELPER, source: "codex", name: "Check importer", cwd: CWD, parentThreadId: CHAT, attention: "quiet", turnStates: [], activities: [] };
@@ -71,11 +73,12 @@ function world({ twin = false, desktop = false, proof = twin, orcaHangs = false 
     codexPlans: { read: (file) => (file ? { steps: [{ text: "Fix the header", status: "active" }], at: 9, source: "plan" } : null) },
     desktop: { linkFor: (session) => (desktop && session === "sess-desktop" ? "claude://code/continue?session=local_0a1b2c3d" : "") },
     launch: (url) => { log.launched.push(url); return true; },
-    stat: () => ({ size: 10, mtimeMs: 20 }),
+    stat: () => fileStat(),
     branch: () => "main",
-    clock: () => 50_000,
+    clock: () => now,
   });
-  return { service, log, setWriter: (value) => { writer = value; }, threads };
+  return { service, log, setWriter: (value) => { writer = value; }, threads, scene,
+    advance: (ms) => { now += ms; }, setStat: (next) => { fileStat = next; } };
 }
 
 test("actor ids are checked before anything is read", () => {
@@ -151,7 +154,7 @@ test("a session the Claude app runs opens with the app's own link, nothing else"
 });
 
 test("a Codex chat's detail is built from its newest turns, which are reread only when the chat changes", async () => {
-  const { service, log, threads } = world();
+  const { service, log, threads, advance } = world();
   const detail = await service.detail(CHAT);
   assert.deepEqual(detail.mission, { text: "Fix the header row", from: "you", at: 1_780_000_100_000 });
   assert.equal(detail.plan.source, "plan");
@@ -164,11 +167,36 @@ test("a Codex chat's detail is built from its newest turns, which are reread onl
   await service.detail(CHAT);
   assert.equal(log.turns.length, 1, "an unchanged chat is not read again");
   threads[0].updatedAt = 2000;
+  advance(5000);
   await service.detail(CHAT);
   assert.equal(log.turns.length, 2);
   const helper = await service.detail(HELPER);
   assert.equal(helper.agent.controls.message, null);
   assert.equal(helper.agent.party.coordinatorId, CHAT);
+});
+
+test("a working Codex chat is reread at most every five seconds, and only its detail is kept, briefly", async () => {
+  const { service, log, advance, setStat } = world();
+  let size = 10;
+  setStat(() => ({ size: size++, mtimeMs: size })); // The session file grows on every look, as it does while the chat works.
+  for (let poll = 0; poll < 6; poll++) { await service.detail(CHAT); advance(2000); }
+  assert.equal(log.turns.filter(([id]) => id === CHAT).length, 2, "twelve seconds of two-second polls read the chat twice");
+  for (const entry of service.codexCache.values()) assert.equal("thread" in entry, false, "the raw turns are not kept");
+  advance(61_000);
+  await service.detail(HELPER);
+  assert.equal(service.codexCache.has(CHAT), false, "a chat nobody looked at for a minute is forgotten");
+});
+
+test("a Codex step's timer counts from when the step was first seen, not from when the turn started", async () => {
+  const { service, scene } = world();
+  scene.agents[0].now = { kind: "command", title: "Running npm run lint", detail: "npm run lint", startedAt: 1_780_000_150_000 };
+  assert.equal((await service.detail(CHAT)).now.startedAt, 1_780_000_150_000);
+  // The scene names it with its shell wrapper; the detail without: still the same step.
+  scene.agents[0].now = { kind: "command", title: "Running powershell -Command 'npm run lint'", detail: "powershell -Command 'npm run lint'", startedAt: 1_780_000_160_000 };
+  assert.equal((await service.detail(CHAT)).now.startedAt, 1_780_000_160_000);
+  // Another step: the scene's time is not this one's.
+  scene.agents[0].now = { kind: "command", title: "Running npm test", detail: "npm test", startedAt: 1_780_000_170_000 };
+  assert.equal((await service.detail(CHAT)).now.startedAt, 1_780_000_100_000);
 });
 
 test("Codex open launches its link; message replies, or says to open the app when the chat is open there", async () => {
