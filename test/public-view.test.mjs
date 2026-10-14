@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { publicRequests, publicView, withoutQuestions } from "../lib/public-view.mjs";
 import { makeAsk } from "../lib/asks.mjs";
 import { mobileStatus, requestAnswer } from "../lib/phone.mjs";
+import { orcaAgentActivity } from "../lib/orca.mjs";
+import { buildClaudeSessions } from "../lib/claude.mjs";
 
 // Synthetic credential shapes, joined at runtime so the source holds no credential-shaped literal.
 const STRIPE = ["sk", "live", "4eC39HqLyjWDarjtT1zdp7dc"].join("_");
@@ -181,6 +183,38 @@ test("a phone approves or declines, but Codex's questions are answered on this c
   assert.deepEqual(requestAnswer(question, { answers: { db: " Postgres " } }, { local: true }), { result: { answers: { db: { answers: ["Postgres"] } } } });
   assert.equal(requestAnswer(question, { answers: {} }, { local: true }).status, 400);
   assert.equal(requestAnswer({ method: "item/other" }, {}, { local: true }).status, 400);
+});
+
+test("a phone never gets the start of a question that an excerpt cut off: the cut line goes", () => {
+  // A Claude Code reply excerpt (600 characters) ends mid-way through the question it closes with.
+  const reply = (description) => ({ agents: [{ id: "claude-agent:s9", source: "claude", activities: [{ id: "u1", kind: "update", title: "Answer", description }] }] });
+  const phone = (description) => publicView(reply(description), { phone: true }).agents[0].activities[0].description;
+  assert.equal(phone("Exported 120 invoices.\nAll 42 tests pass. Should I also convert the older rep…"), "Exported 120 invoices.\n…");
+  assert.equal(phone("Should I also convert the older rep…"), "(The rest of this reply is on this computer.)");
+  assert.equal(phone("Exported 120 invoices.\nAll 42 tests pass."), "Exported 120 invoices.\nAll 42 tests pass.", "an excerpt that was not cut is whole");
+  assert.equal(publicView(reply("Exported.\nShould I also conv…")).agents[0].activities[0].description, "Exported.\nShould I also conv…", "this computer keeps it");
+  // An Orca agent's last message is cut at 1,200 characters too, and says so.
+  const message = `Exported 120 invoices.\n${"The writer now quotes every field. ".repeat(40)}Should I also convert the older reports?`;
+  const [said] = orcaAgentActivity({ paneKey: "1:2", lastAssistantMessage: message, state: "working", updatedAt: NOW });
+  assert.ok(said.description.endsWith("…") && said.description.length <= 1200);
+  const shown = publicView({ agents: [{ id: "orca-agent:1:2", source: "orca", activities: [said] }] }, { phone: true }).agents[0].activities[0].description;
+  assert.equal(shown, "Exported 120 invoices.\n…");
+});
+
+test("a phone reads a Claude Code subagent by its type only, never by the task it was given", () => {
+  const SESSION = "c0ffee00-0000-4000-8000-0000000000b7";
+  const record = (id, at, event, extra = {}) => ({ v: 1, id, at, event, session: SESSION, cwd: "/work/billing-api", ...extra });
+  const [party] = buildClaudeSessions([
+    record("bb000001", NOW, "UserPromptSubmit", { prompt: "Fix the invoice importer" }),
+    record("bb000002", NOW + 1, "PreToolUse", { tool: "Agent", toolUse: "toolu_1", detail: "Find the private customer list", agentKind: "Explore" }),
+    record("bb000003", NOW + 2, "SubagentStart", { agent: "a1", agentType: "Explore" }),
+  ], { now: NOW + 5000 });
+  const child = party.agents.find((agent) => agent.childOf);
+  assert.equal(child.name, "Explore: Find the private customer list", "this computer sees its task");
+  const phone = publicView({ agents: party.agents }, { phone: true }).agents.find((agent) => agent.childOf);
+  assert.equal(phone.name, "Explore subagent");
+  assert.equal(phone.nickname, "Explore subagent");
+  assert.ok(!JSON.stringify(phone).includes("private customer"));
 });
 
 test("a reply's questions are cut line by line, and ordinary lines stay", () => {
