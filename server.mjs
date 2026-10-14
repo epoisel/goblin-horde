@@ -22,6 +22,9 @@ import { CODEX_NOT_FOUND, codexCommand, codexSourceState } from "./lib/codex-bin
 import { Pairing, sessionCookie } from "./lib/pairing.mjs";
 import { PhoneAccess, loadPairingCode, localOnlyRefusal } from "./lib/phone.mjs";
 import { publicRequests, publicView } from "./lib/public-view.mjs";
+import { AgentDetailService, ClaudeDesktopIndex, agentRoutes } from "./lib/agent-detail.mjs";
+import { ClaudeDetailReader } from "./lib/claude-detail.mjs";
+import { CodexPlanReader } from "./lib/codex-detail.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = resolve(here, "public");
@@ -560,6 +563,24 @@ function recentScene() {
   if (allSceneCached && age < ALL_SCENE_STALE_MS) return Promise.resolve(allSceneCached);
   return allScenePending;
 }
+// One agent in full, and Open / Message for it: this computer only (see lib/agent-detail.mjs).
+const agentRoute = agentRoutes(new AgentDetailService({
+  scene: () => recentScene(),
+  codex: {
+    listThreads: () => reader.listThreads(),
+    latestTurns: async (id, limit) => { await reader.ready; return reader.latestTurns(id, limit); },
+    readThread: (id) => reader.readThread(id, { turns: OVERVIEW_TURNS }),
+    canView: (id) => canViewThread(id),
+    sendReply: (id, text) => reader.sendReply(id, text),
+    listRequests: (id) => reader.listRequests(id),
+  },
+  claude: { snapshot: () => claude.snapshot(), records: () => claude.records },
+  orca, extensions,
+  claudeDetail: new ClaudeDetailReader({ configDir: claudeConfigDir() }),
+  codexPlans: new CodexPlanReader(),
+  desktop: new ClaudeDesktopIndex(),
+}));
+
 const mime = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8" };
 const commonHeaders = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer" };
 
@@ -702,6 +723,7 @@ const handler = async (request, response) => {
     try { return await handlePair(request, response, origin); }
     catch { return fail(response, 500, "Unable to pair this phone."); }
   }
+  if (await agentRoute(request, response, { url, local: isLocal(request), origin, json, readBody, fail })) return;
   if (["/api/reconnect", "/api/connect-claude", "/api/autostart", "/api/phone", "/api/phone/reset", "/api/quit"].includes(url.pathname)
     && request.method === "POST") {
     // Only this computer may restart a source, change Claude Code's settings, turn phone access on, or quit; never a paired phone.

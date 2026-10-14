@@ -172,6 +172,11 @@ test("classification is honest about questions, failures, and running turns", ()
   assert.equal(classifyOrca({ status: "error", updatedAt: NOW }, { now: NOW }), "failed");
   assert.equal(classifyOrca({ status: "waiting", updatedAt: NOW - 50 * HOUR }, { now: NOW }), "quiet");
   assert.equal(classifyOrca({ status: "done", updatedAt: NOW }, { now: NOW }), "quiet");
+  // Orca "waiting" is needs-you only with a real prompt on screen; asking the coordinator is work; idle is quiet.
+  assert.equal(classifyOrca({ status: "waiting", updatedAt: NOW - 1000 }, { now: NOW }), "quiet");
+  assert.equal(classifyOrca({ status: "waiting", updatedAt: NOW - 1000, ask: { kind: "permission", text: "Allow?" } }, { now: NOW }), "needs");
+  assert.equal(classifyOrca({ status: "waiting", updatedAt: NOW - 1000, waitingOn: { who: "coordinator" } }, { now: NOW }), "working");
+  assert.equal(classifyOrca({ status: "unavailable", updatedAt: NOW - 1000, ask: { kind: "permission", text: "Allow?" } }, { now: NOW }), "quiet");
 });
 
 test("the feed carries every active member beyond five plus a few quiet ones", () => {
@@ -213,11 +218,13 @@ test("every returned member carries the feed classification the widget groups by
   const oldQuestion = actor("old-ask", classifyCodex({ updatedAt: NOW - 12 * HOUR, status: "notLoaded",
     turnStates: [{ status: "completed", questions: ["Ship it?"] }] }, { now: NOW }), 12 * HOUR);
   const blocked = { id: "orca-blocked", source: "orca", status: "blocked", updatedAt: NOW - 1000 };
+  // Orca's "waiting" alone is an agent idle at its prompt: only a real prompt (ask) needs the person.
   const waiting = { id: "orca-wait", source: "orca", status: "waiting", updatedAt: NOW - 1000 };
+  const prompt = { id: "orca-prompt", source: "orca", status: "waiting", updatedAt: NOW - 1000, ask: { kind: "permission", text: "Do you want to proceed?" } };
   const done = { id: "orca-done", source: "orca", status: "done", updatedAt: NOW };
-  const { agents } = selectFeedMembers([oldQuestion], [blocked, waiting, done], { now: NOW });
+  const { agents } = selectFeedMembers([oldQuestion], [blocked, waiting, prompt, done], { now: NOW });
   const byId = Object.fromEntries(agents.map((item) => [item.id, item.attention]));
-  assert.deepEqual(byId, { "old-ask": "quiet", "orca-blocked": "working", "orca-wait": "waiting", "orca-done": "quiet" });
+  assert.deepEqual(byId, { "old-ask": "quiet", "orca-blocked": "working", "orca-wait": "quiet", "orca-prompt": "needs", "orca-done": "quiet" });
   // The source snapshot is left untouched.
   assert.equal(blocked.attention, undefined);
 });
