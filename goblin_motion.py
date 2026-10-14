@@ -51,6 +51,11 @@ def stamp_ms(value) -> float | None:
     return stamp * 1000 if stamp < 1e12 else stamp
 
 
+def settled(actor: dict) -> bool:
+    """The feed calls this member quiet: an old question or failure is history, not news."""
+    return str(actor.get("attention") or "").lower() == "quiet"
+
+
 def goblin_action(actor: dict, *, needs_input: bool = False, now_ms: float | None = None) -> str:
     """Return idle, search, build, think, waiting, or trouble.
 
@@ -60,9 +65,10 @@ def goblin_action(actor: dict, *, needs_input: bool = False, now_ms: float | Non
     turns = actor.get("turnStates") or []
     activities = actor.get("activities") or []
     latest = activities[-1] if activities else {}
-    if needs_input or state == "waiting" or (turns and turns[-1].get("questions")):
+    quiet = settled(actor)
+    if needs_input or (not quiet and (state == "waiting" or (turns and turns[-1].get("questions")))):
         return "waiting"
-    if state == "failed" or latest.get("status") == "failed" or latest.get("exitCode") not in (None, 0):
+    if not quiet and (state == "failed" or latest.get("status") == "failed" or latest.get("exitCode") not in (None, 0)):
         return "trouble"
     turn_state = str(turns[-1].get("status") or "").lower() if turns else ""
     active = turn_state in ACTIVE if turns else (state in ACTIVE or str(latest.get("status") or "").lower() in ACTIVE)
@@ -214,19 +220,23 @@ class MemberStatus(NamedTuple):
 
 
 def member_status(actor: dict, connection: str = "LIVE") -> MemberStatus:
-    """One public, readable status for the stream, roster, and overview."""
+    """One public, readable status for the stream, roster, and overview.
+
+    A member the feed calls quiet is never FAILED or ASKED YOU: that failure or question has aged
+    out (the stream's log still shows it)."""
     turns = actor.get("turnStates") or []
     latest = (actor.get("activities") or [{}])[-1]
     state = str(actor.get("status") or "").lower()
     if state in ("", "notloaded", "unknown") and turns:
         state = str(turns[-1].get("status") or "").lower()
+    quiet = settled(actor)
     if actor.get("needsInput") or connection == "NEEDS YOU":
         return MemberStatus("!", "NEEDS YOU", "#dfbb78", 1)
-    if state == "failed" or latest.get("status") == "failed" or latest.get("exitCode") not in (None, 0):
+    if not quiet and (state == "failed" or latest.get("status") == "failed" or latest.get("exitCode") not in (None, 0)):
         return MemberStatus("✕", "FAILED", "#e18a78", 2)
     if connection == "CONNECTING":
         return MemberStatus("…", "LOADING", "#b3c9b4", 8)
-    if turns and turns[-1].get("questions"):
+    if not quiet and turns and turns[-1].get("questions"):
         return MemberStatus("?", "ASKED YOU", "#dfbb78", 1)
     if connection in ("STALE", "OFFLINE"):
         return MemberStatus("·", connection, "#82978a", 7)

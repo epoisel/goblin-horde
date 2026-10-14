@@ -7,13 +7,12 @@ import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
-import { markAwaitingApproval, markRunningElsewhere, transformThread } from "./lib/transform.mjs";
-import { rolloutAwaitsApproval } from "./lib/rollout.mjs";
-import { describeModel } from "./lib/models.mjs";
+import { markRunningElsewhere, transformThread } from "./lib/transform.mjs";
+import { withApprovalGuess } from "./lib/rollout.mjs";
 import { readDescendants } from "./lib/descendants.mjs";
-import { classifyCodex, composeAllScene, noteReadFailure, planCodexReads, pruneCache } from "./lib/feed.mjs";
+import { classifyCodex, composeAllScene, listedThread, noteReadFailure, planCodexReads, pruneCache } from "./lib/feed.mjs";
 import { WatchList } from "./lib/watch.mjs";
-import { LinkStore, drivenTerminals, joinParties } from "./lib/links.mjs";
+import { DiscoveryGate, LinkStore, drivenTerminals, joinParties, joinSubset } from "./lib/links.mjs";
 import { OrcaReader } from "./lib/orca.mjs";
 import { ClaudeReader, goblinStateDir } from "./lib/claude.mjs";
 import { ExtensionReader, EXTENSION_PARTY, extensionFeedDir } from "./lib/extension.mjs";
@@ -21,7 +20,7 @@ import { claudeHookReport, claudeSettingsPath, installClaudeHooks } from "./lib/
 import { diagnosticReport } from "./lib/diagnostics.mjs";
 import { removeShortcut, shortcutPaths, shortcutSpec, writeShortcut } from "./lib/shortcuts.mjs";
 import { claudeConfigDir } from "./lib/paths.mjs";
-import { codexCommand } from "./lib/codex-bin.mjs";
+import { CODEX_NOT_FOUND, codexCommand, codexSourceState } from "./lib/codex-bin.mjs";
 import { Pairing, sessionCookie } from "./lib/pairing.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -74,7 +73,6 @@ function findLanIp() {
 const lanIp = process.env.LAN_IP || findLanIp();
 if (lanIp && !isPrivateIPv4(lanIp)) throw new Error("LAN_IP must be a private IPv4 address");
 const defaultThreadId = process.env.CODEX_VIEWER_THREAD_ID || "all";
-const asMilliseconds = (value) => Number(value) < 1e12 ? Number(value || 0) * 1000 : Number(value || 0);
 
 // Turns read per chat: the all-parties view needs only the latest work; an opened chat shows more.
 const OVERVIEW_TURNS = 3;
@@ -90,6 +88,7 @@ class CodexReader {
     this.threadReads = new Map();
     this.threadAttempts = new Map();
     this.threadFailures = new Map();
+    this.threadSeen = new Set(); // Chats read at least once since start; see planCodexReads.
     this.process = null;
     this.generation = 0;
     this.restarts = 0; // Failed starts in a row; the wait before the next one doubles with each.
@@ -126,7 +125,7 @@ class CodexReader {
       child.stdin.on("error", () => {});
       child.on("error", (error) => {
         if (!current()) return;
-        this.problem = error.code === "ENOENT" ? "The Codex CLI was not found." : "Codex could not be started.";
+        this.problem = error.code === "ENOENT" ? CODEX_NOT_FOUND : "Codex could not be started.";
         this.failAll(error);
         this.scheduleRestart(this.problem);
       });
@@ -263,30 +262,32 @@ class CodexReader {
     await this.ready;
     const thread = await this.latestTurns(threadId, turns);
     links.observe(threadId, drivenTerminals(thread.turns));
-    const actor = markRunningElsewhere(transformThread(thread));
-    // A turn running in the Codex app may be held on an approval this reader never sees; its session file can tell.
-    return actor.runningElsewhere && rolloutAwaitsApproval(thread.path) ? markAwaitingApproval(actor) : actor;
+    // A turn running in the Codex app may be held on an approval this reader never sees; its session
+    // file can tell, however long ago the chat last changed (the timestamp freezes while it waits).
+    return withApprovalGuess(markRunningElsewhere(transformThread(thread)), thread.path);
   }
 
   /**
    * Learn which chat drives an Orca pane nobody is known to drive yet. A chat is only read while in
    * use, so one that started Opus and is now quiet would never be noticed: scan recently updated
-   * chats (their newest turns, command lines only), a few per refresh, each at most every 10 minutes.
+   * chats (their newest turns, command lines only), a few per run, each at most every 10 minutes.
+   * Runs in the background (see `discovery`); returns how many links it learned.
    */
   async discoverLinks(threads, unlinked, { now = Date.now(), budget = 4 } = {}) {
     if (!unlinked) return 0;
     this.linkScans ||= new Map();
     const due = threads.filter((thread) => now - Number(thread.updatedAt) < 24 * 60 * 60_000
       && now - (this.linkScans.get(thread.id) || 0) > 10 * 60_000).slice(0, budget);
+    let learned = 0;
     for (const thread of due) {
       this.linkScans.set(thread.id, now);
       try {
         const page = await this.latestTurns(thread.id, 6);
-        links.observe(thread.id, drivenTerminals(page.turns));
+        if (links.observe(thread.id, drivenTerminals(page.turns))) learned++;
       } catch { /* A chat that cannot be read is tried again later. */ }
     }
     for (const id of this.linkScans.keys()) if (!threads.some((thread) => thread.id === id)) this.linkScans.delete(id);
-    return due.length;
+    return learned;
   }
 
   /** Check the chats in use or watched; reuse saved checks for the rest. */
@@ -294,7 +295,7 @@ class CodexReader {
     const now = Date.now();
     const mustIds = new Set([...this.serverRequests.values()].map((item) => String(item.params.threadId || "")).filter(Boolean));
     const plan = planCodexReads(threads, { now, cache: this.threadReads, attempts: this.threadAttempts, mustIds, watched,
-      failures: this.threadFailures });
+      failures: this.threadFailures, seen: this.threadSeen });
     const fresh = [];
     let failed = 0;
     for (let offset = 0; offset < plan.reads.length; offset += 8) {
@@ -342,15 +343,7 @@ class CodexReader {
           sourceKinds: ["cli", "vscode", "exec", "appServer", "unknown"],
           ...(cursor ? { cursor } : {}),
         });
-        // Status is only what this app-server knows; chats running in another Codex process usually read as notLoaded.
-        threads.push(...(result.data || []).map(({ id, name, preview, updatedAt, recencyAt, cwd, status, model, modelProvider, reasoningEffort }) => ({
-          // A turn that just started moves recencyAt before updatedAt catches up.
-          id, name: String(name || preview || "Untitled chat").slice(0, 120),
-          updatedAt: Math.max(asMilliseconds(updatedAt) || 0, asMilliseconds(recencyAt) || 0), cwd, source: "codex",
-          model: describeModel(model, { provider: modelProvider, effort: reasoningEffort }),
-          ...(status?.type ? { status: status.type } : {}),
-          ...(Array.isArray(status?.activeFlags) && status.activeFlags.length ? { activeFlags: status.activeFlags.map(String) } : {}),
-        })));
+        threads.push(...(result.data || []).map(listedThread));
         if (!result.nextCursor || result.nextCursor === cursor) { complete = true; break; }
         cursor = result.nextCursor;
       }
@@ -444,6 +437,8 @@ const extensions = new ExtensionReader({ dir: extensionFeedDir(stateDir) });
 const watchList = new WatchList({ dir: stateDir });
 // Which Codex chat drives which Orca terminals, and the person's own join or keep-separate choices.
 const links = new LinkStore({ dir: stateDir });
+// Looking for the chat behind an unlinked Orca pane can take several slow reads; no scene waits on it.
+const discovery = new DiscoveryGate();
 
 /** Every Orca and Claude Code member, joined to the chats that drive them. */
 async function joinedMembers() {
@@ -481,13 +476,7 @@ function autostartState() {
 
 /** Codex's connection, in the same shape as the other sources: retried on its own, or by reconnect. */
 function codexSource() {
-  const health = reader.health;
-  const wait = Math.max(0, Math.round((health.nextRetryAt - Date.now()) / 1000));
-  const state = health.state === "ready" ? "ok" : health.state === "unavailable" ? "unavailable" : "starting";
-  const detail = state === "ok" ? "Reading local Codex chats."
-    : state === "starting" ? "Starting Codex…"
-      : `${health.lastError || "Codex stopped."} Retrying${wait ? ` in ${wait}s` : " now"}; reconnect to try at once.`;
-  return { state, detail, replies: true, restarts: reader.restarts, nextRetryAt: health.nextRetryAt || 0 };
+  return codexSourceState(reader.health, { restarts: reader.restarts });
 }
 
 /** Which feeds this viewer can see right now, for the viewer's Feeds panel and `goblin status`. */
@@ -535,15 +524,20 @@ const stats = { startedAt: Date.now(), sceneBuilds: 0, sceneFailures: 0, lastSce
 async function allScene() {
   const [codexResult, orcaResult, claudeResult, extensionResult] = await Promise.allSettled([reader.listThreads(), orca.snapshot(),
     Promise.resolve().then(() => claude.snapshot()), Promise.resolve().then(() => extensions.snapshot())]);
-  const codex = { ok: codexResult.status === "fulfilled", threads: codexResult.value || [], listComplete: reader.threadListComplete, checkFailed: false };
+  const codex = { ok: codexResult.status === "fulfilled", threads: codexResult.value || [], listComplete: reader.threadListComplete, checkFailed: false,
+    missing: codexResult.status === "rejected" && reader.health.lastError === CODEX_NOT_FOUND };
+  const orcaAgents = orcaResult.status === "fulfilled" ? orcaResult.value.workspaces.flatMap((workspace) => workspace.agents) : [];
   if (codex.ok) {
     try { codex.checked = await reader.checkThreadsForOverview(codex.threads, new Set(watchList.ids)); }
     catch { codex.checkFailed = true; }
-    // Recently active Orca panes with no known driver: look for the chat that drives them.
-    const orcaAgents = orcaResult.status === "fulfilled" ? orcaResult.value.workspaces.flatMap((workspace) => workspace.agents) : [];
+    // Recently active Orca panes with no known driver: look for the chat that drives them, in the background.
     const unlinked = orcaAgents.filter((agent) => agent.terminal && !links.auto.has(agent.terminal)
-      && Date.now() - Number(agent.updatedAt) < 24 * 60 * 60_000).length;
-    try { await reader.discoverLinks(codex.threads, unlinked); } catch { /* Links are a bonus, never a failure. */ }
+      && Date.now() - Number(agent.updatedAt) < 24 * 60 * 60_000).map((agent) => agent.terminal).sort();
+    if (unlinked.length) {
+      discovery.start(() => reader.discoverLinks(codex.threads, unlinked.length), unlinked.join(","))
+        // What it learned shows on the next poll; links are a bonus, never a failure.
+        ?.then((learned) => { if (learned) allSceneDirty = true; }, () => {});
+    }
   }
   const scene = composeAllScene({
     codex,
@@ -554,7 +548,11 @@ async function allScene() {
     now: Date.now(),
   });
   // Members a chat drives join its party; the person's own choices are sent so the widget can offer undo.
-  const { agents, joined } = joinParties(scene.agents, links);
+  // Links are worked out over every known member, so a worker whose coordinator was cut from this
+  // scene still finds its party.
+  const claudeAgents = claudeResult.status === "fulfilled" ? claudeResult.value.sessions.flatMap((session) => session.agents) : [];
+  const codexMembers = (codex.checked?.records || []).map(({ thread }) => ({ ...thread, source: "codex" }));
+  const { agents, joined } = joinSubset(scene.agents, [...codexMembers, ...orcaAgents, ...claudeAgents], links);
   // Watched parties are always read and kept on the launchpad, whatever their age.
   return { ...scene, agents, joinedParties: Object.fromEntries(joined), manualLinks: Object.fromEntries(links.manual),
     watched: [...watchList.ids] };

@@ -42,9 +42,12 @@ export function eventAction(item = {}) {
   return "think";
 }
 
+// The feed calls this member quiet: an old question or failure is history, not news.
+const settled = (actor = {}) => lower(actor.attention) === "quiet";
+
 export function needsYou(actor = {}) {
   const turns = actor.turnStates || [];
-  return Boolean(actor.needsInput) || lower(actor.status) === "waiting" || Boolean(turns.at(-1)?.questions?.length);
+  return Boolean(actor.needsInput) || (!settled(actor) && (lower(actor.status) === "waiting" || Boolean(turns.at(-1)?.questions?.length)));
 }
 
 /** idle, search, build, think, waiting, or trouble: an illustration of observable work. */
@@ -53,7 +56,7 @@ export function goblinAction(actor = {}, now = Date.now()) {
   const turns = actor.turnStates || [];
   const activities = actor.activities || [];
   if (needsYou(actor)) return "waiting";
-  if (state === "failed" || state === "error" || failedStep(activities.at(-1))) return "trouble";
+  if (!settled(actor) && (state === "failed" || state === "error" || failedStep(activities.at(-1)))) return "trouble";
   const turnState = turns.length ? lower(turns.at(-1).status) : "";
   const active = turns.length ? ACTIVE.has(turnState) : ACTIVE.has(state) || ACTIVE.has(lower(activities.at(-1)?.status));
   if (!active && lower(actor.attention) !== "working") return "idle";
@@ -101,8 +104,9 @@ export function memberStatus(actor = {}) {
   const turns = actor.turnStates || [];
   const state = lower(actor.status) || lower(turns.at(-1)?.status);
   if (actor.needsInput || state === "waiting") return { word: "WAITING ON YOU", tone: "needs", rank: 1 };
-  if (turns.at(-1)?.questions?.length) return { word: "ASKED YOU", tone: "needs", rank: 1 };
-  if (state === "failed" || state === "error" || failedStep((actor.activities || []).at(-1))) return { word: "FAILED", tone: "failed", rank: 2 };
+  const quiet = settled(actor); // Never ASKED YOU or FAILED once the feed says that has aged out.
+  if (!quiet && turns.at(-1)?.questions?.length) return { word: "ASKED YOU", tone: "needs", rank: 1 };
+  if (!quiet && (state === "failed" || state === "error" || failedStep((actor.activities || []).at(-1)))) return { word: "FAILED", tone: "failed", rank: 2 };
   const action = goblinAction(actor);
   if (action === "search" || action === "build" || action === "think") return { word: ACTION_WORDS[action], tone: "working", rank: 4 };
   if (state === "completed" || state === "done") return { word: "DONE", tone: "done", rank: 5 };

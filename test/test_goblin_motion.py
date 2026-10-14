@@ -54,6 +54,25 @@ class GoblinMotionTests(unittest.TestCase):
         actor["turnStates"] = [{"status": "completed", "questions": [{"prompt": "Choose"}]}]
         self.assertEqual(member_status(actor).word, "ASKED YOU")
 
+    def test_a_failure_or_question_the_feed_calls_quiet_is_history(self):
+        # A Codex chat that failed 31 minutes ago and never changed again: the feed now calls it quiet.
+        failed = {"id": "c", "status": "notLoaded", "attention": "quiet", "updatedAt": T0 - 31 * 60_000,
+                  "turnStates": [{"status": "failed", "questions": []}],
+                  "activities": [{"kind": "command", "title": "Ran project tests", "status": "failed", "exitCode": 1}]}
+        self.assertNotEqual(member_status(failed).word, "FAILED")
+        self.assertEqual(member_status(failed).word, "QUIET")
+        self.assertEqual(goblin_action(failed), "idle")
+        self.assertEqual(member_status({**failed, "attention": "failed"}).word, "FAILED")
+        self.assertEqual(member_status({**failed, "attention": None}).word, "FAILED", "older viewers send no attention")
+        asked = {"id": "q", "status": "completed", "attention": "quiet",
+                 "turnStates": [{"status": "completed", "questions": ["Ship it?"]}], "activities": []}
+        self.assertEqual(member_status(asked).word, "DONE")
+        self.assertEqual(goblin_action(asked), "idle")
+        self.assertEqual(member_status({**asked, "attention": "needs"}).word, "ASKED YOU")
+        # A request still pending always wins.
+        self.assertEqual(member_status({**asked, "needsInput": True}).word, "NEEDS YOU")
+        self.assertEqual(goblin_action(asked, needs_input=True), "waiting")
+
     def test_member_status_uses_public_activity_and_honest_unknown(self):
         actor = {"status": "working", "activities": [{"kind": "research", "title": "Searched the web"}]}
         self.assertEqual(member_status(actor).word, "SEARCHING")

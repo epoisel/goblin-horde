@@ -1,11 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyCodex, classifyOrca, FEED_LIMITS, noteReadFailure, planCodexReads, pruneCache, selectFeedMembers } from "../lib/feed.mjs";
+import { classifyCodex, classifyOrca, composeAllScene, FEED_LIMITS, listedThread, noteReadFailure, planCodexReads, pruneCache,
+  selectFeedMembers } from "../lib/feed.mjs";
 
 const NOW = 1_800_000_000_000;
 const HOUR = 3_600_000;
 const summary = (id, ago, extra = {}) => ({ id, updatedAt: NOW - ago, source: "codex", ...extra });
-const saved = (id, updatedAt, attention, checkedAt = NOW - 1000) => ({ id, updatedAt, checkedAt, attention, thread: { id, updatedAt } });
+// A saved check holds the thread it classified; the plan classifies it again as time passes.
+const TURN_FOR = { working: { status: "inProgress", questions: [] }, needs: { status: "completed", questions: ["Ship it?"] },
+  failed: { status: "failed", questions: [] }, quiet: { status: "completed", questions: [] } };
+const saved = (id, updatedAt, attention, checkedAt = NOW - 1000) => ({ id, updatedAt, checkedAt, attention,
+  thread: { id, updatedAt, turnStates: [{ id: "t", ...TURN_FOR[attention] }] } });
 const actor = (id, attention, ago = 1000) => ({ id, source: "codex", updatedAt: NOW - ago, attention });
 
 test("reads every recent chat, not just five, and never touches dormant ones", () => {
@@ -236,4 +241,78 @@ test("a failure stays urgent for a while after the last activity, then becomes h
   assert.equal(classifyOrca({ status: "error", updatedAt: NOW - 60_000 }, { now: NOW }), "failed");
   assert.equal(classifyOrca({ status: "error", updatedAt: NOW - 3 * HOUR }, { now: NOW }), "quiet");
   assert.equal(classifyOrca({ status: "error" }, { now: NOW }), "quiet", "a failure with no time cannot be fresh");
+});
+
+test("an old failure or question ages out on time without a reread while the chat's timestamp holds still", () => {
+  const T0 = NOW - 1000;
+  const broke = { id: "broke", updatedAt: T0, source: "codex" };
+  const asked = { id: "asked", updatedAt: T0, source: "codex" };
+  const records = { broke: saved("broke", T0, "failed", T0), asked: saved("asked", T0, "needs", T0) };
+  const at = (minutes) => {
+    const cache = new Map(Object.entries(records));
+    const plan = planCodexReads([broke, asked], { now: T0 + minutes * 60_000, cache });
+    assert.equal(plan.reads.length, 0, `no reread at ${minutes} min`);
+    const shown = Object.fromEntries(plan.reused.map((item) => [item.id, item.attention]));
+    return { shown, broke: cache.get("broke")?.attention, asked: cache.get("asked")?.attention };
+  };
+  assert.deepEqual(at(20).shown, { broke: "failed", asked: "needs" });
+  for (const minutes of [31, 120]) {
+    const later = at(minutes);
+    assert.equal(later.broke, "quiet", `${minutes} min`);
+    assert.equal(later.shown.broke, undefined, "a quiet chat this old is no longer followed");
+    assert.equal(later.shown.asked, "needs", "a question stays urgent for its own window");
+  }
+  const dayLater = at(1380);
+  assert.deepEqual(dayLater.shown, {});
+  assert.equal(dayLater.asked, "quiet");
+  // A request still pending keeps it urgent, however old.
+  const cache = new Map([["broke", records.broke]]);
+  const plan = planCodexReads([broke], { now: T0 + 1380 * 60_000, cache, mustIds: new Set(["broke"]) });
+  assert.equal(cache.get("broke").attention, "needs");
+  assert.deepEqual(plan.reads.map((item) => item.id), ["broke"]);
+});
+
+test("after a restart a chat that may have ended in a question is read once, then follows the usual rules", () => {
+  const seen = new Set();
+  const cache = new Map();
+  const asked = summary("asked", 20 * 60_000);
+  const done = summary("done", 40 * 60_000);
+  const old = summary("old", 7 * HOUR);
+  const threads = [asked, done, old];
+  let plan = planCodexReads(threads, { now: NOW, cache, seen });
+  assert.deepEqual(plan.reads.map((item) => item.id).sort(), ["asked", "done"]);
+  // The reads land: one ended in a question, one simply finished.
+  cache.set("asked", saved("asked", asked.updatedAt, "needs", NOW));
+  cache.set("done", saved("done", done.updatedAt, "quiet", NOW));
+  pruneCache(cache, plan.ids);
+  for (let poll = 1; poll <= 3; poll++) {
+    plan = planCodexReads(threads, { now: NOW + poll * 2000, cache, seen });
+    pruneCache(cache, plan.ids);
+    assert.equal(plan.reads.length, 0, `poll ${poll} reads nothing again`);
+    assert.deepEqual(plan.reused.map((item) => [item.id, item.attention]), [["asked", "needs"]]);
+  }
+  assert.ok(!cache.has("done"));
+  // A read that failed is tried again (after its backoff), not forgotten.
+  const failures = new Map();
+  const fresh = new Set();
+  planCodexReads([asked], { now: NOW, seen: fresh, failures });
+  noteReadFailure(failures, "asked", { now: NOW });
+  assert.equal(planCodexReads([asked], { now: NOW + 1000, seen: fresh, failures }).backingOff, 1);
+  assert.deepEqual(planCodexReads([asked], { now: NOW + FEED_LIMITS.retryMs, seen: fresh, failures }).reads.map((item) => item.id), ["asked"]);
+});
+
+test("a listed chat's time is read from seconds, milliseconds, or ISO text", () => {
+  const iso = listedThread({ id: "a", updatedAt: "2026-10-13T10:00:00Z", recencyAt: "2026-10-13T10:05:00.000Z" });
+  assert.equal(iso.updatedAt, Date.parse("2026-10-13T10:05:00Z"));
+  assert.equal(listedThread({ id: "b", updatedAt: 1_800_000_000 }).updatedAt, 1_800_000_000_000);
+  assert.equal(listedThread({ id: "c", updatedAt: 1_800_000_000_123, recencyAt: null }).updatedAt, 1_800_000_000_123);
+  assert.equal(listedThread({ id: "d" }).updatedAt, 0);
+  assert.deepEqual(listedThread({ id: "e", status: { type: "active", activeFlags: ["waitingOnApproval"] } }).activeFlags, ["waitingOnApproval"]);
+});
+
+test("a computer without the Codex CLI is not told its scene is partial", () => {
+  const empty = { ok: true, snapshot: { sessions: [], workspaces: [] } };
+  const scene = composeAllScene({ codex: { ok: false, threads: [], missing: true }, claude: empty, orca: { ok: true, snapshot: { workspaces: [], warning: "", missing: true } }, now: NOW });
+  assert.equal(scene.warning, "");
+  assert.match(composeAllScene({ codex: { ok: false, threads: [] }, claude: empty, orca: empty, now: NOW }).warning, /Codex feed is unavailable/);
 });

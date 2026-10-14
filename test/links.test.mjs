@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LinkStore, drivenTerminals, joinParties, joinReason } from "../lib/links.mjs";
+import { DiscoveryGate, LinkStore, drivenTerminals, joinParties, joinReason, joinSubset } from "../lib/links.mjs";
 
 const T1 = "term_c104bbcf-1111-4222-8333-444455556666";
 const T2 = "term_78a8df17-aaaa-4bbb-8ccc-ddddeeeeffff";
@@ -94,4 +94,62 @@ test("another pane in a worktree the chat drives joins too, but not one in the m
     links({ [T1]: { chat: chat.id, verb: "orchestration check" }, [T2]: { chat: chat.id, verb: "orchestration check" } }));
   assert.equal(agents.find((agent) => agent.id === sibling.id).joined.reason, "worktree");
   assert.equal(agents.find((agent) => agent.id === mainSibling.id).parentThreadId, "orca:wt1", "main checkout siblings stay");
+});
+
+test("a scene's membership is the same whether or not the coordinator made the cut", () => {
+  const everyone = [chat, helper, coordinator, worker, opus, opusHelper, elsewhere];
+  const linked = links({ [T1]: { chat: helper.id, verb: "orchestration worker-start" } });
+  const membership = (shown) => {
+    const { agents, joined } = joinSubset(shown.map((agent) => ({ ...agent, attention: "working" })), everyone, linked);
+    return { parties: Object.fromEntries(agents.map((agent) => [agent.id, agent.parentThreadId])), joined: Object.fromEntries(joined), agents };
+  };
+  const full = membership(everyone);
+  // The worker is shown without its coordinator pane, and the helper chat without its parent.
+  const cut = membership([worker, helper, elsewhere]);
+  assert.equal(cut.parties[worker.id], chat.id);
+  assert.equal(cut.parties[worker.id], full.parties[worker.id]);
+  assert.equal(cut.joined["orca:wt2"], chat.id);
+  assert.equal(cut.agents.find((agent) => agent.id === worker.id).attention, "working", "the scene's own fields stay");
+  // Before: joining only what the scene showed lost the worker's chain.
+  assert.equal(joinParties([worker, helper, elsewhere], linked).agents.find((agent) => agent.id === worker.id).parentThreadId, "orca:wt2");
+  // The coordinator pane is the Claude session's twin: hidden while the session is shown, kept when it is not.
+  assert.equal(full.parties[coordinator.id], undefined);
+  assert.equal(membership([coordinator, worker]).parties[coordinator.id], chat.id);
+});
+
+test("a link that cannot be saved still holds, and never fails the chat's read", () => {
+  const dir = mkdtempSync(join(tmpdir(), "goblin-links-"));
+  try {
+    const blocked = join(dir, "file");
+    writeFileSync(blocked, "");
+    const store = new LinkStore({ dir: join(blocked, "inner") });
+    assert.equal(store.observe("chat-aaaa1111", [{ terminal: T1, verb: "orchestration check", at: 100 }], { now: 1000 }), true);
+    assert.equal(store.auto.get(T1).chat, "chat-aaaa1111");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("link discovery runs one at a time in the background and backs off while it learns nothing", async () => {
+  let now = 0;
+  const gate = new DiscoveryGate({ minMs: 30_000, maxMs: 120_000, clock: () => now });
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const slow = gate.start(() => pending, "a");
+  assert.ok(slow);
+  assert.equal(gate.start(async () => 1, "a"), null, "never two at once");
+  release(0);
+  assert.equal(await slow, 0);
+  now += 10_000;
+  assert.equal(gate.start(async () => 0, "a"), null, "waits after learning nothing");
+  now += 21_000;
+  assert.equal(await gate.start(async () => 0, "a"), 0);
+  now += 31_000;
+  assert.equal(gate.start(async () => 0, "a"), null, "the wait doubles");
+  now += 30_000;
+  assert.equal(await gate.start(async () => { throw new Error("Codex is slow"); }, "a"), 0, "a failed run is a run that learned nothing");
+  now += 120_001;
+  assert.equal(await gate.start(async () => 2, "a"), 2);
+  assert.ok(gate.start(async () => 0, "a"), "learning something starts over at once");
+  await gate.running;
+  // A new unlinked pane is looked for at once, whatever the wait.
+  assert.ok(gate.start(async () => 0, "a,b"));
 });
