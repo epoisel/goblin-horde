@@ -100,6 +100,55 @@ test("updating removes files an older version listed, but never a listed path th
   } finally { box.cleanup(); }
 });
 
+test("upgrading a 0.5 folder with compiled Python leftovers installs, uninstalls, and installs again", async () => {
+  const box = sandbox();
+  try {
+    await install(box.ctx, box.flags);
+    const markerPath = join(box.flags.installDir, MARKER);
+    const marker = JSON.parse(readFileSync(markerPath, "utf8"));
+    const cache = join(box.flags.installDir, "__pycache__");
+    // As 0.5 left it: modules this version dropped, with Python's compiled copies of them and of current ones.
+    const retired = ["stream_windows.py", "party_layout.py", "goblin_parting.py"];
+    for (const file of retired) writeFileSync(join(box.flags.installDir, file), "# 0.5\n");
+    mkdirSync(cache, { recursive: true });
+    for (const name of ["stream_windows", "party_layout", "goblin_parting", "horde_model", "desktop_widget"])
+      writeFileSync(join(cache, `${name}.cpython-312.pyc`), "pyc");
+    writeFileSync(markerPath, JSON.stringify({ ...marker, version: "0.5.0", files: [...marker.files, ...retired] }));
+
+    await install(box.ctx, box.flags);
+    for (const file of retired) assert.equal(existsSync(join(box.flags.installDir, file)), false, file);
+    assert.equal(existsSync(cache), false, "the compiled copies go with their modules");
+
+    // Python compiles again while it runs; uninstall then leaves nothing behind.
+    mkdirSync(cache, { recursive: true });
+    for (const name of ["horde_model", "goblin_strip", "stream_windows"]) writeFileSync(join(cache, `${name}.cpython-313.pyc`), "pyc");
+    await uninstall(box.ctx, box.flags);
+    assert.equal(existsSync(box.flags.installDir), false);
+    await install(box.ctx, box.flags);
+    assert.ok(existsSync(markerPath));
+  } finally { box.cleanup(); }
+});
+
+test("a folder whose only leftovers are Goblin Horde's compiled modules is not someone else's", async () => {
+  const box = sandbox();
+  try {
+    // An older uninstall that left its __pycache__ behind.
+    const cache = join(box.flags.installDir, "__pycache__");
+    mkdirSync(cache, { recursive: true });
+    for (const name of ["stream_windows", "party_layout", "goblin_parting"]) writeFileSync(join(cache, `${name}.cpython-312.pyc`), "pyc");
+    await install(box.ctx, box.flags);
+    assert.equal(existsSync(cache), false);
+    await uninstall(box.ctx, box.flags);
+
+    // Someone else's compiled module is theirs: the folder is refused and left as it was.
+    mkdirSync(cache, { recursive: true });
+    writeFileSync(join(cache, "party_layout.cpython-312.pyc"), "pyc");
+    writeFileSync(join(cache, "their_tool.cpython-312.pyc"), "theirs");
+    await assert.rejects(install(box.ctx, box.flags), /not a Goblin Horde installation/);
+    assert.deepEqual(readdirSync(cache).sort(), ["party_layout.cpython-312.pyc", "their_tool.cpython-312.pyc"]);
+  } finally { box.cleanup(); }
+});
+
 test("the installed hook receiver records filtered activity into the chosen state folder only", async () => {
   const box = sandbox();
   try {
