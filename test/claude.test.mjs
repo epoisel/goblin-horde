@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   appendClaudeRecord, buildClaudeFeed, buildClaudeSessions, claudeActivityDir, ClaudeReader, CLAUDE_LIMITS, cleanRecord,
-  goblinStateDir, normalizeHookEvent, parseClaudeLines, readFileTail, redactSecrets,
+  goblinStateDir, normalizeHookEvent, parseClaudeLines, promptTitle, readFileTail, redactSecrets,
 } from "../lib/claude.mjs";
 import { validateExtensionRecord } from "../lib/extension.mjs";
 import { composeAllScene } from "../lib/feed.mjs";
@@ -255,6 +255,44 @@ test("a session becomes one party with a stable main goblin and distinct subagen
   // Ids do not depend on how much history is left: rebuilding from a later slice keeps them.
   const later = buildClaudeSessions(list.slice(6), { now: NOW + 10_000 })[0];
   assert.ok(later.agents.some((agent) => agent.id === explore.id));
+});
+
+test("a session is named for what it was last asked to do; its subagents for their tasks", () => {
+  const list = records(
+    hook("SessionStart", { source: "startup" }, NOW),
+    hook("UserPromptSubmit", { prompt: "## Add a CSV export for invoices, with tests.\nUse the streaming writer." }, NOW + 1),
+    hook("PreToolUse", { tool_name: "Task", tool_use_id: "t1", tool_input: { description: "Find invoice fixtures", subagent_type: "Explore", prompt: "Find them." } }, NOW + 2),
+    hook("PreToolUse", { tool_name: "Task", tool_use_id: "t2", tool_input: { description: "Review the CSV writer", subagent_type: "code-reviewer", prompt: "Review." } }, NOW + 3),
+    hook("SubagentStart", { agent_id: "agent-review", agent_type: "code-reviewer" }, NOW + 4),
+    hook("SubagentStart", { agent_id: "agent-explore", agent_type: "Explore" }, NOW + 5),
+    hook("SubagentStart", { agent_id: "agent-extra", agent_type: "Explore" }, NOW + 6),
+  );
+  const [session] = buildClaudeSessions(list, { now: NOW + 10_000 });
+  const byId = Object.fromEntries(session.agents.map((agent) => [agent.id, agent]));
+  const main = byId[`claude-agent:${SESSION}`];
+  assert.equal(main.name, "Add a CSV export for invoices, with tests");
+  assert.equal(session.name, main.name, "the party and its session share the name");
+  assert.equal(main.cwd, "/work/goblin-horde", "the folder is still there to show beside it");
+  assert.equal(byId[`claude-agent:${SESSION}:agent-explore`].nickname, "Explore: Find invoice fixtures");
+  assert.equal(byId[`claude-agent:${SESSION}:agent-review`].name, "Code-reviewer: Review the CSV writer", "matched by type, not order");
+  assert.equal(byId[`claude-agent:${SESSION}:agent-extra`].nickname, "Explore subagent", "no task left: the plain name");
+  // A nudge or a slash command says nothing new, so the name holds; a real prompt renames it.
+  const more = [...list, ...records(hook("UserPromptSubmit", { prompt: "yes, please continue" }, NOW + 7), hook("UserPromptSubmit", { prompt: "/compact" }, NOW + 8))];
+  assert.equal(buildClaudeSessions(more, { now: NOW + 10_000 })[0].name, "Add a CSV export for invoices, with tests");
+  const renamed = [...more, ...records(hook("UserPromptSubmit", { prompt: "Now make the export button stream rows" }, NOW + 9))];
+  assert.equal(buildClaudeSessions(renamed, { now: NOW + 10_000 })[0].name, "Now make the export button stream rows");
+  // Without a prompt worth a name, the folder and a short id still tell sessions apart.
+  assert.match(buildClaudeSessions(records(hook("SessionStart", {}, NOW)), { now: NOW + 1000 })[0].name, /^Claude · goblin-horde · [0-9a-f]{4}$/);
+});
+
+test("prompt titles are one plain line, cut at a word, with nudges and commands left out", () => {
+  assert.equal(promptTitle("Fix the flaky login test."), "Fix the flaky login test");
+  assert.equal(promptTitle("> **Why** is `npm test` slow?\nmore"), "Why is npm test slow?");
+  assert.equal(promptTitle("Reconcile every ledger for the third quarter and write the full report with every discrepancy"),
+    "Reconcile every ledger for the third quarter and write the…");
+  assert.ok(promptTitle("x".repeat(200)).length <= 60);
+  for (const nudge of ["yes", "Continue.", "go ahead!", "ok", "/clear", "<command-name>/model</command-name>", "  ", "42", "[secret removed]"])
+    assert.equal(promptTitle(nudge), "", nudge);
 });
 
 test("hooks map cleanly to needs-you, failure, finish, and end states", () => {
