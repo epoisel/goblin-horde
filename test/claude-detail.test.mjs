@@ -7,8 +7,9 @@ import assert from "node:assert/strict";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ClaudeDetailReader, encodeProjectDir, parseClaudeTranscript, promptText, recordedTranscript, transcriptHead } from "../lib/claude-detail.mjs";
-import { readFileTail } from "../lib/claude.mjs";
+import { CLAUDE_TITLE_LIMITS, ClaudeDetailReader, ClaudeTitleReader, encodeProjectDir, parseClaudeTranscript, promptText, recordedTranscript, transcriptHead,
+  transcriptNames } from "../lib/claude-detail.mjs";
+import { buildClaudeSessions, readFileTail, sessionTitle } from "../lib/claude.mjs";
 
 const T0 = Date.parse("2026-05-01T10:00:00.000Z");
 const CWD = "C:\\work\\billing-api";
@@ -321,4 +322,84 @@ test("the projects folder is matched without regard to letter case on Windows", 
 test("project folders are named the way Claude Code names them", () => {
   assert.equal(encodeProjectDir("C:\\work\\billing-api"), "C--work-billing-api");
   assert.equal(encodeProjectDir("/home/dev/ship_csv"), "-home-dev-ship-csv");
+});
+
+// Naming records as Claude Code appends them (synthetic): after every prompt, again.
+const named = (type, field, value) => line({ type, [field]: value, sessionId: "sess-n" });
+const lastPrompt = (value) => line({ type: "last-prompt", lastPrompt: value, leafUuid: "leaf", sessionId: "sess-n" });
+
+test("a transcript's end names its session: a name the person gave, else Claude Code's title, else the last prompt", () => {
+  assert.equal(transcriptNames(""), null);
+  assert.equal(transcriptNames([user(0, "Hi"), assistant(1, [{ type: "text", text: "Hello" }])].join("\n")), null);
+  // The last prompt's first line, cleaned; a slash command or a nudge names nothing.
+  assert.deepEqual(transcriptNames([user(10, "Ship the CSV export\nwith headers"), lastPrompt("Ship the CSV export\nwith headers")].join("\n")),
+    { custom: "", derived: "Ship the CSV export", derivedAt: T0 + 10_000 });
+  assert.equal(transcriptNames([lastPrompt("/compact"), lastPrompt("yes, continue")].join("\n")), null);
+  // Claude Code's own title beats the last prompt; an older version's summary stands in when there is none.
+  const titled = [lastPrompt("Fix the importer"), named("ai-title", "aiTitle", "Repair invoice importer"), lastPrompt("Fix the importer")].join("\n");
+  assert.equal(transcriptNames(titled).derived, "Repair invoice importer");
+  assert.equal(transcriptNames([lastPrompt("x y z w"), named("summary", "summary", "Invoice export cleanup")].join("\n")).derived, "Invoice export cleanup");
+  // A name the person set wins, the newest one; agent-name is the same name.
+  const renamed = [named("custom-title", "customTitle", "csv-export"), named("agent-name", "agentName", "csv-export"), named("ai-title", "aiTitle", "Repair invoice importer"),
+    named("custom-title", "customTitle", "billing release")].join("\n");
+  assert.equal(transcriptNames(renamed).custom, "billing release");
+  // Credentials are blanked and long names cut at a word; a cut first line is skipped.
+  const secret = transcriptNames(['{"type":"custom-title","customTi', lastPrompt(`Deploy with password=hunter2secret then check the ${"very ".repeat(20)}long tail`)].join("\n"));
+  assert.doesNotMatch(secret.derived, /hunter2secret/);
+  assert.ok(secret.derived.length <= 60 && secret.derived.endsWith("…"));
+});
+
+test("sessions are named from their transcripts, a few per poll, and a newer hook prompt still wins", () => {
+  const box = sandbox();
+  try {
+    const folder = join(box.configDir, "projects", encodeProjectDir(CWD));
+    mkdirSync(folder, { recursive: true });
+    const write = (session, lines) => writeFileSync(join(folder, `${session}.jsonl`), `${lines.join("\n")}\n`);
+    write("sess-a", [user(0, "Repair the invoice importer"), lastPrompt("Repair the invoice importer")]);
+    write("sess-b", [named("ai-title", "aiTitle", "Audit checkout accessibility")]);
+    write("sess-c", [named("custom-title", "customTitle", "release-train")]);
+    let clock = 1000;
+    let reads = 0;
+    const locator = new ClaudeDetailReader({ configDir: box.configDir });
+    const fs = locator.fs;
+    locator.fs = { ...fs, readTail: (file, bytes) => { reads++; assert.equal(bytes, CLAUDE_TITLE_LIMITS.tailBytes); return fs.readTail(file, bytes); } };
+    const titles = new ClaudeTitleReader({ locator, clock: () => clock, limits: { ...CLAUDE_TITLE_LIMITS, readsPerPoll: 2 } });
+    titles.startPoll();
+    assert.equal(titles.title({ session: "sess-a", cwd: CWD }).derived, "Repair the invoice importer");
+    assert.equal(titles.title({ session: "sess-b", cwd: CWD }).derived, "Audit checkout accessibility");
+    assert.equal(titles.title({ session: "sess-c", cwd: CWD }), null, "over this poll's budget: asked again next time");
+    titles.startPoll();
+    assert.equal(titles.title({ session: "sess-c", cwd: CWD }).custom, "release-train");
+    assert.equal(reads, 3);
+    // Unchanged and recently checked: no read, no stat. A forged recorded path names nothing.
+    titles.startPoll();
+    titles.title({ session: "sess-a", cwd: CWD });
+    clock += CLAUDE_TITLE_LIMITS.recheckMs + 1;
+    titles.title({ session: "sess-a", cwd: CWD, transcript: join(box.root, "elsewhere", "sess-a.jsonl") });
+    assert.equal(reads, 3, "same size and time: the earlier names stand");
+    assert.equal(titles.title({ session: "../escape" }), null);
+
+    // Through the feed: a session the hook never saw a prompt for is named from its transcript, its folder kept.
+    const hookRecord = (id, at, event, extra = {}) => ({ v: 1, id, at, event, session: "sess-a", cwd: CWD, ...extra });
+    const names = (info) => titles.title(info);
+    const feed = (records, now) => buildClaudeSessions(records, { now, names })[0];
+    clock += CLAUDE_TITLE_LIMITS.recheckMs + 1;
+    titles.startPoll();
+    const old = feed([hookRecord("aa000001", T0 + 5_000, "SessionStart"), hookRecord("aa000002", T0 + 6_000, "PreToolUse", { tool: "Bash" })], T0 + 60_000);
+    assert.equal(old.name, "Repair the invoice importer");
+    assert.equal(old.agents[0].name, "Repair the invoice importer");
+    assert.equal(old.agents[0].id, "claude-agent:sess-a", "ids never change");
+    assert.equal(old.cwd, CWD);
+    // A newer prompt the hook recorded wins over a derived name; the person's own name always wins.
+    const prompted = feed([hookRecord("aa000003", T0 + 50_000, "UserPromptSubmit", { prompt: "Now add the archive flag" })], T0 + 60_000);
+    assert.equal(prompted.name, "Now add the archive flag");
+    assert.equal(sessionTitle({ hook: "Now add the archive flag", hookAt: 50 }, { custom: "release-train", derived: "x", derivedAt: 0 }), "release-train");
+    assert.equal(sessionTitle({ hook: "Old prompt", hookAt: 1_000 }, { custom: "", derived: "Newer prompt", derivedAt: 1_000 + 120_000 }), "Newer prompt",
+      "a transcript prompt newer than any the hook saw names the session");
+    assert.equal(sessionTitle({}, null), "");
+    // Sessions outside the scene's window are not looked at.
+    let asked = 0;
+    buildClaudeSessions([hookRecord("aa000004", T0, "SessionStart")], { now: T0 + 3 * 24 * 60 * 60_000, names: () => { asked++; return null; } });
+    assert.equal(asked, 0);
+  } finally { box.cleanup(); }
 });

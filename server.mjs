@@ -24,7 +24,7 @@ import { Pairing, sessionCookie } from "./lib/pairing.mjs";
 import { PhoneAccess, loadPairingCode, localOnlyRefusal, mobileStatus, requestAnswer } from "./lib/phone.mjs";
 import { publicRequests, publicView } from "./lib/public-view.mjs";
 import { AgentDetailService, ClaudeDesktopIndex, agentRoutes } from "./lib/agent-detail.mjs";
-import { ClaudeDetailReader } from "./lib/claude-detail.mjs";
+import { ClaudeDetailReader, ClaudeTitleReader } from "./lib/claude-detail.mjs";
 import { CodexPlanReader } from "./lib/codex-detail.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -405,7 +405,9 @@ class CodexReader {
 
 const reader = new CodexReader();
 const orca = new OrcaReader();
-const claude = new ClaudeReader();
+// One transcript locator (confined to <config>/projects) for the detail view and for naming sessions.
+const claudeTranscripts = new ClaudeDetailReader({ configDir: claudeConfigDir() });
+const claude = new ClaudeReader({ titles: new ClaudeTitleReader({ locator: claudeTranscripts }) });
 const extensions = new ExtensionReader({ dir: extensionFeedDir(stateDir) });
 const watchList = new WatchList({ dir: stateDir });
 // Alerts the person dismissed; applied to every response in `shown` (see lib/dismiss.mjs).
@@ -597,7 +599,7 @@ const agentRoute = agentRoutes(new AgentDetailService({
   },
   claude: { snapshot: () => claude.snapshot(), records: () => claude.records, marks: (id) => sessionMarks({ id }) },
   orca, extensions,
-  claudeDetail: new ClaudeDetailReader({ configDir: claudeConfigDir() }),
+  claudeDetail: claudeTranscripts,
   codexPlans: new CodexPlanReader(),
   desktop: new ClaudeDesktopIndex(),
 }));

@@ -438,10 +438,68 @@ test("now names the newest open call, Thinking between calls, and nothing once t
   assert.equal(nowFor(pre("Agent", { description: "Find the CSV writer", subagent_type: "Explore" })).title, "Subagent Find the CSV writer");
   assert.equal(nowFor(pre("Agent", { description: "Find the CSV writer", subagent_type: "Explore" })).kind, "agent");
   assert.equal(nowFor(pre("mcp__tracker__create_issue", {})).title, "Using tracker · create_issue");
-  const between = main(records(...start, hook("PreToolUse", pre("Bash", { command: "ls" }, { tool_use_id: "toolu_L" }), NOW + 1),
-    hook("PostToolUse", pre("Bash", { command: "ls" }, { tool_use_id: "toolu_L" }), NOW + 2)));
-  assert.deepEqual(between.now, { kind: "think", title: "Thinking", startedAt: NOW + 2 });
+  const between = records(...start, hook("PreToolUse", pre("Bash", { command: "npm test\nnpm run lint" }, { tool_use_id: "toolu_L" }), NOW + 1),
+    hook("PostToolUse", pre("Bash", { command: "npm test\nnpm run lint" }, { tool_use_id: "toolu_L" }), NOW + 2));
+  // Just after a step finishes, the line says what it did, as a past step timed from when it finished.
+  assert.deepEqual(main(between).now, { kind: "command", title: "Ran npm test", detail: "npm test\nnpm run lint", startedAt: NOW + 2, done: true });
+  // After doneMs it is Thinking, timed from the newest hook: how long it has been quiet, not since the turn began.
+  assert.deepEqual(main(between, NOW + 2 + CLAUDE_LIMITS.doneMs + 1000).now, { kind: "think", title: "Thinking", startedAt: NOW + 2 });
   assert.equal(main(records(...start, hook("Stop", { last_assistant_message: "Done." }, NOW + 3))).now, null);
+});
+
+test("a finished step reads in the past tense, lookups add up, and anything newer replaces it", () => {
+  const start = [hook("UserPromptSubmit", { prompt: "Fix the export" }, NOW)];
+  const finished = (tool, input, extra = {}, event = "PostToolUse") => {
+    const id = `toolu_done${counter}`;
+    return main(records(...start, hook("PreToolUse", pre(tool, input, { tool_use_id: id }), NOW + 1),
+      hook(event, pre(tool, input, { tool_use_id: id, ...extra }), NOW + 2))).now;
+  };
+  assert.equal(finished("Edit", { file_path: "/work/billing-api/server.mjs", old_string: "a", new_string: "b" }).title, "Edited server.mjs");
+  assert.equal(finished("Write", { file_path: "/work/billing-api/out.csv", content: "x" }).title, "Wrote out.csv");
+  assert.equal(finished("Grep", { pattern: "exportCsv" }).title, "Searched exportCsv");
+  assert.equal(finished("WebFetch", { url: "https://docs.example.test/page" }).title, "Fetched docs.example.test");
+  assert.equal(finished("Agent", { description: "Find the CSV writer", subagent_type: "Explore" }).title, "Subagent finished: Find the CSV writer");
+  assert.equal(finished("mcp__tracker__create_issue", { title: "x" }).title, "Used tracker · create_issue");
+  assert.equal(finished("Bash", { command: "npm test" }, { error: "exit 1" }, "PostToolUseFailure").title, "Ran npm test · failed");
+  // Reads that finish one after another add up; a read in a later turn starts over.
+  const reads = records(...start, ...["a.mjs", "b.mjs", "c.mjs"].flatMap((name, index) => [
+    hook("PreToolUse", pre("Read", { file_path: `/work/billing-api/${name}` }, { tool_use_id: `toolu_r${index}` }), NOW + 10 + index * 2),
+    hook("PostToolUse", pre("Read", { file_path: `/work/billing-api/${name}` }, { tool_use_id: `toolu_r${index}` }), NOW + 11 + index * 2)]));
+  assert.deepEqual(main(reads).now, { kind: "read", title: "Read 3 files", startedAt: NOW + 15, done: true });
+  // A newer call, or a reply that ends the turn, replaces the finished step.
+  const next = records(hook("PreToolUse", pre("Bash", { command: "npm run lint" }, { tool_use_id: "toolu_next" }), NOW + 20));
+  assert.equal(main([...reads, ...next]).now.title, "Running npm run lint");
+});
+
+test("an open turn with nothing running and no hook for ten minutes is idle, not working", () => {
+  const start = [hook("UserPromptSubmit", { prompt: "Tidy the importer" }, NOW),
+    hook("PreToolUse", pre("Bash", { command: "npm test" }, { tool_use_id: "toolu_i1" }), NOW + 1_000),
+    hook("PostToolUse", pre("Bash", { command: "npm test" }, { tool_use_id: "toolu_i1" }), NOW + 2_000)];
+  const list = records(...start);
+  const later = NOW + 2_000 + CLAUDE_LIMITS.idleMs + 60_000;
+  const idle = main(list, later);
+  assert.equal(idle.status, "idle");
+  assert.equal(idle.attention, "quiet");
+  assert.equal(idle.now, null);
+  assert.equal(idle.idleSince, NOW + 2_000);
+  assert.equal(idle.turnStates.at(-1).status, "idle");
+  assert.ok(idle.activities.every((item) => item.status !== "inProgress"));
+  // Before the ten minutes it is still working: Thinking since the newest hook.
+  const thinking = main(list, NOW + 2_000 + CLAUDE_LIMITS.idleMs - 60_000);
+  assert.equal(thinking.attention, "working");
+  assert.deepEqual(thinking.now, { kind: "think", title: "Thinking", startedAt: NOW + 2_000 });
+  // A call still open (a long test run) keeps running past ten minutes, up to the two-hour stale limit.
+  const running = main(records(...start, hook("PreToolUse", pre("Bash", { command: "npm run e2e" }, { tool_use_id: "toolu_i2" }), NOW + 3_000)), later);
+  assert.equal(running.attention, "working");
+  assert.equal(running.now.title, "Running npm run e2e");
+  assert.equal(running.idleSince, undefined);
+  // Something waiting on the person is never idle: a notice with nothing open still asks.
+  const asking = main(records(...start, hook("Notification", { notification_type: "permission_prompt", message: "Claude needs your permission to use Bash" }, NOW + 3_000)), later);
+  assert.equal(asking.attention, "needs");
+  assert.equal(asking.status, "waiting");
+  // A new prompt wakes it.
+  const woken = main(records(...start, hook("UserPromptSubmit", { prompt: "Go on" }, later - 1000)), later);
+  assert.equal(woken.attention, "working");
 });
 
 test("progress follows the newest todo list or task list", () => {
@@ -537,5 +595,29 @@ test("the reader rereads only new lines", () => {
     reader.snapshot();
     assert.equal(reader.records.length, 4);
     assert.equal(reader.records[0], first, "a record already filtered is reused, not filtered again");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("the reader names a session from its transcript when the hook saw no prompt, and keeps ids and folder", () => {
+  const dir = mkdtempSync(join(tmpdir(), "goblin-claude-names-"));
+  try {
+    for (const record of records(hook("SessionStart", { source: "resume" }, NOW), hook("PreToolUse", pre("Bash", { command: "ls" }, { tool_use_id: "toolu_n1" }), NOW + 1))) {
+      appendClaudeRecord(record, { dir });
+    }
+    let polls = 0;
+    const asked = [];
+    const titles = { startPoll: () => { polls++; }, title: (info) => { asked.push(info); return { custom: "", derived: "Audit checkout accessibility", derivedAt: 0 }; } };
+    const reader = new ClaudeReader({ dir, ttlMs: 0, clock: () => NOW + 10_000, titles });
+    const session = reader.snapshot().sessions[0];
+    assert.equal(session.name, "Audit checkout accessibility");
+    assert.equal(session.agents[0].name, "Audit checkout accessibility");
+    assert.equal(session.agents[0].id, MAIN);
+    assert.equal(session.cwd, "/work/billing-api", "the folder stays the goblin's project");
+    assert.deepEqual(asked[0], { session: SESSION, cwd: "/work/billing-api", transcript: TRANSCRIPT });
+    assert.equal(polls, 1, "each snapshot starts a new read budget");
+    assert.equal(reader.listSessions()[0].name, "Audit checkout accessibility");
+    // A names reader that fails costs nothing but the name.
+    const broken = new ClaudeReader({ dir, ttlMs: 0, clock: () => NOW + 10_000, titles: { title: () => { throw new Error("disk gone"); } } });
+    assert.match(broken.snapshot().sessions[0].name, /^Claude · billing-api · [0-9a-f]{4}$/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
