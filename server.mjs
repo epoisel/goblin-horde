@@ -597,7 +597,8 @@ const agentRoute = agentRoutes(new AgentDetailService({
     sendReply: (id, text) => reader.sendReply(id, text),
     listRequests: (id) => reader.listRequests(id),
   },
-  claude: { snapshot: () => claude.snapshot(), records: () => claude.records, marks: (id) => sessionMarks({ id }) },
+  // The shared window of hook records, after each session's newest prompt, plan, and transcript paths from before it.
+  claude: { snapshot: () => claude.snapshot(), records: () => claude.detailRecords(), marks: (id) => sessionMarks({ id }) },
   orca, extensions,
   claudeDetail: claudeTranscripts,
   codexPlans: new CodexPlanReader(),

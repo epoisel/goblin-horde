@@ -5,7 +5,9 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { appendClaudeRecord, buildClaudeSessions, ClaudeReader, CLAUDE_LIMITS, cleanRecord, normalizeHookEvent } from "../lib/claude.mjs";
+import { appendClaudeRecord, buildClaudeSessions, ClaudeReader, ClaudeRecordIndex, CLAUDE_LIMITS, cleanRecord, normalizeHookEvent } from "../lib/claude.mjs";
+import { recordedMissionAndPlan } from "../lib/agent-detail.mjs";
+import { recordedTranscript } from "../lib/claude-detail.mjs";
 import { closingQuestion } from "../lib/asks.mjs";
 import { claudePanePairs, identityMark } from "../lib/links.mjs";
 
@@ -620,6 +622,39 @@ test("the reader names a session from its transcript when the hook saw no prompt
     const broken = new ClaudeReader({ dir, ttlMs: 0, clock: () => NOW + 10_000, titles: { title: () => { throw new Error("disk gone"); } } });
     assert.match(broken.snapshot().sessions[0].name, /^Claude · billing-api · [0-9a-f]{4}$/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a long turn keeps its prompt, todo list, and transcript after other sessions fill the shared record window", () => {
+  const dir = mkdtempSync(join(tmpdir(), "goblin-claude-index-"));
+  try {
+    const OTHER = "c0ffee00-0000-4000-8000-00000000b0b0";
+    const todos = [{ content: "Write the CSV writer", status: "in_progress", activeForm: "Writing the CSV writer" }, { content: "Add tests", status: "pending" }];
+    const own = records(
+      hook("UserPromptSubmit", { prompt: "Ship the CSV export for invoices" }, NOW),
+      hook("PreToolUse", pre("TodoWrite", { todos }, { tool_use_id: "toolu_T" }), NOW + 1),
+    );
+    const busy = records(...Array.from({ length: 30 }, (_, index) => hook("PreToolUse", pre("Bash", { command: `npm test -- ${index}` }, { tool_use_id: `toolu_b${index}` }),
+      NOW + 10 + index)).map((input) => ({ ...input, session_id: OTHER })));
+    for (const record of [...own, ...busy]) appendClaudeRecord(record, { dir });
+    const reader = new ClaudeReader({ dir, ttlMs: 0, clock: () => NOW + 60_000, limits: { ...CLAUDE_LIMITS, records: 10 } });
+    reader.snapshot();
+    assert.ok(!reader.records.some((record) => record.session === SESSION), "the window holds only the newest records");
+    const kept = recordedMissionAndPlan(reader.detailRecords(), SESSION);
+    assert.equal(kept.mission.text, "Ship the CSV export for invoices");
+    assert.deepEqual(kept.plan.steps.map((step) => step.text), ["Writing the CSV writer", "Add tests"]);
+    assert.equal(recordedTranscript(reader.detailRecords(), SESSION).main, TRANSCRIPT);
+    // The log rolls over and the old file goes: what was seen is still known.
+    rmSync(join(dir, "activity.jsonl"));
+    for (const record of busy.slice(-3)) appendClaudeRecord(record, { dir });
+    reader.snapshot();
+    assert.equal(recordedMissionAndPlan(reader.detailRecords(), SESSION).mission.text, "Ship the CSV export for invoices");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("the per-session index is bounded to the newest sessions", () => {
+  const index = new ClaudeRecordIndex({ sessions: 3 });
+  for (let n = 0; n < 5; n++) index.add({ v: 1, id: `dd00000${n}`, at: NOW + n, event: "UserPromptSubmit", session: `sess-${n}`, prompt: `Task ${n} for the importer` });
+  assert.deepEqual([...new Set(index.records().map((record) => record.session))], ["sess-2", "sess-3", "sess-4"]);
 });
 
 test("a notice while two requests wait keeps both asking: Claude Code shows the older one first", () => {
