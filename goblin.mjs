@@ -172,6 +172,14 @@ async function setup(ctx, options, { assumeYes = false } = {}) {
     return answer ? answer.startsWith("y") : fallback;
   };
   try {
+    // The installer double-clicked inside the installed app folder: it is installed already, so just open it.
+    const { samePath } = await import("./lib/paths.mjs");
+    if (ctx.sourceDir && samePath(locate(ctx, options).installDir, ctx.sourceDir, ctx.platform)) {
+      log("Goblin Horde is already installed in this folder; opening it. To update, run the installer from a newer download.");
+      const started = await start(ctx, options);
+      for (const line of started.messages || []) log(line);
+      return 0;
+    }
     log("Goblin Horde setup\n");
     const report = await doctor(ctx, options);
     const check = (name) => report.checks.find((item) => item.name === name) || {};

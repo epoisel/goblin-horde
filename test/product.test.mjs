@@ -122,7 +122,9 @@ test("after Node moves, status rewrites this installation's shortcuts and record
     for (const link of [box.menu, box.startup]) box.ctx.writeShortcut(link, shortcutSpec({ nodePath: gone, installDir: box.flags.installDir }));
     box.written.length = 0;
     const report = await status(box.ctx, box.flags);
-    assert.deepEqual(box.written.map((item) => [item.link, item.spec.target]), [[box.menu, process.execPath], [box.startup, process.execPath]]);
+    // The shortcuts run the install folder's launcher, which finds whichever Node.js is on PATH.
+    const launcher = join(box.flags.installDir, "launch.cmd");
+    assert.deepEqual(box.written.map((item) => [item.link, item.spec.target]), [[box.menu, launcher], [box.startup, launcher]]);
     assert.equal(box.marker().nodePath, process.execPath);
     assert.ok(report.notes.some((line) => /updated the Start menu entry/.test(line)));
     box.written.length = 0;
