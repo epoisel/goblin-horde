@@ -82,3 +82,25 @@ test("only an open turn is checked, and a call left open for many hours is not a
   assert.equal(asked, 0);
   assert.equal(looksLikeApprovalWait([context("on-request", 8 * 3600), call(7 * 3600)].join("\n"), { now: NOW }), false);
 });
+
+test("a far-back approval policy is found once, then remembered instead of reread every check", async () => {
+  const { rolloutAwaitsApproval } = await import("../lib/rollout.mjs");
+  const reads = [];
+  const near = [call(90), usage(90)].join("\n");
+  const whole = [context("on-request"), "x".repeat(10), call(90), usage(90)].join("\n");
+  const readTail = (_path, bytes) => { reads.push(bytes); return bytes > 256 * 1024 ? whole : near; };
+  let size = 5_000_000;
+  const sizeOf = () => size;
+  assert.equal(rolloutAwaitsApproval("C:/s/far-policy.jsonl", { now: NOW, readTail, sizeOf }), true);
+  const first = reads.length;
+  assert.ok(first > 1, "the first check looks further back");
+  reads.length = 0;
+  size += 1000; // The session file grew.
+  assert.equal(rolloutAwaitsApproval("C:/s/far-policy.jsonl", { now: NOW, readTail, sizeOf }), true);
+  assert.deepEqual(reads, [256 * 1024], "later checks read only the newest part");
+  // A file that shrank was replaced: look again.
+  size = 10;
+  reads.length = 0;
+  rolloutAwaitsApproval("C:/s/far-policy.jsonl", { now: NOW, readTail, sizeOf });
+  assert.ok(reads.length > 1);
+});
