@@ -179,6 +179,110 @@ test("parallel calls: a later call finishing does not answer an earlier call's p
   }
 });
 
+test("an approved permission stops asking: a request alone asks briefly, Claude Code's notice confirms it", () => {
+  const SECOND = 1000;
+  const deploy = pre("Bash", { command: "npm run deploy -- --env staging" }, { tool_use_id: "toolu_D" });
+  const asked = records(
+    hook("UserPromptSubmit", {}, NOW),
+    hook("PreToolUse", deploy, NOW + 1),
+    hook("PermissionRequest", deploy, NOW + 2),
+  );
+  // Just asked: needs you, as the dialog is on screen.
+  assert.equal(main(asked, NOW + 5 * SECOND).attention, "needs");
+  // Approved at once: no notice ever comes, and the five-minute deploy is work, not a question.
+  const running = main(asked, NOW + 15 * SECOND);
+  assert.equal(running.ask, null);
+  assert.equal(running.attention, "working");
+  assert.equal(running.now.title, "Running npm run deploy -- --env staging");
+  // Still open after six seconds: Claude Code says so, and the ask stays until the call resolves.
+  const confirmed = [...asked, ...records(hook("Notification", { notification_type: "permission_prompt" }, NOW + 6 * SECOND))];
+  const waiting = main(confirmed, NOW + 10 * 60 * SECOND);
+  assert.equal(waiting.attention, "needs");
+  assert.equal(waiting.ask.text, "Allow Bash to run this command?");
+  assert.equal(waiting.ask.key, main(asked, NOW + 5 * SECOND).ask.key, "confirming an ask does not make it a new one");
+  assert.equal(main([...confirmed, ...records(hook("PostToolUse", deploy, NOW + 9 * 60 * SECOND))], NOW + 10 * 60 * SECOND).ask, null);
+  // agent_needs_input confirms it too.
+  assert.equal(main([...asked, ...records(hook("Notification", { notification_type: "agent_needs_input" }, NOW + 7 * SECOND))], NOW + 60 * SECOND).attention, "needs");
+});
+
+test("parallel calls: the notice confirms the request that is still open, not one answered earlier", () => {
+  const SECOND = 1000;
+  const fileA = pre("Read", { file_path: "/work/billing-api/shots/full-half.png" }, { tool_use_id: "toolu_RA" });
+  const fileB = pre("Read", { file_path: "/work/billing-api/src/b.js" }, { tool_use_id: "toolu_RB" });
+  // The live case: PreToolUse A, PermissionRequest A, PreToolUse B, PostToolUse B, then the notice.
+  const live = records(
+    hook("UserPromptSubmit", {}, NOW),
+    hook("PreToolUse", fileA, NOW + 1),
+    hook("PermissionRequest", { ...fileA, tool_use_id: undefined }, NOW + 2),
+    hook("PreToolUse", fileB, NOW + 3),
+    hook("PostToolUse", fileB, NOW + 4),
+    hook("Notification", { notification_type: "permission_prompt" }, NOW + 6 * SECOND),
+  );
+  const actor = main(live, NOW + 2 * 60 * SECOND);
+  assert.equal(actor.attention, "needs");
+  assert.equal(actor.ask.text, "Allow Read to open full-half.png?");
+  // A request answered at once, then a second one left open: only the second is confirmed.
+  const build = pre("Bash", { command: "make build" }, { tool_use_id: "toolu_M1" });
+  const push = pre("Bash", { command: "git push origin main" }, { tool_use_id: "toolu_M2" });
+  const two = records(
+    hook("UserPromptSubmit", {}, NOW),
+    hook("PreToolUse", build, NOW + 1),
+    hook("PermissionRequest", build, NOW + 2),
+    hook("PostToolUse", build, NOW + 20 * SECOND),
+    hook("PreToolUse", push, NOW + 30 * SECOND),
+    hook("PermissionRequest", push, NOW + 30 * SECOND + 1),
+    hook("Notification", { notification_type: "permission_prompt" }, NOW + 36 * SECOND),
+  );
+  assert.equal(main(two, NOW + 5 * 60 * SECOND).ask.command, "git push origin main");
+});
+
+test("a confirmed prompt is over once the agent moves on: denied, it gets no result of its own", () => {
+  const SECOND = 1000;
+  const remove = pre("Bash", { command: "rm -rf build" }, { tool_use_id: "toolu_X1" });
+  const asked = records(
+    hook("UserPromptSubmit", {}, NOW),
+    hook("PreToolUse", remove, NOW + 1),
+    hook("PermissionRequest", remove, NOW + 2),
+    hook("Notification", { notification_type: "permission_prompt" }, NOW + 6 * SECOND),
+  );
+  const later = NOW + 5 * 60 * SECOND;
+  assert.equal(main(asked, later).attention, "needs");
+  // Denied: no PostToolUse ever comes. The next call, a new prompt, or the end of the turn answers it.
+  const next = records(hook("PreToolUse", pre("Bash", { command: "ls build" }, { tool_use_id: "toolu_X2" }), NOW + 40 * SECOND));
+  assert.equal(main([...asked, ...next], later).ask, null);
+  assert.equal(main([...asked, ...records(hook("UserPromptSubmit", {}, NOW + 40 * SECOND))], later).ask, null);
+  assert.equal(main([...asked, ...records(hook("Stop", { last_assistant_message: "Left the build folder alone." }, NOW + 40 * SECOND))], later).ask, null);
+  // A newer permission request is the new prompt; the old one is done.
+  const newer = pre("Bash", { command: "rm -rf dist" }, { tool_use_id: "toolu_X3" });
+  const replaced = main([...asked, ...records(hook("PreToolUse", newer, NOW + 40 * SECOND), hook("PermissionRequest", newer, NOW + 40 * SECOND + 1))], NOW + 45 * SECOND);
+  assert.equal(replaced.ask.command, "rm -rf dist");
+  // A call that started before the notice (a parallel one) does not answer it, nor does the call's own late hook.
+  const parallel = records(
+    hook("UserPromptSubmit", {}, NOW),
+    hook("PreToolUse", remove, NOW + 1),
+    hook("PermissionRequest", remove, NOW + 2),
+    hook("PreToolUse", pre("Read", { file_path: "/work/billing-api/a.js" }, { tool_use_id: "toolu_X4" }), NOW + 3),
+    hook("Notification", { notification_type: "permission_prompt" }, NOW + 6 * SECOND),
+    hook("PostToolUse", pre("Read", { file_path: "/work/billing-api/a.js" }, { tool_use_id: "toolu_X4" }), NOW + 7 * SECOND),
+  );
+  assert.equal(main(parallel, later).attention, "needs");
+  // Unconfirmed and denied: it stops asking on its own, and a new prompt or the end of the turn clears it at once.
+  const quick = records(hook("UserPromptSubmit", {}, NOW), hook("PreToolUse", remove, NOW + 1), hook("PermissionRequest", remove, NOW + 2));
+  assert.equal(main(quick, NOW + 30 * SECOND).ask, null);
+  assert.equal(main([...quick, ...records(hook("Stop", { last_assistant_message: "Skipped." }, NOW + 3 * SECOND))], NOW + 4 * SECOND).ask, null);
+});
+
+test("a question stays a question until answered, with or without a notice", () => {
+  const questions = [{ question: "Which export format?", options: [{ label: "CSV" }, { label: "JSON" }] }];
+  const asked = records(
+    hook("UserPromptSubmit", {}, NOW),
+    hook("PreToolUse", pre("AskUserQuestion", { questions }, { tool_use_id: "toolu_AQ" }), NOW + 1),
+    hook("PermissionRequest", pre("AskUserQuestion", { questions }), NOW + 2),
+  );
+  assert.equal(main(asked, NOW + 30 * 60_000).ask.kind, "question");
+  assert.equal(main(asked, NOW + 30 * 60_000).attention, "needs");
+});
+
 test("a subagent's permission request is its own, and the session's notice does not add a second ask", () => {
   const list = records(
     hook("UserPromptSubmit", {}, NOW),
@@ -194,6 +298,10 @@ test("a subagent's permission request is its own, and the session's notice does 
   const session = agents.find((agent) => agent.id === MAIN);
   assert.equal(session.ask, null);
   assert.notEqual(session.attention, "needs");
+  // The session's notice confirms the subagent's request, so it still asks a minute later.
+  const later = party(list, NOW + 60_000).agents;
+  assert.equal(later.find((agent) => agent.childOf).attention, "needs");
+  assert.equal(later.find((agent) => agent.id === MAIN).ask, null);
 });
 
 test("AskUserQuestion is a question with its options, answered in Claude Code", () => {
@@ -256,6 +364,7 @@ test("an ask stops alerting after askMs of session quiet, and the key is stable 
     hook("UserPromptSubmit", {}, NOW),
     hook("PreToolUse", pre("Bash", { command: "make deploy" }, { tool_use_id: "toolu_X" }), NOW + 1),
     hook("PermissionRequest", pre("Bash", { command: "make deploy" }, { tool_use_id: "toolu_X" }), NOW + 2),
+    hook("Notification", { notification_type: "permission_prompt" }, NOW + 3),
   );
   const soon = main(list, NOW + 60_000);
   const later = main(list, NOW + 120_000);

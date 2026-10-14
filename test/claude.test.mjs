@@ -309,16 +309,16 @@ test("a permission request stays open until its own tool resolves, not when anot
     hook("PreToolUse", { tool_name: "Bash", tool_use_id: "toolA", tool_input: { command: "x" } }, NOW + 1),
     hook("PreToolUse", { tool_name: "Read", tool_use_id: "toolB", tool_input: { file_path: "/w/b.js" } }, NOW + 2),
     hook("PermissionRequest", { tool_name: "Bash", tool_use_id: "toolA" }, NOW + 3),
-    hook("Notification", { notification_type: "permission_prompt" }, NOW + 4),
-    hook("PostToolUse", { tool_name: "Read", tool_use_id: "toolB" }, NOW + 5),
+    hook("PreToolUse", { tool_name: "Grep", tool_use_id: "toolC" }, NOW + 4),
+    hook("Notification", { notification_type: "permission_prompt" }, NOW + 5),
+    hook("PostToolUse", { tool_name: "Read", tool_use_id: "toolB" }, NOW + 6),
   );
-  const main = (list) => buildClaudeSessions(list, { now: NOW + 5000 })[0].agents[0];
+  const main = (list) => buildClaudeSessions(list, { now: NOW + 60_000 })[0].agents[0];
   assert.equal(main(asked).needsInput, true, "tool B finishing does not answer tool A's request");
   assert.equal(main(asked).attention, "needs");
   assert.equal(main(asked).status, "waiting");
-  // A tool that starts and finishes later does not answer it either.
-  const later = [...asked, ...records(hook("PreToolUse", { tool_name: "Grep", tool_use_id: "toolC" }, NOW + 6),
-    hook("PostToolUseFailure", { tool_name: "Grep", tool_use_id: "toolC" }, NOW + 7))];
+  // A parallel tool that started before the notice and finishes later does not answer it either.
+  const later = [...asked, ...records(hook("PostToolUseFailure", { tool_name: "Grep", tool_use_id: "toolC" }, NOW + 7))];
   assert.equal(main(later).needsInput, true);
   // Its own tool finishing does.
   const answered = main([...later, ...records(hook("PostToolUse", { tool_name: "Bash", tool_use_id: "toolA" }, NOW + 8))]);
@@ -531,7 +531,8 @@ test("an interrupted turn or a denied permission is over once Claude Code is bac
   assert.ok(interrupted.activities.every((item) => item.status !== "inProgress"));
   assert.notEqual(interrupted.status, "failed");
   // A denied permission never gets its PostToolUse; without the idle notice it needs you for six hours.
-  const denied = [...base, hook("PermissionRequest", { tool_name: "Bash", tool_use_id: "b1" }, NOW + 2)];
+  const denied = [...base, hook("PermissionRequest", { tool_name: "Bash", tool_use_id: "b1" }, NOW + 2),
+    hook("Notification", { notification_type: "permission_prompt" }, NOW + 6000)];
   assert.equal(main(denied).attention, "needs");
   const settled = main([...denied, idle(NOW + 62_000)]);
   assert.equal(settled.attention, "quiet");
