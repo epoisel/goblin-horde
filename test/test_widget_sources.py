@@ -60,6 +60,14 @@ class SourcesRowTests(unittest.TestCase):
         pad.hitboxes[0][4]()
         pad.owner.connect_claude.assert_not_called()
 
+    def test_codex_not_installed_is_neutral_with_no_fix(self):
+        detail = "Optional: install the Codex CLI to see Codex chats."
+        pad, _ = self.draw({"codex": {"state": "not-installed", "detail": detail, "replies": True}})
+        self.assertEqual([call.kwargs["text"] for call in pad.body.create_text.call_args_list], ["CODEX –"])
+        pad.hitboxes[0][4]()
+        pad.owner.reconnect_codex.assert_not_called()
+        self.assertEqual(pad.hitboxes[0][5], detail)
+
     def test_no_row_until_the_viewer_has_said_what_it_sees(self):
         pad, bottom = self.draw({})
         self.assertEqual(bottom, 4)

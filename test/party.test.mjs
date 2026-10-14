@@ -89,6 +89,18 @@ test("streams that need you jump ahead; equal ranks keep their place", () => {
   assert.equal(memberStatus(actors[2]).word, "WAITING ON YOU");
 });
 
+test("a failure or question the feed calls quiet is history in the browser too", () => {
+  const failed = { id: "c", status: "notLoaded", attention: "quiet", turnStates: [{ status: "failed", questions: [] }],
+    activities: [step("command", "Ran project tests", { status: "failed", exitCode: 1 })] };
+  assert.notEqual(memberStatus(failed).word, "FAILED");
+  assert.equal(goblinAction(failed, NOW), "idle");
+  assert.equal(memberStatus({ ...failed, attention: "failed" }).word, "FAILED");
+  const asked = { id: "q", status: "completed", attention: "quiet", turnStates: [{ status: "completed", questions: ["Ship it?"] }], activities: [] };
+  assert.equal(memberStatus(asked).word, "DONE");
+  assert.equal(memberStatus({ ...asked, attention: "needs" }).word, "ASKED YOU");
+  assert.equal(memberStatus({ ...asked, needsInput: true }).word, "WAITING ON YOU");
+});
+
 test("search matches every word, title matches first, and skips the all-parties entry", () => {
   const catalog = [{ id: "all", name: "All" }, { id: "1", name: "Docs pass", cwd: "/demo/lantern-shop" }, { id: "2", name: "Lantern shop sign", cwd: "/demo/x" }];
   assert.deepEqual(searchSources(catalog, "lantern").map((item) => item.id), ["2", "1"]);
