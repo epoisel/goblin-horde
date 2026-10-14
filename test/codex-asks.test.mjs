@@ -132,6 +132,12 @@ test("the approval guess names the waiting command or patch, and the open turn s
     assert.equal(answered.call, null);
     assert.equal(answered.progress.total, 3);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+  // Code-mode calls name their command several ways.
+  const exec = (input) => callSummary({ type: "custom_tool_call", name: "exec", input }).command;
+  assert.equal(exec("const r = await tools.exec_command({\n  \"workdir\": \"/work\",\n  \"cmd\": \"npm run lint -- --fix\"\n});"), "npm run lint -- --fix");
+  assert.equal(exec("const cmd = 'git status --short';\nconst r = await tools.exec_command({ cmd, workdir: '/work' });"), "git status --short");
+  assert.equal(exec("const command = `make build`;\nawait tools.exec_command({ cmd: command });"), "make build");
+  assert.equal(exec("const out = await tools.mcp__tracker__get_issue({ id: 'X-1' });\ntext(out);"), "Use mcp__tracker__get_issue");
   assert.deepEqual(callSummary({ type: "local_shell_call", action: { command: ["bash", "-lc", "make test"] } }), { tool: "shell", command: "bash -lc make test" });
   assert.deepEqual(callSummary({ type: "function_call", name: "_search_messages", namespace: "mail", arguments: "{}" }), { tool: "_search_messages", command: "Use mail · _search_messages" });
 });
