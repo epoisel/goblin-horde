@@ -6,6 +6,7 @@ type and place only.
 """
 
 import io
+import json
 import os
 import sys
 import tempfile
@@ -226,6 +227,19 @@ class CloseButtonTests(unittest.TestCase):
         self.assertEqual(widget.surface, "window")
         self.assertEqual(widget.strip.window.state(), "withdrawn", "the strip hides unless asked to stay")
         self.assertFalse(request.exists())
+
+    def test_starting_again_after_the_x_opens_the_window_not_the_strip(self):
+        widget = self.widget
+        self.close_button(widget.root)
+        widget.close()
+        saved = json.loads((Path(self.folder) / "goblins.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["surface"], "strip", "closed to the strip")
+        again = GoblinWidget("", 44190, demo=True)
+        self.addCleanup(again.close)
+        quiet(again)
+        settle(again)
+        self.assertEqual(again.root.state(), "normal", "the Start menu or `start` opens the window")
+        self.assertEqual(again.surface, "window")
 
     def test_a_failing_callback_is_counted_and_the_widget_keeps_running(self):
         widget = self.widget

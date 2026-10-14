@@ -11,7 +11,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MARKER, autostart, install, makeContext, readManifest, status } from "../lib/manager.mjs";
+import { MARKER, autostart, install, makeContext, readManifest, start, status } from "../lib/manager.mjs";
 import { ownsShortcut, shortcutSpec, writeShortcut } from "../lib/shortcuts.mjs";
 import { OrcaReader } from "../lib/orca.mjs";
 import { finishLine, main } from "../goblin.mjs";
@@ -78,6 +78,72 @@ test("autostart off and install leave another copy's sign-in shortcut alone", wi
     await install(box.ctx, { ...box.flags, autostart: false });
     assert.equal(existsSync(box.startup), true);
     assert.ok(ownsShortcut(box.startup, join(box.root, "other-copy")));
+  } finally { box.cleanup(); }
+});
+
+test("signing in starts the goblin strip; the Start menu entry opens the window", windowsOnly, async () => {
+  const box = sandbox();
+  try {
+    await install(box.ctx, { ...box.flags, autostart: true });
+    const args = (link) => box.written.filter((item) => item.link === link).at(-1).spec.args;
+    assert.doesNotMatch(args(box.menu), /--surface/);
+    assert.match(args(box.startup), /" start --install-dir ".*" --surface strip$/);
+    box.written.length = 0;
+    assert.equal(autostart(box.ctx, box.flags, true).enabled, true);
+    assert.match(args(box.startup), /--surface strip$/);
+  } finally { box.cleanup(); }
+});
+
+test("install leaves another copy's Start menu entry alone and says how to start this one", windowsOnly, async () => {
+  const box = sandbox();
+  try {
+    const other = join(box.root, "other-copy");
+    box.ctx.writeShortcut(box.menu, shortcutSpec({ nodePath: process.execPath, installDir: other }));
+    box.written.length = 0;
+    const result = await install(box.ctx, box.flags);
+    assert.ok(ownsShortcut(box.menu, other), "still the other copy's");
+    assert.equal(box.written.some((item) => item.link === box.menu), false);
+    assert.equal(result.startMenu, false, "setup does not point at a Start menu entry that opens another copy");
+    assert.ok(result.messages.some((line) => /opens another Goblin Horde copy, so it was left as it is.*goblin\.mjs" start/.test(line)),
+      result.messages.join("\n"));
+    // This copy's own entry is still refreshed on the next install.
+    rmSync(box.menu);
+    assert.equal((await install(box.ctx, box.flags)).startMenu, true);
+  } finally { box.cleanup(); }
+});
+
+test("start brings a running widget's window forward, but the sign-in start leaves it as it is", async () => {
+  const box = sandbox();
+  try {
+    await install(box.ctx, box.flags);
+    const { installDir, stateDir } = box.flags;
+    const running = [
+      { pid: 990001, argv: ["pythonw.exe", join(installDir, "desktop_widget.py"), "--port", "43993"], command: "", started: "1" },
+      { pid: 990002, argv: ["node.exe", join(installDir, "server.mjs")], command: "", started: "1" },
+    ];
+    const ctx = { ...box.ctx, listProcesses: () => running };
+    const request = join(stateDir, "run", "show-widget");
+    const signIn = await start(ctx, { ...box.flags, surface: "strip" });
+    assert.equal(signIn.ui, "widget");
+    assert.equal(existsSync(request), false, "signing in does not pop the window open");
+    await start(ctx, box.flags);
+    assert.equal(existsSync(request), true, "the Start menu or `start` opens the window");
+    await assert.rejects(start(ctx, { ...box.flags, surface: "corner" }), /--surface must be window or strip/);
+  } finally { box.cleanup(); }
+});
+
+test("setup --yes --no-claude-hooks never connects Claude Code", async () => {
+  const box = sandbox();
+  try {
+    assert.equal(await main(["setup", "--yes", "--no-claude-hooks", ...box.argv], box.ctx), 0);
+    assert.deepEqual(JSON.parse(readFileSync(join(box.claudeDir, "settings.json"), "utf8")), {}, "Claude Code's settings are untouched");
+    assert.equal(box.marker().claudeHooks.installed, false);
+    assert.equal(box.marker().claudeHooks.declined, true, "the no is remembered");
+    // An explicit yes connects it, and a later explicit no takes this copy's hooks out again.
+    assert.equal(await main(["setup", "--yes", "--claude-hooks", ...box.argv], box.ctx), 0);
+    assert.equal(box.marker().claudeHooks.installed, true);
+    assert.equal(await main(["setup", "--yes", "--no-claude-hooks", ...box.argv], box.ctx), 0);
+    assert.deepEqual(JSON.parse(readFileSync(join(box.claudeDir, "settings.json"), "utf8")), {});
   } finally { box.cleanup(); }
 });
 

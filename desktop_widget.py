@@ -169,7 +169,9 @@ class GoblinWidget:
         self.reduced_motion_choice = self.settings["reducedMotion"]
         self.keep_on_top = self.settings["keepOnTop"]
         self.show_strip_pref = self.settings["showStrip"]
-        self.surface = surface if surface in ("window", "strip") else self.settings["surface"]
+        # Starting from the Start menu, `start`, or a double-click always opens the window; only the
+        # sign-in shortcut asks for the strip (`--surface strip`). Where it was last closed is not reused.
+        self.surface = surface if surface in ("window", "strip") else "window"
         self.done_open = self.settings["doneOpen"]
         self.welcomed = self.settings["welcomed"]
         self.focus_thread = thread_id or select
@@ -1046,8 +1048,9 @@ class GoblinWidget:
         command = [shutil.which("node") or "node", str(HERE / "goblin.mjs"), "start", "--ui", "none",
                    "--port", str(self.port), "--install-dir", str(HERE),
                    "--state-dir", os.environ.get("GOBLIN_HORDE_STATE_DIR", "")]
-        if os.environ.get("CLAUDE_CONFIG_DIR"):
-            command += ["--claude-config-dir", os.environ["CLAUDE_CONFIG_DIR"]]
+        for variable, flag in (("CLAUDE_CONFIG_DIR", "--claude-config-dir"), ("CODEX_HOME", "--codex-home")):
+            if os.environ.get(variable) and Path(os.environ[variable]).is_absolute():
+                command += [flag, os.environ[variable]]
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 
         def run() -> int:

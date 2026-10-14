@@ -298,6 +298,16 @@ test("the viewer reads the Claude settings folder chosen with --claude-config-di
   } finally { box.cleanup(); }
 });
 
+test("the viewer, and the Codex it starts, use the Codex home chosen with --codex-home", async () => {
+  const box = sandbox();
+  try {
+    const chosen = join(box.root, "chosen-codex");
+    const env = childEnv(box.ctx, locate(box.ctx, { ...box.flags, codexHome: chosen }), "instance");
+    assert.equal(env.CODEX_HOME, chosen);
+    assert.equal(childEnv(box.ctx, locate(box.ctx, box.flags), "instance").CODEX_HOME, box.codexDir, "else the one the environment names");
+  } finally { box.cleanup(); }
+});
+
 test("emit validates and records into the isolated state folder", async () => {
   const box = sandbox();
   try {

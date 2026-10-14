@@ -26,7 +26,7 @@ const { claudeSettingsPath } = await import("./lib/claude-hooks.mjs");
 const { appendExtensionRecord, extensionFeedDir, validateExtensionRecord } = await import("./lib/extension.mjs");
 
 const BOOLEAN = new Set(["json", "no-start", "skip-skill", "remove-settings", "claude-hooks", "no-claude-hooks", "check", "no-browser", "compact", "help", "report", "yes"]);
-const VALUE = new Set(["install-dir", "state-dir", "claude-config-dir", "codex-home", "codex-skill-dir", "port", "ui", "feed", "record"]);
+const VALUE = new Set(["install-dir", "state-dir", "claude-config-dir", "codex-home", "codex-skill-dir", "port", "ui", "surface", "feed", "record"]);
 
 export function parseArgs(argv) {
   const positional = [];
@@ -47,7 +47,7 @@ export function parseArgs(argv) {
 function managerFlags(flags) {
   return {
     installDir: flags["install-dir"], stateDir: flags["state-dir"], claudeConfigDir: flags["claude-config-dir"], codexHome: flags["codex-home"],
-    codexSkillDir: flags["codex-skill-dir"], port: flags.port, ui: flags.ui,
+    codexSkillDir: flags["codex-skill-dir"], port: flags.port, ui: flags.ui, surface: flags.surface,
     noStart: Boolean(flags["no-start"]), skipSkill: Boolean(flags["skip-skill"]), removeSettings: Boolean(flags["remove-settings"]),
     claudeHooks: flags["claude-hooks"] ? true : flags["no-claude-hooks"] ? false : undefined,
     openBrowser: !flags["no-browser"],
@@ -67,6 +67,7 @@ const HELP = `Goblin Horde manager
       --no-start                    Install without starting.
   node goblin.mjs start             Start the viewer (and desktop goblins on Windows and macOS).
       --ui auto|widget|browser|none --no-browser
+      --surface strip               Start with only the goblin strip (what signing in to Windows does).
   node goblin.mjs open [--compact]  Open the viewer in your browser.
   node goblin.mjs stop              Stop only this installation's own processes.
   node goblin.mjs status            Show what is installed and running.
@@ -160,6 +161,7 @@ function busyPortAdvice(port) {
  * installer again to update changes neither: sign-in start stays as it is, and a "no" to Claude Code
  * (remembered in the install marker) stays a "no". Without a terminal to answer (or with --yes) it
  * takes those defaults; on a first install that means connect Claude Code and do not start at sign-in.
+ * --claude-hooks and --no-claude-hooks answer the Claude Code question up front, --yes or not.
  */
 async function setup(ctx, options, { assumeYes = false } = {}) {
   const log = ctx.log;
@@ -200,8 +202,9 @@ async function setup(ctx, options, { assumeYes = false } = {}) {
       if (await ask("Open the Python download page?", false)) ctx.openUrl("https://www.python.org/downloads/");
     }
     const loc = locate(ctx, options);
-    let claudeHooks;
-    if (check("claude").present && check("claude-hooks").state !== "ok") {
+    // --claude-hooks or --no-claude-hooks is the answer already: never asked again, never overridden by a default.
+    let claudeHooks = options.claudeHooks;
+    if (claudeHooks === undefined && check("claude").present && check("claude-hooks").state !== "ok") {
       const declined = Boolean(loc.marker?.claudeHooks?.declined);
       log("Claude Code is on this computer. To show its sessions, Goblin Horde adds a few entries to Claude Code's");
       log(`settings in ${claudeSettingsPath(loc.claudeDir)} (a backup is kept; undo any time with: node goblin.mjs hooks remove).`);

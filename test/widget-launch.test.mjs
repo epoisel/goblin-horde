@@ -164,6 +164,18 @@ test("Windows start waits for the widget's ready line and keeps its output in wi
   } finally { box.cleanup(); }
 });
 
+test("the widget opens its window unless the sign-in start asks for the strip", async () => {
+  const box = folders();
+  try {
+    const plain = fakeSpawn({ output: `${WIDGET_READY}\n` });
+    await launchWidget(makeContext({ platform: "win32", env: {}, spawn: plain.spawn }), box.loc, "C:\\Python\\pythonw.exe", "i", { waitMs: 2000 });
+    assert.deepEqual(plain.calls[0].args.slice(1), ["--port", "43999"], "no saved surface is passed: the window opens");
+    const signIn = fakeSpawn({ output: `${WIDGET_READY}\n` });
+    await launchWidget(makeContext({ platform: "win32", env: {}, spawn: signIn.spawn }), box.loc, "C:\\Python\\pythonw.exe", "i", { waitMs: 2000, surface: "strip" });
+    assert.deepEqual(signIn.calls[0].args.slice(1), ["--port", "43999", "--surface", "strip"]);
+  } finally { box.cleanup(); }
+});
+
 test("Windows start falls back to the browser, saying why, when the widget exits or crashes", async () => {
   const box = folders();
   try {
