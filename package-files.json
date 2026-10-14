@@ -22,6 +22,7 @@
   "goblin_art.json",
   "goblin.ico",
   "Install Goblin Horde.cmd",
+  "Uninstall Goblin Horde.cmd",
   "skills/goblin-horde-manager/SKILL.md",
   "scripts/package.mjs",
   "lib/claude.mjs",
