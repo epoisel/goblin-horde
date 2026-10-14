@@ -813,6 +813,20 @@ def detail_from_actor(actor: dict) -> dict:
     }
 
 
+def with_public_steps(detail: dict | None, actor: dict) -> dict | None:
+    """A detail whose source keeps no records of its own (an extension feed, say) still shows the
+    public steps and last update the scene carries for the actor."""
+    if not isinstance(detail, dict):
+        return detail
+    fallback = None
+    filled = dict(detail)
+    for part in ("trail", "said"):
+        if not detail.get(part) and actor.get("activities"):
+            fallback = fallback or detail_from_actor(actor)
+            filled[part] = fallback[part]
+    return filled
+
+
 def merged_agent(actor: dict | None, detail: dict | None) -> dict:
     """The detail's agent, with anything it left out taken from the scene's copy of the actor."""
     base = dict(actor or {})

@@ -10,7 +10,7 @@ from horde_model import (DONE, FAILED, NEEDS, WORKING, RosterMemory, actor_class
                          clamp_window, coverage_note, default_selection, detail_from_actor, detail_sections,
                          display_name, duration, elapsed, join_reason, model_badge, motion_view, move_selection,
                          party_tree, progress_label, reachable, read_settings, row_line, search_sources,
-                         settings_to_save, source_chips, status_chip, strip_items, trail_result)
+                         settings_to_save, source_chips, status_chip, strip_items, trail_result, with_public_steps)
 
 # Noon, local time, so "today" never straddles midnight in a test.
 NOW = time.mktime((2026, 10, 14, 12, 0, 0, 0, 0, -1)) * 1000
@@ -284,6 +284,15 @@ class DetailTests(unittest.TestCase):
         self.assertEqual(detail["trail"][1]["status"], "failed")
         self.assertEqual(detail["said"]["text"], "Fixing the test now.")
         self.assertEqual(detail_sections(detail), ["said", "trail"])
+
+    def test_a_source_without_records_still_shows_its_public_steps(self):
+        actor = agent("ext-agent:relay:build:coder", activities=[
+            {"id": "1", "kind": "command", "title": "Ran checks", "status": "failed"}])
+        filled = with_public_steps({"agent": actor, "trail": [], "said": None, "plan": None}, actor)
+        self.assertEqual([item["id"] for item in filled["trail"]], ["1"])
+        own = {"agent": actor, "trail": [{"id": "own", "title": "x"}], "said": {"text": "Hi"}}
+        self.assertIs(with_public_steps(own, actor)["trail"], own["trail"], "the viewer's own records win")
+        self.assertIsNone(with_public_steps(None, actor))
 
     def test_trail_results_and_timers(self):
         self.assertEqual(trail_result({"status": "failed", "exitCode": 1, "durationMs": 2300}), [("exit 1 · 2.3s", "coral")])

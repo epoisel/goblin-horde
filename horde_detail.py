@@ -384,7 +384,8 @@ class DetailView:
             wanted.append(self.open_button)
         messenger = controls.get("message") if isinstance(controls.get("message"), dict) else None
         if messenger and self.app.can("/api/message", "/api/reply"):
-            set_text(self.message_button, str(messenger.get("label") or "Message…"))
+            label = str(messenger.get("label") or "Message").rstrip(".… ")
+            set_text(self.message_button, f"{label}…")  # It opens a box to write in first.
             wanted.append(self.message_button)
         # Dismiss sits on the ask card itself, beside the ways to answer it.
         if not opener or not self.app.can("/api/open"):
@@ -662,7 +663,7 @@ class DetailView:
             if opener and app.can("/api/open"):
                 FlatButton(actions, theme, f"Answer in {app_name} ↗", self.on_open, kind="primary").pack(side="left")
             else:
-                status.say(f"Answer it in {app_name}.", fg=MUTED)
+                tk.Label(actions, text=f"Answer it in {app_name}.", bg=CARD, fg=MUTED, font=theme.body).pack(side="left")
         if not ask.get("legacy") and app.can("/api/dismiss") and (
                 ((self.detail or {}).get("agent") or {}).get("controls", {}) or {}).get("dismiss", True):
             FlatButton(actions, theme, "Dismiss", self.on_dismiss, kind="quiet").pack(side="right")

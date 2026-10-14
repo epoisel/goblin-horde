@@ -34,7 +34,7 @@ from horde_demo import DemoApi
 from horde_model import (NEEDS, Counts, RosterMemory, actor_id, ask_of, build_roster, clamp_window, coverage_note,
                          default_selection, detail_from_actor, display_name, is_agent, merged_agent, motion_view,
                          move_selection, party_scope, read_settings, search_sources, settings_to_save, source_chips,
-                         strip_items)
+                         strip_items, with_public_steps)
 from horde_theme import HEADER, Theme, Tooltip, WheelRouter
 from horde_window import HordeWindow
 
@@ -579,7 +579,7 @@ class GoblinWidget:
         if self.detail_route is False:
             detail = detail_from_actor(actor)
         else:
-            detail = self.details.get(ident)
+            detail = with_public_steps(self.details.get(ident), actor)
             if detail is None and ident in self.details:
                 detail = detail_from_actor(actor)  # The viewer no longer has this agent's records.
         view.show_agent(self.apply_local(merged_agent(actor, detail)), detail)
@@ -781,6 +781,8 @@ class GoblinWidget:
                 view.say(str(error), error=True, seconds=10)
             elif isinstance(result, dict) and result.get("message"):
                 view.say(str(result["message"]))
+            elif isinstance(result, dict) and result.get("opened"):
+                view.say("Opened.")
         self.when_done(self.executor.submit(self.api.open_agent, actor_id(actor)), done)
 
     def dismiss_ask(self, actor: dict) -> None:
