@@ -41,6 +41,13 @@ def route(path: str) -> str:
     return path.split("?", 1)[0]
 
 
+def local_opener() -> urllib.request.OpenerDirector:
+    """An opener that never uses a proxy. urllib otherwise sends 127.0.0.1 traffic through
+    HTTP_PROXY (or the system proxy), which would hand every scene, agent detail, and reply to
+    the proxy, or fail outright when it cannot reach this computer's viewer."""
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 class HordeApi:
     """Reads and controls for one viewer on 127.0.0.1:<port>. Only this computer is ever asked."""
 
@@ -48,6 +55,7 @@ class HordeApi:
         self.port = int(port)
         self.origin = f"http://127.0.0.1:{self.port}"
         self.missing: set[str] = set()
+        self.opener = local_opener()
 
     # Transport ---------------------------------------------------------------------------------
     def available(self, path: str) -> bool:
@@ -68,7 +76,7 @@ class HordeApi:
 
     def get(self, path: str, timeout: float = 10) -> dict:
         try:
-            with urllib.request.urlopen(f"{self.origin}{path}", timeout=timeout) as response:
+            with self.opener.open(f"{self.origin}{path}", timeout=timeout) as response:
                 return json.load(response)
         except urllib.error.HTTPError as error:
             raise self._fail(path, error) from None
@@ -78,7 +86,7 @@ class HordeApi:
                                          data=json.dumps(data or {}).encode("utf-8"),
                                          headers={"Content-Type": "application/json", "Origin": self.origin})
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with self.opener.open(request, timeout=timeout) as response:
                 return json.load(response)
         except urllib.error.HTTPError as error:
             raise self._fail(path, error) from None

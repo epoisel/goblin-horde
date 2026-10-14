@@ -21,7 +21,7 @@ import { ownsShortcut, removeShortcut, shortcutPaths, shortcutSpec, writeShortcu
 import { claudeConfigDir } from "./lib/paths.mjs";
 import { CODEX_NOT_FOUND, codexCommand, codexSourceState } from "./lib/codex-bin.mjs";
 import { Pairing, sessionCookie } from "./lib/pairing.mjs";
-import { PhoneAccess, loadPairingCode, localOnlyRefusal } from "./lib/phone.mjs";
+import { PhoneAccess, loadPairingCode, localOnlyRefusal, mobileStatus, requestAnswer } from "./lib/phone.mjs";
 import { publicRequests, publicView } from "./lib/public-view.mjs";
 import { AgentDetailService, ClaudeDesktopIndex, agentRoutes } from "./lib/agent-detail.mjs";
 import { ClaudeDetailReader } from "./lib/claude-detail.mjs";
@@ -714,20 +714,8 @@ async function handleRequestAnswer(request, response) {
   const requestId = String(data.requestId ?? "");
   const pending = reader.getRequest(threadId, requestId);
   if (!pending) return json(response, 404, { error: "That decision is no longer pending." });
-  let result;
-  if (pending.method === "item/tool/requestUserInput") {
-    const questions = pending.params.questions || [];
-    const answers = {};
-    for (const question of questions) {
-      const answer = String(data.answers?.[question.id] || "").trim();
-      if (!answer || answer.length > 2000) return json(response, 400, { error: "Answer every question before submitting." });
-      answers[question.id] = { answers: [answer] };
-    }
-    result = { answers };
-  } else if (["item/commandExecution/requestApproval", "item/fileChange/requestApproval"].includes(pending.method)) {
-    if (!["accept", "decline"].includes(data.decision)) return json(response, 400, { error: "Choose approve or decline." });
-    result = { decision: data.decision };
-  } else return json(response, 400, { error: "This request type is not supported on the phone yet." });
+  const { result, status, error } = requestAnswer(pending, data, { local: isLocal(request) });
+  if (!result) return json(response, status, { error });
   reader.answerRequest(threadId, requestId, result);
   return json(response, 200, { answered: true });
 }
@@ -841,13 +829,7 @@ const handler = async (request, response) => {
       if (url.pathname === "/") return await serveFile(response, "pair.html");
       return json(response, 401, { error: "Pair this phone with the viewer first." });
     }
-    if (url.pathname === "/api/mobile") {
-      const state = phone.state();
-      return json(response, 200, {
-        local: isLocal(request), enabled: state.enabled, available: state.listening, address: state.url, adapter: state.adapter, problem: state.problem,
-        ...(isLocal(request) && state.listening ? { code: pairing.code } : {}),
-      });
-    }
+    if (url.pathname === "/api/mobile") return json(response, 200, mobileStatus({ local: isLocal(request), state: phone.state(), code: pairing.code }));
     if (url.pathname === "/api/config") return json(response, 200, { defaultThreadId, pollMs: 2000 });
     // Local only: the manager uses this to recognise its own server before stopping anything.
     if (url.pathname === "/api/health") {
@@ -855,7 +837,9 @@ const handler = async (request, response) => {
       return json(response, 200, { product: "GoblinHorde", version, pid: process.pid, installDir: here.replace(/[\\/]+$/, ""), instance });
     }
     if (url.pathname === "/api/capabilities") return json(response, 200, await capabilities());
-    if (url.pathname === "/api/requests") return json(response, 200, { requests: publicRequests(reader.listRequests(url.searchParams.get("id") || defaultThreadId)) });
+    if (url.pathname === "/api/requests") {
+      return json(response, 200, { requests: publicRequests(reader.listRequests(url.searchParams.get("id") || defaultThreadId), { phone: !isLocal(request) }) });
+    }
     if (url.pathname === "/api/threads") return json(response, 200, publicView({ ...(await listAllSources()), watched: [...watchList.ids] }, { phone: !isLocal(request) }));
     if (url.pathname === "/api/diagnostics") {
       if (!isLocal(request)) return json(response, 404, { error: "Not found" });
