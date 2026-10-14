@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { Pairing, sessionCookie } from "../lib/pairing.mjs";
+import { PAIRING_CODE, Pairing, newPairingCode, sessionCookie } from "../lib/pairing.mjs";
 
 const clock = (start = 1_000_000) => {
   const time = { now: start };
@@ -47,6 +47,22 @@ test("old attempt records and expired sessions are pruned as requests arrive", (
   pairing.allow("c");
   assert.equal(pairing.sessions.has(token), false);
   assert.equal(pairing.hasSession(token), false);
+});
+
+test("a reset sets a new code and signs every phone out; endSessions only signs them out", () => {
+  const { now } = clock();
+  const pairing = new Pairing({ code: "ABCDEFGH", now });
+  const first = pairing.pair("ip", "ABCDEFGH");
+  pairing.endSessions();
+  assert.equal(pairing.hasSession(first), false);
+  const second = pairing.pair("ip", "ABCDEFGH");
+  for (let index = 0; index < 5; index++) pairing.allow("other");
+  pairing.reset("JKLMNPQR");
+  assert.equal(pairing.hasSession(second), false);
+  assert.equal(pairing.pair("ip", "ABCDEFGH"), "");
+  assert.equal(pairing.allow("other"), true, "attempt counts start over with the new code");
+  assert.match(newPairingCode(), PAIRING_CODE);
+  assert.equal(newPairingCode(() => Buffer.from([0, 1, 2, 3, 4, 5, 6, 31])), "ABCDEFG9");
 });
 
 test("the session token is read from the cookie header", () => {

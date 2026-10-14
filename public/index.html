@@ -96,13 +96,18 @@
     <p id="widget-note" class="drawer-help"></p>
     <div id="mobile-panel" hidden>
       <h3 class="lp-section">PHONE</h3>
-      <button id="mobile-toggle" class="chip" type="button" aria-expanded="false" aria-controls="mobile-details">Pair a phone</button>
-      <div id="mobile-details" class="mobile-details" hidden>
-        <p class="drawer-help">On the same Wi-Fi, open:</p>
-        <a id="mobile-address" class="mobile-address" href="#"></a>
-        <p class="drawer-help">Then enter this pairing code:</p>
-        <strong id="mobile-code" class="mobile-code"></strong>
+      <p id="mobile-status" class="drawer-help"></p>
+      <div id="mobile-pair" hidden>
+        <button id="mobile-toggle" class="chip" type="button" aria-expanded="false" aria-controls="mobile-details">Pair a phone</button>
+        <div id="mobile-details" class="mobile-details" hidden>
+          <p class="drawer-help">On the same Wi-Fi, open:</p>
+          <a id="mobile-address" class="mobile-address" href="#"></a>
+          <p class="drawer-help">Then enter this pairing code:</p>
+          <strong id="mobile-code" class="mobile-code"></strong>
+        </div>
+        <button id="mobile-reset" class="chip small" type="button">New pairing code (forget phones)</button>
       </div>
+      <button id="mobile-switch" class="chip small" type="button">Turn on phone access</button>
     </div>
     <p class="drawer-help foot">Runs on your computer. Shows public updates and visible actions only, never private reasoning.</p>
   </aside>

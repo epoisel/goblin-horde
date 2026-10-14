@@ -1013,6 +1013,38 @@ $("#mobile-toggle").addEventListener("click", () => {
   $("#mobile-toggle").textContent = details.hidden ? "Pair a phone" : "Hide pairing code";
   $("#mobile-code").textContent = details.hidden ? "" : mobilePairingCode; // Shown only on request.
 });
+// Phone access is off until the person turns it on here or in the desktop goblins' ⋯ menu. Only this
+// computer sees the switch; a paired phone never gets this panel.
+let phoneEnabled = false;
+function showPhone(mobile) {
+  if (!mobile.local) return;
+  phoneEnabled = Boolean(mobile.enabled);
+  const paired = Boolean(mobile.available && mobile.code);
+  $("#mobile-status").textContent = !mobile.enabled
+    ? "Phone access is off. Turn it on to read these chats, reply to Codex, and approve Codex requests from a phone on the same Wi-Fi."
+    : paired ? `Phone access is on${mobile.adapter ? ` (${mobile.adapter})` : ""}. Anyone with the code on this network can read and reply.`
+      : mobile.problem || "Phone access is on, but no Wi-Fi address is available yet.";
+  $("#mobile-switch").textContent = mobile.enabled ? "Turn off phone access" : "Turn on phone access";
+  $("#mobile-pair").hidden = !paired;
+  $("#mobile-address").textContent = paired ? mobile.address : "";
+  $("#mobile-address").href = paired ? mobile.address : "#";
+  mobilePairingCode = paired ? mobile.code : "";
+  if (!paired) { $("#mobile-details").hidden = true; $("#mobile-code").textContent = ""; $("#mobile-toggle").textContent = "Pair a phone"; }
+  $("#mobile-panel").hidden = false;
+}
+async function changePhone(path, value) {
+  try {
+    await postJson(path, value);
+    showPhone(await getJson("/api/mobile"));
+  } catch (error) { $("#mobile-status").textContent = error.message; }
+}
+$("#mobile-switch").addEventListener("click", () => {
+  if (!phoneEnabled && !confirm("Turn on phone access?\n\nThis computer starts answering on your Wi-Fi. A phone that enters the pairing code can read these chats, send replies to Codex, and approve or decline Codex commands. It uses plain HTTP, so only do this on a network you trust.")) return;
+  changePhone("/api/phone", { enabled: !phoneEnabled });
+});
+$("#mobile-reset").addEventListener("click", () => {
+  if (confirm("Make a new pairing code? Every paired phone is signed out and must pair again with the new code.")) changePhone("/api/phone/reset", {});
+});
 $("#enable-system-alerts").addEventListener("click", async () => {
   const permission = await Notification.requestPermission();
   $("#enable-system-alerts").textContent = permission === "granted" ? "System alerts on" : "Unavailable";
@@ -1040,13 +1072,7 @@ try {
     pollMs = config.pollMs || pollMs;
     // A launcher started with -ThreadId opens on that chat; the launchpad is one click away.
     if (!params.has("thread") && config.defaultThreadId && config.defaultThreadId !== "all") scope = config.defaultThreadId;
-    getJson("/api/mobile").then((mobile) => {
-      if (!mobile.available || !mobile.code) return;
-      $("#mobile-address").textContent = mobile.address;
-      $("#mobile-address").href = mobile.address;
-      mobilePairingCode = mobile.code;
-      $("#mobile-panel").hidden = false;
-    }).catch(() => {});
+    getJson("/api/mobile").then(showPhone).catch(() => {});
   }
   await loadCatalog();
   if (scope !== "all" && !catalog.some((item) => item.id === scope) && !/^(claude|orca|ext):/.test(scope) && !demoMode)

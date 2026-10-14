@@ -1712,6 +1712,8 @@ class Launchpad:
         if owner.autostart.get("available"):
             menu.add_command(label=("✓ " if owner.autostart.get("enabled") else "") + "Start with Windows",
                              command=owner.toggle_autostart)
+        menu.add_command(label=f"Phone access (Wi-Fi): {'On' if owner.phone.get('enabled') else 'Off'}", command=owner.toggle_phone)
+        menu.add_command(label="New pairing code (forget phones)", command=owner.reset_pairing)
         menu.add_command(label="Copy diagnostic report", command=owner.copy_diagnostics)
         menu.add_separator()
         menu.add_command(label="Close goblins", command=owner.close)
@@ -1825,6 +1827,7 @@ class GoblinWidget:
         # Which feeds the viewer can see (Codex, Claude Code, Orca, extensions), refreshed every 30 seconds.
         self.sources: dict = {}
         self.autostart: dict = {}  # {available, enabled}: starting at Windows sign-in.
+        self.phone: dict = {}  # {enabled, listening, url, adapter, problem}: phone access over Wi-Fi, off by default.
         self.welcomed = False  # The launchpad's welcome card stays until "Got it".
         self.sources_pending = None
         self.sources_after = None
@@ -2338,6 +2341,7 @@ class GoblinWidget:
                 capabilities = self.sources_pending.result()
                 self.sources = capabilities.get("sources") or {}
                 self.autostart = capabilities.get("autostart") or {}
+                self.phone = capabilities.get("phone") or {}
             except Exception:
                 pass  # The board already says when the viewer itself is not answering.
             self.sources_pending = None
@@ -2424,6 +2428,51 @@ class GoblinWidget:
             else:
                 self.autostart = result.get("autostart") or self.autostart
         self.when_done(self.executor.submit(self.post_local, "/api/autostart", {"enabled": enable}), done)
+
+    def toggle_phone(self) -> None:
+        """Turn phone access over Wi-Fi on (after an explicit yes) or off; off signs every phone out."""
+        enable = not self.phone.get("enabled")
+        if enable and not messagebox.askyesno(
+                "Phone access",
+                "Turn on phone access?\n\nThis computer starts answering on your Wi-Fi. A phone on the same network that "
+                "enters the pairing code can read these chats, send replies to Codex, and approve or decline Codex "
+                "commands.\n\nIt uses plain HTTP, so only turn it on at home or on another network you trust. "
+                "Turn it off here any time.", parent=self.root):
+            return
+
+        def done(result, error) -> None:
+            if error:
+                messagebox.showwarning("Goblin Horde", f"Phone access did not change: {error}", parent=self.root)
+                return
+            self.phone = result.get("phone") or self.phone
+            if not enable:
+                messagebox.showinfo("Goblin Horde", "Phone access is off. Paired phones were signed out.", parent=self.root)
+            elif self.phone.get("listening"):
+                messagebox.showinfo(
+                    "Goblin Horde",
+                    f"Phone access is on ({self.phone.get('adapter') or 'Wi-Fi'}).\n\nOn your phone, open:\n"
+                    f"{self.phone.get('url', '')}\n\nThen enter this pairing code:\n{result.get('code', '')}", parent=self.root)
+            else:
+                messagebox.showwarning("Goblin Horde", str(self.phone.get("problem") or "No Wi-Fi address is available yet."),
+                                       parent=self.root)
+        self.when_done(self.executor.submit(self.post_local, "/api/phone", {"enabled": enable}), done)
+
+    def reset_pairing(self) -> None:
+        """A new pairing code: every paired phone is signed out and must pair again."""
+        if not messagebox.askyesno("New pairing code", "Make a new pairing code?\n\nEvery paired phone is signed out "
+                                   "and must pair again with the new code.", parent=self.root):
+            return
+
+        def done(result, error) -> None:
+            if error:
+                messagebox.showwarning("Goblin Horde", f"The pairing code did not change: {error}", parent=self.root)
+                return
+            self.phone = result.get("phone") or self.phone
+            where = f"\n\nOn your phone, open {self.phone['url']}" if self.phone.get("listening") and self.phone.get("url") else \
+                "\n\nPhone access is off; turn it on from this menu to pair a phone."
+            messagebox.showinfo("Goblin Horde", f"New pairing code: {result.get('code', '')}\n\nPaired phones were signed out."
+                                + where, parent=self.root)
+        self.when_done(self.executor.submit(self.post_local, "/api/phone/reset"), done)
 
     def copy_diagnostics(self) -> None:
         """Copy a short report that is safe to share: versions, states, counts, timings; no chats or codes."""

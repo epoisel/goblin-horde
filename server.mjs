@@ -5,8 +5,6 @@ import { stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
-import { randomBytes } from "node:crypto";
-import { networkInterfaces } from "node:os";
 import { markRunningElsewhere, transformThread } from "./lib/transform.mjs";
 import { withApprovalGuess } from "./lib/rollout.mjs";
 import { readDescendants } from "./lib/descendants.mjs";
@@ -22,6 +20,8 @@ import { removeShortcut, shortcutPaths, shortcutSpec, writeShortcut } from "./li
 import { claudeConfigDir } from "./lib/paths.mjs";
 import { CODEX_NOT_FOUND, codexCommand, codexSourceState } from "./lib/codex-bin.mjs";
 import { Pairing, sessionCookie } from "./lib/pairing.mjs";
+import { PhoneAccess, loadPairingCode, localOnlyRefusal } from "./lib/phone.mjs";
+import { publicRequests, publicView } from "./lib/public-view.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = resolve(here, "public");
@@ -31,47 +31,9 @@ const version = JSON.parse(readFileSync(join(here, "package.json"), "utf8")).ver
 // The manager passes a random instance id so `goblin stop` can tell this copy from any other server on the port.
 const instance = /^[a-f0-9]{16,64}$/.test(process.env.GOBLIN_HORDE_INSTANCE || "") ? process.env.GOBLIN_HORDE_INSTANCE : "";
 const stateDir = goblinStateDir();
-const codeDir = stateDir;
-const codeFile = join(codeDir, "pairing-code.txt");
-function loadPairingCode() {
-  try {
-    const saved = readFileSync(codeFile, "utf8").trim();
-    if (/^[A-HJ-NP-Z2-9]{8}$/.test(saved)) return saved;
-  } catch { /* Create a code below. */ }
-  try {
-    if (!process.env.LOCALAPPDATA) throw new Error("No Activity Lens folder outside Windows.");
-    const legacy = readFileSync(join(process.env.LOCALAPPDATA, "ActivityLens", "pairing-code.txt"), "utf8").trim();
-    if (/^[A-HJ-NP-Z2-9]{8}$/.test(legacy)) {
-      mkdirSync(codeDir, { recursive: true });
-      writeFileSync(codeFile, `${legacy}\n`, { mode: 0o600 });
-      return legacy;
-    }
-  } catch { /* No old code to carry over. */ }
-  const code = Array.from(randomBytes(8), (byte) => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[byte % 32]).join("");
-  mkdirSync(codeDir, { recursive: true });
-  writeFileSync(codeFile, `${code}\n`, { mode: 0o600 });
-  return code;
-}
-const pairingCode = loadPairingCode();
-const pairing = new Pairing({ code: pairingCode });
-
-function isPrivateIPv4(ip) {
-  const parts = String(ip).split(".").map(Number);
-  return parts.length === 4 && parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)
-    && (parts[0] === 10 || (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) || (parts[0] === 192 && parts[1] === 168));
-}
-
-function findLanIp() {
-  const entries = Object.entries(networkInterfaces()).flatMap(([name, addresses]) =>
-    (addresses || []).filter((address) => address.family === "IPv4" && !address.internal && isPrivateIPv4(address.address))
-      .map((address) => ({ name, ip: address.address })));
-  return entries.find(({ name }) => /wi-?fi|wlan/i.test(name))?.ip
-    || entries.find(({ name }) => /ethernet/i.test(name) && !/virtual|vpn|vEthernet/i.test(name))?.ip
-    || "";
-}
-
-const lanIp = process.env.LAN_IP || findLanIp();
-if (lanIp && !isPrivateIPv4(lanIp)) throw new Error("LAN_IP must be a private IPv4 address");
+// Phone access is off until the person turns it on (phone.json); see lib/phone.mjs.
+const pairing = new Pairing({ code: loadPairingCode(stateDir) });
+const phone = new PhoneAccess({ stateDir, port, pairing, handler: (request, response) => safeHandler(request, response) });
 const defaultThreadId = process.env.CODEX_VIEWER_THREAD_ID || "all";
 
 // Turns read per chat: the all-parties view needs only the latest work; an opened chat shows more.
@@ -494,6 +456,8 @@ async function capabilities() {
         ? { native: true, note: "The transparent desktop goblins run on macOS with python.org or Homebrew Python (Tk 8.6 or newer); \"node goblin.mjs doctor\" shows whether this Mac has it." }
         : { native: false, note: "This computer uses the browser viewer. The transparent desktop goblins run on Windows and macOS." },
     autostart: autostartState(),
+    // Phone access over Wi-Fi: off unless the person turned it on. Never the pairing code.
+    phone: phone.state(),
     sources: {
       codex: codexSource(),
       claude: {
@@ -726,26 +690,34 @@ async function handleRequestAnswer(request, response) {
 
 const handler = async (request, response) => {
   const hostHeader = request.headers.host || "";
-  const allowedHosts = new Set([host, "localhost", lanIp].filter(Boolean));
+  const allowedHosts = new Set([host, "localhost", phone.host].filter(Boolean));
   if (!allowedHosts.has(hostHeader.split(":")[0])) return json(response, 403, { error: "Local network access only" });
+  // Nothing but this computer is answered while phone access is off, even on a connection left open.
+  if (!isLocal(request) && !phone.listening) return json(response, 403, { error: "Phone access is turned off on this computer." });
   const url = new URL(request.url || "/", `http://${hostHeader}`);
   const origin = `http://${hostHeader}`;
   if (url.pathname === "/api/pair" && request.method === "POST" && !isLocal(request)) {
     try { return await handlePair(request, response, origin); }
     catch { return fail(response, 500, "Unable to pair this phone."); }
   }
-  if (["/api/reconnect", "/api/connect-claude", "/api/autostart"].includes(url.pathname) && request.method === "POST") {
-    // Only this computer may restart a source or change Claude Code's settings; never a paired phone.
-    if (!isLocal(request)) return json(response, 403, { error: "Only this computer can do that." });
-    if (request.headers.origin !== origin || !String(request.headers["content-type"] || "").startsWith("application/json"))
-      return json(response, 403, { error: "Open the viewer first." });
+  if (["/api/reconnect", "/api/connect-claude", "/api/autostart", "/api/phone", "/api/phone/reset"].includes(url.pathname) && request.method === "POST") {
+    // Only this computer may restart a source, change Claude Code's settings, or turn phone access on; never a paired phone.
+    const refusal = localOnlyRefusal({ local: isLocal(request), origin, headers: request.headers });
+    if (refusal) return json(response, refusal.status, { error: refusal.error });
     try {
       const data = await readBody(request);
+      if (url.pathname === "/api/phone") {
+        const state = await phone.setEnabled(data.enabled, { address: typeof data.address === "string" ? data.address : "" });
+        return json(response, 200, { phone: state, ...(state.listening ? { code: pairing.code } : {}) });
+      }
+      if (url.pathname === "/api/phone/reset") return json(response, 200, { phone: phone.resetPairing(), code: pairing.code });
       if (url.pathname === "/api/autostart") {
         const paths = installed ? shortcutPaths() : null;
         if (!paths) return json(response, 409, { error: "Starting at sign-in needs an installed copy on Windows." });
         if (typeof data.enabled !== "boolean") return json(response, 400, { error: "Say whether to start at sign-in." });
         if (data.enabled) writeShortcut(paths.startup, shortcutSpec({ nodePath: process.execPath, installDir: here.replace(/[\\/]+$/, "") }));
+        // TODO(B6): refuse to delete a Startup shortcut that runs another installation once lib/manager.mjs
+        // exports its ownsShortcut(link, installDir) check; until then this removes whatever is there.
         else removeShortcut(paths.startup);
         return json(response, 200, { autostart: autostartState() });
       }
@@ -803,11 +775,13 @@ const handler = async (request, response) => {
       if (url.pathname === "/") return await serveFile(response, "pair.html");
       return json(response, 401, { error: "Pair this phone with the viewer first." });
     }
-    if (url.pathname === "/api/mobile") return json(response, 200, {
-      available: Boolean(lanIp),
-      address: lanIp ? `http://${lanIp}:${port}` : "",
-      ...(isLocal(request) ? { code: pairingCode } : {}),
-    });
+    if (url.pathname === "/api/mobile") {
+      const state = phone.state();
+      return json(response, 200, {
+        local: isLocal(request), enabled: state.enabled, available: state.listening, address: state.url, adapter: state.adapter, problem: state.problem,
+        ...(isLocal(request) && state.listening ? { code: pairing.code } : {}),
+      });
+    }
     if (url.pathname === "/api/config") return json(response, 200, { defaultThreadId, pollMs: 2000 });
     // Local only: the manager uses this to recognise its own server before stopping anything.
     if (url.pathname === "/api/health") {
@@ -815,44 +789,46 @@ const handler = async (request, response) => {
       return json(response, 200, { product: "GoblinHorde", version, pid: process.pid, installDir: here.replace(/[\\/]+$/, ""), instance });
     }
     if (url.pathname === "/api/capabilities") return json(response, 200, await capabilities());
-    if (url.pathname === "/api/requests") return json(response, 200, { requests: reader.listRequests(url.searchParams.get("id") || defaultThreadId) });
-    if (url.pathname === "/api/threads") return json(response, 200, { ...(await listAllSources()), watched: [...watchList.ids] });
+    if (url.pathname === "/api/requests") return json(response, 200, { requests: publicRequests(reader.listRequests(url.searchParams.get("id") || defaultThreadId)) });
+    if (url.pathname === "/api/threads") return json(response, 200, publicView({ ...(await listAllSources()), watched: [...watchList.ids] }, { phone: !isLocal(request) }));
     if (url.pathname === "/api/diagnostics") {
       if (!isLocal(request)) return json(response, 404, { error: "Not found" });
       const report = diagnosticReport({ version, platform: process.platform, node: process.versions.node, stats, now: Date.now(),
         capabilities: await capabilities(), scene: allSceneCached, watched: watchList.ids.length, codexRestarts: reader.restarts,
-        phone: { available: Boolean(lanIp), pairedSessions: pairing.sessionCount?.() ?? null } });
+        phone: { available: phone.listening, pairedSessions: pairing.sessionCount?.() ?? null } });
       return json(response, 200, report);
     }
+    // Activity leaves only through publicView: filtered for everyone, trimmed further for a phone.
+    const shown = (data) => json(response, 200, publicView(data, { phone: !isLocal(request) }));
     if (url.pathname === "/api/scene") {
       const threadId = url.searchParams.get("id") || defaultThreadId;
       // The watch list is always the current one, even on a scene built before the last change.
-      if (threadId === "all") return json(response, 200, { ...(await recentScene()), watched: [...watchList.ids], servedAt: Date.now() });
+      if (threadId === "all") return shown({ ...(await recentScene()), watched: [...watchList.ids], servedAt: Date.now() });
       if (threadId.startsWith("orca:")) {
         const scene = await orca.scene(threadId);
-        return scene ? json(response, 200, { ...scene, checkedAt: Date.now() }) : json(response, 404, { error: "That Orca workspace is unavailable." });
+        return scene ? shown({ ...scene, checkedAt: Date.now() }) : json(response, 404, { error: "That Orca workspace is unavailable." });
       }
       if (threadId.startsWith("claude:")) {
         const scene = CLAUDE_ID.test(threadId) ? claude.scene(threadId) : null;
-        return scene ? json(response, 200, { ...scene, checkedAt: Date.now() }) : json(response, 404, { error: "That Claude Code session is unavailable." });
+        return scene ? shown({ ...scene, checkedAt: Date.now() }) : json(response, 404, { error: "That Claude Code session is unavailable." });
       }
       if (threadId.startsWith("ext:")) {
         const scene = EXTENSION_PARTY.test(threadId) ? extensions.scene(threadId) : null;
-        return scene ? json(response, 200, { ...scene, checkedAt: Date.now() }) : json(response, 404, { error: "That extension party is unavailable." });
+        return scene ? shown({ ...scene, checkedAt: Date.now() }) : json(response, 404, { error: "That extension party is unavailable." });
       }
       if (!/^[a-zA-Z0-9_-]{8,100}$/.test(threadId)) return json(response, 400, { error: "Choose a valid thread" });
       if (!(await canViewThread(threadId))) return json(response, 403, { error: "That chat is not available in this viewer." });
       const scene = await reader.readScene(threadId);
       const { agents: everyone } = await joinedMembers();
       const joinedHere = everyone.filter((agent) => agent.joined && agent.parentThreadId === threadId);
-      return json(response, 200, { ...scene, agents: [...(scene.agents || []), ...joinedHere], requests: reader.listRequests(threadId),
+      return shown({ ...scene, agents: [...(scene.agents || []), ...joinedHere], requests: reader.listRequests(threadId),
         checkedAt: Date.now() });
     }
     if (url.pathname === "/api/thread") {
       const threadId = url.searchParams.get("id") || defaultThreadId;
       if (!/^[a-zA-Z0-9_-]{8,100}$/.test(threadId)) return json(response, 400, { error: "Choose a valid thread" });
       if (!(await canViewThread(threadId))) return json(response, 403, { error: "That chat is not available in this viewer." });
-      return json(response, 200, { thread: await reader.readThread(threadId), checkedAt: Date.now() });
+      return shown({ thread: await reader.readThread(threadId), checkedAt: Date.now() });
     }
 
     // The pixel goblins share one sprite file with the desktop widget.
@@ -882,11 +858,7 @@ localServer.on("error", (error) => {
   process.exit(error.code === "EADDRINUSE" ? 3 : 1);
 });
 localServer.listen(port, host, () => console.log(`Goblin Horde: http://${host}:${port}`));
-let lanServer;
-if (lanIp) {
-  lanServer = createServer(safeHandler);
-  lanServer.on("error", (error) => console.error(`Could not start Wi-Fi listener: ${error.message}`));
-  lanServer.listen(port, lanIp, () => console.log(`Phone address: http://${lanIp}:${port}`));
-}
+// The Wi-Fi listener only when the person turned phone access on.
+phone.apply().then((state) => { if (state.problem) console.error(state.problem); }, (error) => console.error(`Phone access: ${error.message}`));
 // Browsers hold keep-alive connections open, so exit right after stopping Codex instead of waiting for them.
-for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { reader.close(); localServer.close(); lanServer?.close(); process.exit(0); });
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { reader.close(); localServer.close(); phone.close(); process.exit(0); });
