@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexPlanReader, changeStats, codexDetail, codexItemRow, parseRolloutPlan, spawnPromptFor } from "../lib/codex-detail.mjs";
 import { readFileTail } from "../lib/claude.mjs";
+import { parseClaudeTranscript } from "../lib/claude-detail.mjs";
 import { diffStats, groupLookups, relativePath, unwrapCommand } from "../lib/detail-text.mjs";
 
 const CWD = "C:\\work\\billing-api";
@@ -56,6 +57,27 @@ test("shared helpers unwrap shells, count diff lines, and make paths relative", 
     { id: "c", at: 1, kind: "command", title: "npm test", status: "ok" }]);
   assert.deepEqual(grouped[0], { id: "a", at: 3, kind: "read", title: "Read 2 files", status: "ok", paths: ["a.mjs", "b.mjs"], durationMs: 1 });
   assert.equal(grouped[1].id, "c");
+});
+
+test("diff lines that start with -- or ++ inside a hunk are changes, not file headers", () => {
+  // An SQL comment removed and a C increment added: "--- old note" and "+++count;" are body lines.
+  assert.deepEqual(diffStats("--- a/q.sql\n+++ b/q.sql\n@@ -1,3 +1,3 @@\n--- old note\n+-- new note\n select 1;\n-x\n++++count;"), { added: 2, removed: 2 });
+  assert.deepEqual(diffStats("@@\n--- dropped comment\n+++kept;"), { added: 1, removed: 1 });
+  // Each file's own header is still skipped in a multi-file diff, with or without hunk counts.
+  const two = "diff --git a/a.sql b/a.sql\n--- a/a.sql\n+++ b/a.sql\n@@ -1 +1 @@\n--- one\n+-- two\ndiff --git a/b.js b/b.js\n--- a/b.js\n+++ b/b.js\n@@\n-x\n+y";
+  assert.deepEqual(diffStats(two), { added: 2, removed: 2 });
+  const counted = "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n-a\n+b\n c\n--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-d\n+e";
+  assert.deepEqual(diffStats(counted), { added: 2, removed: 2 });
+  // Claude Code's own patch keeps hunk lines without their header: all of them are body lines.
+  const transcript = [
+    { type: "user", timestamp: "2026-05-01T10:00:00.000Z", message: { role: "user", content: "Tidy the query" } },
+    { type: "assistant", timestamp: "2026-05-01T10:00:01.000Z", message: { role: "assistant", content: [
+      { type: "tool_use", id: "e1", name: "Edit", input: { file_path: `${CWD}\\q.sql`, old_string: "x", new_string: "y" } }] } },
+    { type: "user", timestamp: "2026-05-01T10:00:02.000Z", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "e1", content: "ok" }] },
+      toolUseResult: { structuredPatch: [{ lines: [" select 1;", "--- old note", "+-- new note", "++++count;"] }] } },
+  ].map((record) => JSON.stringify(record)).join("\n");
+  const { files } = parseClaudeTranscript(transcript, { session: "s", cwd: CWD });
+  assert.deepEqual(files.map((file) => [file.added, file.removed]), [[2, 1]]);
 });
 
 test("a finished chat: mission is this turn's message, said its final answer, nothing running", () => {

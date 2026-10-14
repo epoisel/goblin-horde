@@ -29,7 +29,7 @@ function records(...inputs) {
   }).filter(Boolean);
 }
 
-test("hook records keep what each call works on, filtered, and never output, errors, or notification text", () => {
+test("hook records keep what each call works on, filtered, and never output, errors, or notification titles", () => {
   const PASSWORD = ["Hunter2", "Secret!"].join("");
   const [prompt, pre, post, failed, notice, crash] = records(
     hook("UserPromptSubmit", { prompt: `Ship the CSV export for billing-api. The password is ${PASSWORD} for staging.` }),
@@ -44,10 +44,11 @@ test("hook records keep what each call works on, filtered, and never output, err
   assert.equal(prompt.transcript, "/home/someone/.claude/projects/x/transcript.jsonl");
   assert.match(pre.detail, /^curl -H 'Authorization: Bearer \[secret removed\]' https:\/\/api\.example\.test\/v1$/);
   assert.equal(pre.transcript, undefined, "only the session's own events say where its transcript is");
-  // A result, a failure, a notice, and a crash carry no text of their own.
+  // A result, a failure, and a crash carry no text of their own; a needs-you notice keeps what it tells the person, filtered.
   assert.equal(post.detail, undefined);
   assert.equal(failed.target, "notes.md");
-  const stored = JSON.stringify([prompt, pre, post, failed, notice, crash]);
+  assert.equal(notice.message, "Claude needs permission to run rm -rf PRIVATE-DIR");
+  const stored = JSON.stringify([prompt, pre, post, failed, { ...notice, message: "" }, crash]);
   for (const fragment of [PASSWORD, "SECRETTOKEN", "ssh", "10.0.0.5", "PRIVATE-OUTPUT", "PRIVATE-ERROR", "PRIVATE-DIR", "Permission\"", "call the endpoint"]) {
     assert.ok(!stored.includes(fragment), `stored records leaked ${fragment}`);
   }
@@ -347,16 +348,16 @@ test("a permission request stays open until its own tool resolves, not when anot
     hook("PreToolUse", { tool_name: "Bash", tool_use_id: "toolA", tool_input: { command: "x" } }, NOW + 1),
     hook("PreToolUse", { tool_name: "Read", tool_use_id: "toolB", tool_input: { file_path: "/w/b.js" } }, NOW + 2),
     hook("PermissionRequest", { tool_name: "Bash", tool_use_id: "toolA" }, NOW + 3),
-    hook("Notification", { notification_type: "permission_prompt" }, NOW + 4),
-    hook("PostToolUse", { tool_name: "Read", tool_use_id: "toolB" }, NOW + 5),
+    hook("PreToolUse", { tool_name: "Grep", tool_use_id: "toolC" }, NOW + 4),
+    hook("Notification", { notification_type: "permission_prompt" }, NOW + 5),
+    hook("PostToolUse", { tool_name: "Read", tool_use_id: "toolB" }, NOW + 6),
   );
-  const main = (list) => buildClaudeSessions(list, { now: NOW + 5000 })[0].agents[0];
+  const main = (list) => buildClaudeSessions(list, { now: NOW + 60_000 })[0].agents[0];
   assert.equal(main(asked).needsInput, true, "tool B finishing does not answer tool A's request");
   assert.equal(main(asked).attention, "needs");
   assert.equal(main(asked).status, "waiting");
-  // A tool that starts and finishes later does not answer it either.
-  const later = [...asked, ...records(hook("PreToolUse", { tool_name: "Grep", tool_use_id: "toolC" }, NOW + 6),
-    hook("PostToolUseFailure", { tool_name: "Grep", tool_use_id: "toolC" }, NOW + 7))];
+  // A parallel tool that started before the notice and finishes later does not answer it either.
+  const later = [...asked, ...records(hook("PostToolUseFailure", { tool_name: "Grep", tool_use_id: "toolC" }, NOW + 7))];
   assert.equal(main(later).needsInput, true);
   // Its own tool finishing does.
   const answered = main([...later, ...records(hook("PostToolUse", { tool_name: "Bash", tool_use_id: "toolA" }, NOW + 8))]);
@@ -569,7 +570,8 @@ test("an interrupted turn or a denied permission is over once Claude Code is bac
   assert.ok(interrupted.activities.every((item) => item.status !== "inProgress"));
   assert.notEqual(interrupted.status, "failed");
   // A denied permission never gets its PostToolUse; without the idle notice it needs you for six hours.
-  const denied = [...base, hook("PermissionRequest", { tool_name: "Bash", tool_use_id: "b1" }, NOW + 2)];
+  const denied = [...base, hook("PermissionRequest", { tool_name: "Bash", tool_use_id: "b1" }, NOW + 2),
+    hook("Notification", { notification_type: "permission_prompt" }, NOW + 6000)];
   assert.equal(main(denied).attention, "needs");
   const settled = main([...denied, idle(NOW + 62_000)]);
   assert.equal(settled.attention, "quiet");

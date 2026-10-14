@@ -11,7 +11,7 @@ import { withApprovalGuess } from "./lib/rollout.mjs";
 import { readDescendants } from "./lib/descendants.mjs";
 import { classifyCodex, composeAllScene, listedThread, noteReadFailure, planCodexReads, pruneCache } from "./lib/feed.mjs";
 import { WatchList } from "./lib/watch.mjs";
-import { DiscoveryGate, LinkStore, drivenTerminals, joinParties, joinSubset } from "./lib/links.mjs";
+import { DiscoveryGate, LinkStore, claudePanePairs, drivenTerminals, identityMark, joinParties, joinSubset } from "./lib/links.mjs";
 import { OrcaReader } from "./lib/orca.mjs";
 import { ClaudeReader, goblinStateDir } from "./lib/claude.mjs";
 import { ExtensionReader, EXTENSION_PARTY, extensionFeedDir } from "./lib/extension.mjs";
@@ -21,7 +21,7 @@ import { ownsShortcut, removeShortcut, shortcutPaths, shortcutSpec, writeShortcu
 import { claudeConfigDir } from "./lib/paths.mjs";
 import { CODEX_NOT_FOUND, codexCommand, codexSourceState } from "./lib/codex-bin.mjs";
 import { Pairing, sessionCookie } from "./lib/pairing.mjs";
-import { PhoneAccess, loadPairingCode, localOnlyRefusal } from "./lib/phone.mjs";
+import { PhoneAccess, loadPairingCode, localOnlyRefusal, mobileStatus, requestAnswer } from "./lib/phone.mjs";
 import { publicRequests, publicView } from "./lib/public-view.mjs";
 import { AgentDetailService, ClaudeDesktopIndex, agentRoutes } from "./lib/agent-detail.mjs";
 import { ClaudeDetailReader } from "./lib/claude-detail.mjs";
@@ -417,13 +417,20 @@ const links = new LinkStore({ dir: stateDir });
 // Looking for the chat behind an unlinked Orca pane can take several slow reads; no scene waits on it.
 const discovery = new DiscoveryGate();
 
+// What proves an Orca pane is a Claude Code session: the same recent prompt or reply on both sides.
+const sessionMarks = (agent) => { try { return claude.recentWords(agent.id).map(identityMark).filter(Boolean); } catch { return []; } };
+const proof = { paneMarks: (pane) => orca.marksFor(pane.id), sessionMarks };
+/** The link store's choices, with the Orca panes proven to be Claude Code sessions among `agents`. */
+const linksFor = (agents) => ({ auto: links.auto, manual: links.manual, pairs: claudePanePairs(agents, proof) });
+
 /** Every Orca and Claude Code member, joined to the chats that drive them. */
 async function joinedMembers() {
   const [orcaResult] = await Promise.allSettled([orca.snapshot()]);
   const orcaAgents = orcaResult.status === "fulfilled" ? orcaResult.value.workspaces.flatMap((workspace) => workspace.agents) : [];
   let claudeAgents = [];
   try { claudeAgents = claude.snapshot().sessions.flatMap((session) => session.agents); } catch { /* Claude Code feed unavailable. */ }
-  return joinParties([...orcaAgents, ...claudeAgents], links);
+  const members = [...orcaAgents, ...claudeAgents];
+  return joinParties(members, linksFor(members));
 }
 // An installed copy has its manager's marker beside it; a copy run from a download folder does not.
 const installed = existsSync(join(here, "goblin-horde-install.json"));
@@ -533,7 +540,8 @@ async function allScene() {
   // scene still finds its party.
   const claudeAgents = claudeResult.status === "fulfilled" ? claudeResult.value.sessions.flatMap((session) => session.agents) : [];
   const codexMembers = (codex.checked?.records || []).map(({ thread }) => ({ ...thread, source: "codex" }));
-  const { agents, joined } = joinSubset(scene.agents, [...codexMembers, ...orcaAgents, ...claudeAgents], links);
+  const members = [...codexMembers, ...orcaAgents, ...claudeAgents];
+  const { agents, joined } = joinSubset(scene.agents, members, linksFor(members));
   // Watched parties are always read and kept on the launchpad, whatever their age.
   return { ...scene, agents, joinedParties: Object.fromEntries(joined), manualLinks: Object.fromEntries(links.manual),
     watched: [...watchList.ids] };
@@ -587,7 +595,7 @@ const agentRoute = agentRoutes(new AgentDetailService({
     sendReply: (id, text) => reader.sendReply(id, text),
     listRequests: (id) => reader.listRequests(id),
   },
-  claude: { snapshot: () => claude.snapshot(), records: () => claude.records },
+  claude: { snapshot: () => claude.snapshot(), records: () => claude.records, marks: (id) => sessionMarks({ id }) },
   orca, extensions,
   claudeDetail: new ClaudeDetailReader({ configDir: claudeConfigDir() }),
   codexPlans: new CodexPlanReader(),
@@ -706,20 +714,8 @@ async function handleRequestAnswer(request, response) {
   const requestId = String(data.requestId ?? "");
   const pending = reader.getRequest(threadId, requestId);
   if (!pending) return json(response, 404, { error: "That decision is no longer pending." });
-  let result;
-  if (pending.method === "item/tool/requestUserInput") {
-    const questions = pending.params.questions || [];
-    const answers = {};
-    for (const question of questions) {
-      const answer = String(data.answers?.[question.id] || "").trim();
-      if (!answer || answer.length > 2000) return json(response, 400, { error: "Answer every question before submitting." });
-      answers[question.id] = { answers: [answer] };
-    }
-    result = { answers };
-  } else if (["item/commandExecution/requestApproval", "item/fileChange/requestApproval"].includes(pending.method)) {
-    if (!["accept", "decline"].includes(data.decision)) return json(response, 400, { error: "Choose approve or decline." });
-    result = { decision: data.decision };
-  } else return json(response, 400, { error: "This request type is not supported on the phone yet." });
+  const { result, status, error } = requestAnswer(pending, data, { local: isLocal(request) });
+  if (!result) return json(response, status, { error });
   reader.answerRequest(threadId, requestId, result);
   return json(response, 200, { answered: true });
 }
@@ -833,13 +829,7 @@ const handler = async (request, response) => {
       if (url.pathname === "/") return await serveFile(response, "pair.html");
       return json(response, 401, { error: "Pair this phone with the viewer first." });
     }
-    if (url.pathname === "/api/mobile") {
-      const state = phone.state();
-      return json(response, 200, {
-        local: isLocal(request), enabled: state.enabled, available: state.listening, address: state.url, adapter: state.adapter, problem: state.problem,
-        ...(isLocal(request) && state.listening ? { code: pairing.code } : {}),
-      });
-    }
+    if (url.pathname === "/api/mobile") return json(response, 200, mobileStatus({ local: isLocal(request), state: phone.state(), code: pairing.code }));
     if (url.pathname === "/api/config") return json(response, 200, { defaultThreadId, pollMs: 2000 });
     // Local only: the manager uses this to recognise its own server before stopping anything.
     if (url.pathname === "/api/health") {
@@ -847,7 +837,9 @@ const handler = async (request, response) => {
       return json(response, 200, { product: "GoblinHorde", version, pid: process.pid, installDir: here.replace(/[\\/]+$/, ""), instance });
     }
     if (url.pathname === "/api/capabilities") return json(response, 200, await capabilities());
-    if (url.pathname === "/api/requests") return json(response, 200, { requests: publicRequests(reader.listRequests(url.searchParams.get("id") || defaultThreadId)) });
+    if (url.pathname === "/api/requests") {
+      return json(response, 200, { requests: publicRequests(reader.listRequests(url.searchParams.get("id") || defaultThreadId), { phone: !isLocal(request) }) });
+    }
     if (url.pathname === "/api/threads") return json(response, 200, publicView({ ...(await listAllSources()), watched: [...watchList.ids] }, { phone: !isLocal(request) }));
     if (url.pathname === "/api/diagnostics") {
       if (!isLocal(request)) return json(response, 404, { error: "Not found" });

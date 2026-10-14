@@ -23,6 +23,8 @@ const asking = (base = NOW) => claudeRecords([
   ["UserPromptSubmit", {}, 0],
   ["PreToolUse", { tool_name: "Bash", tool_use_id: "toolu_D1", tool_input: { command: "make deploy" } }, 1],
   ["PermissionRequest", { tool_name: "Bash", tool_use_id: "toolu_D1", tool_input: { command: "make deploy" } }, 2],
+  // Claude Code's own notice: the dialog is still open, so the request keeps asking however slow the test is.
+  ["Notification", { notification_type: "permission_prompt" }, 3],
 ], base);
 
 test("a dismissal is kept per ask, saved atomically, and read back after a restart", () => {
@@ -194,9 +196,10 @@ test("POST /api/dismiss quiets the alert on the next poll, survives a restart, a
     assert.equal((await goblin()).ask, null, "the dismissal outlives a restart");
     // A new request from the same goblin alerts again.
     const more = claudeRecords([
-      ["PostToolUse", { tool_name: "Bash", tool_use_id: "toolu_D1", tool_input: { command: "make deploy" } }, 3],
-      ["PreToolUse", { tool_name: "Bash", tool_use_id: "toolu_D3", tool_input: { command: "make clean" } }, 4],
-      ["PermissionRequest", { tool_name: "Bash", tool_use_id: "toolu_D3", tool_input: { command: "make clean" } }, 5],
+      ["PostToolUse", { tool_name: "Bash", tool_use_id: "toolu_D1", tool_input: { command: "make deploy" } }, 4],
+      ["PreToolUse", { tool_name: "Bash", tool_use_id: "toolu_D3", tool_input: { command: "make clean" } }, 5],
+      ["PermissionRequest", { tool_name: "Bash", tool_use_id: "toolu_D3", tool_input: { command: "make clean" } }, 6],
+      ["Notification", { notification_type: "permission_prompt" }, 7],
     ], base);
     for (const record of more) appendClaudeRecord(record, { dir: join(state, "claude") });
     let again = null;
