@@ -4,7 +4,7 @@
 
 Goblin Horde shows **public activity only**: the messages agents show you, tool names, file names, and statuses. It does not show and cannot see an agent's private reasoning. A goblin's "thinking" bubble means only that the agent is working quietly.
 
-> **Status: early (0.4).** It works day to day on Windows, but expect rough edges. The macOS desktop widget is implemented but **has not yet been tested on a real Mac**. See [Platform support](#platform-support) and the [macOS smoke check](#on-macos).
+> **Status: early (0.5).** It works day to day on Windows, but expect rough edges. The macOS desktop widget is implemented but **has not yet been tested on a real Mac**. See [Platform support](#platform-support) and the [macOS smoke check](#on-macos).
 
 ## Platform support
 
@@ -20,17 +20,17 @@ All systems need **Node.js 20 or newer**. There are no packages to install.
 
 **On Windows:**
 
-1. Install [Node.js](https://nodejs.org) (the LTS version). For the desktop goblins, also install [Python 3](https://www.python.org/downloads/) with its default "tcl/tk" option; without it, Goblin Horde opens in your browser instead.
+1. Install [Node.js](https://nodejs.org) (the LTS version). For the desktop goblins, also install [Python 3](https://www.python.org/downloads/) with its default options ("tcl/tk" stays ticked; "Add python.exe to PATH" is not needed); without it, Goblin Horde opens in your browser instead. If you install Python later, open Goblin Horde again from the Start menu.
 2. Download [GoblinHorde-Team.zip](https://github.com/epoisel/goblin-horde/releases/latest/download/GoblinHorde-Team.zip) from the [latest release](https://github.com/epoisel/goblin-horde/releases/latest) and unzip it.
 3. Double-click **Install Goblin Horde.cmd**. It shows what it found on this computer, asks whether to show your Claude Code sessions too and whether to start with Windows, installs, and opens your goblins.
 
-Open it again any time from the Start menu (**Goblin Horde**). To update, unzip a newer release and double-click the installer again: your settings, watched chats, and notes are kept.
+Open it again any time from the Start menu (**Goblin Horde**). To update, unzip a newer release and double-click the installer again: your settings, watched chats, and notes are kept, and its two questions default to what you chose before.
 
 **On macOS or Linux** (or from a terminal on Windows), open a terminal in the unzipped folder and run `node goblin.mjs setup`, the same guided install. `node goblin.mjs install` installs without questions; add `--claude-hooks` to also show Claude Code sessions (see [Connecting Claude Code](#connecting-claude-code)). On macOS, the native desktop widget still needs a smoke test on a real Mac (see [On macOS](#on-macos)); the browser viewer is the fallback.
 
 Install copies the app into your own user folder and starts it. It never needs administrator rights, and it starts at sign-in only if you say so (change it later from the widget's ⋯ menu, **Start with Windows**, or with `node goblin.mjs autostart on|off`).
 
-**Uninstall** with the installed copy's manager:
+**Uninstall** on Windows by double-clicking **Uninstall Goblin Horde.cmd** (in the unzipped folder or the app folder); it asks before removing anything. Or use the installed copy's manager:
 
 ```
 node "%LOCALAPPDATA%\Programs\GoblinHorde\goblin.mjs" uninstall                    # Windows (cmd)
@@ -51,7 +51,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). Please re
 
 # Manual
 
-A local view of the AI agents working on this computer: Codex chats and their helper agents, Claude Code sessions and their subagents, optional Orca workspaces, and any other orchestrator that writes an [extension feed](EXTENSIONS.md). The all-chats view follows the chats in use right now and any you **watch** (☆ on a launchpad row): watched chats are always read and keep their own **★ WATCHING** rows, whatever their age. The selector keeps the most recent chats and workspaces close at hand; **Find an older chat** searches the full history. Choose a source for a focused view. Each agent gets a pixel goblin from its model's tribe, its own outfit, and a badge naming its model. Dialogue bubbles remain in a scrollable conversation; older ones can be loaded without interrupting new activity.
+A local view of the AI agents working on this computer: Codex chats and their helper agents, Claude Code sessions and their subagents, optional Orca workspaces, and any other orchestrator that writes an [extension feed](EXTENSIONS.md). The all-chats view follows the chats in use right now and any you **watch** (☆ on a launchpad row): watched chats are always read and keep their own **★ WATCHING** rows, whatever their age. The selector keeps the most recent chats and workspaces close at hand; **⌕ FIND ANY CHAT** searches the full history. Choose a source for a focused view. Each agent gets a pixel goblin from its model's tribe, its own outfit, and a badge naming its model. Dialogue bubbles remain in a scrollable conversation; older ones can be loaded without interrupting new activity.
 
 ## Set it up (Windows, macOS, or Linux)
 
@@ -81,13 +81,13 @@ Use `--install-dir` and `--state-dir` (or `GOBLIN_HORDE_INSTALL_DIR` and `GOBLIN
 
 **Start, stop, check, remove.** Ask your agent ("Start Goblin Horde", "Stop Goblin Horde", "Is Goblin Horde running?", "Uninstall Goblin Horde"), or run the installed manager, `node <app folder>/goblin.mjs`, with:
 
-- `start` and `stop`. Stop ends only processes in which Node or Python runs this installation's own viewer or widget file directly (a command line that merely mentions the file, for example as an argument to another script, does not count), and checks each one again just before stopping it; never other programs by name or port. Running `start` twice is safe.
+- `start` and `stop`. In the widget menu, **Close goblins** closes only the desktop goblins and **Quit Goblin Horde** also stops the viewer. Closing a goblin window with Alt+F4 only hides it; opening Goblin Horde from the Start menu (or `start`) brings a running widget back to the front. Stop ends only processes in which Node or Python runs this installation's own viewer or widget file directly (a command line that merely mentions the file, for example as an argument to another script, does not count), and checks each one again just before stopping it; never other programs by name or port. Running `start` twice is safe.
 - `status` says what is installed, running, and connected. `doctor` checks prerequisites, the Claude Code connection, extension feeds, and the port. `doctor --report` prints a short report that is safe to paste into a bug report: versions, connection states, counts, error categories, and timings, with no chats, names, folder paths, addresses, or pairing codes. The widget menu's **Copy diagnostic report** copies the same report.
-- The launchpad's top row names every feed: **CODEX ✓ · CLAUDE ✕ FIX · ORCA ✓ · FEEDS –**. Hover a feed for what it means and whether it takes replies here. **FIX** acts at once: it reconnects a stopped Codex (which is also retried by itself, after 5 seconds and then up to a minute apart), or connects Claude Code after you confirm (the same change as `hooks install`, with a backup). When the viewer answers with a list it built a while ago, the status line says **UPDATED 45s AGO** instead of LIVE, and search names any chat list it could not read.
+- The launchpad's top row names every feed: **CODEX ✓ · CLAUDE – CONNECT · ORCA ✓ · FEEDS –**. Hover a feed for what it means and whether it takes replies here. **CODEX ✕ FIX** reconnects a stopped Codex at once (it is also retried by itself, after 5 seconds and then up to a minute apart), and **CLAUDE – CONNECT** connects Claude Code after you confirm (the same change as `hooks install`, with a backup). When the viewer answers with a list it built a while ago, the status line says **UPDATED 45s AGO** instead of LIVE, and search names any chat list it could not read.
 - `open --compact` opens the small browser view.
 - `uninstall` stops Goblin Horde, removes its app files, its manager skills, and only its own Claude Code hook entries (the ones that run this installation's receiver; another Goblin Horde copy's hooks stay). Your layout settings and phone pairing code stay for a later reinstall. `uninstall --remove-settings` also removes those and the recorded activity. Neither deletes the ZIP or the folder you unzipped.
 
-If port 43917 is busy, install and start stop with a message saying whether another program or another Goblin Horde copy has it; choose another with `--port 43918`. On Windows, `manage.ps1 -Action Install|Start|Stop|Status|Uninstall` still works and runs the same manager.
+If port 43917 is busy, install and start stop with a message saying whether another program or another Goblin Horde copy has it. Close that copy (right-click a goblin, **Quit Goblin Horde**) and run the installer again, or choose another port from a terminal in the unzipped folder: `node goblin.mjs setup --port 43918`. On Windows, `manage.ps1 -Action Install|Start|Stop|Status|Uninstall` still works and runs the same manager.
 
 ### Connecting Claude Code
 

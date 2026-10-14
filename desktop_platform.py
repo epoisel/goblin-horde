@@ -154,8 +154,8 @@ def close_on_terminate(root: tk.Tk, close) -> None:
 
 
 def announce_ready() -> None:
-    """Tell the manager the transparent windows are up (macOS start waits for this line)."""
+    """Tell the manager the transparent windows are up (start waits for this line in run/widget.log)."""
     try:
         print(READY_LINE, flush=True)
     except (OSError, ValueError, AttributeError):
-        pass  # pythonw on Windows has no stdout.
+        pass  # pythonw started by anything but the manager has no stdout.

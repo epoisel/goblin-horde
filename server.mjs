@@ -19,7 +19,7 @@ import { ClaudeReader, goblinStateDir } from "./lib/claude.mjs";
 import { ExtensionReader, EXTENSION_PARTY, extensionFeedDir } from "./lib/extension.mjs";
 import { claudeHookReport, claudeSettingsPath, installClaudeHooks } from "./lib/claude-hooks.mjs";
 import { diagnosticReport } from "./lib/diagnostics.mjs";
-import { removeShortcut, shortcutPaths, shortcutSpec, writeShortcut } from "./lib/shortcuts.mjs";
+import { ownsShortcut, removeShortcut, shortcutPaths, shortcutSpec, writeShortcut } from "./lib/shortcuts.mjs";
 import { claudeConfigDir } from "./lib/paths.mjs";
 import { codexCommand } from "./lib/codex-bin.mjs";
 import { Pairing, sessionCookie } from "./lib/pairing.mjs";
@@ -473,10 +473,12 @@ async function listAllSources() {
   return { threads: [...codex, ...sessions.map(mark), ...parties, ...workspaces.map(mark)].sort((a, b) => Number(b.updatedAt) - Number(a.updatedAt)), unavailable };
 }
 
+const installRoot = here.replace(/[\\/]+$/, "");
 /** Whether this installed copy can start at Windows sign-in, and whether it does. */
 function autostartState() {
   const paths = installed ? shortcutPaths() : null;
-  return paths ? { available: true, enabled: existsSync(paths.startup) } : { available: false, enabled: false };
+  // Only a sign-in shortcut that runs this copy counts; another copy's is never shown as ours or removed.
+  return paths ? { available: true, enabled: existsSync(paths.startup) && ownsShortcut(paths.startup, installRoot) } : { available: false, enabled: false };
 }
 
 /** Codex's connection, in the same shape as the other sources: retried on its own, or by reconnect. */
@@ -736,18 +738,25 @@ const handler = async (request, response) => {
     try { return await handlePair(request, response, origin); }
     catch { return fail(response, 500, "Unable to pair this phone."); }
   }
-  if (["/api/reconnect", "/api/connect-claude", "/api/autostart"].includes(url.pathname) && request.method === "POST") {
+  if (["/api/reconnect", "/api/connect-claude", "/api/autostart", "/api/quit"].includes(url.pathname) && request.method === "POST") {
     // Only this computer may restart a source or change Claude Code's settings; never a paired phone.
     if (!isLocal(request)) return json(response, 403, { error: "Only this computer can do that." });
     if (request.headers.origin !== origin || !String(request.headers["content-type"] || "").startsWith("application/json"))
       return json(response, 403, { error: "Open the viewer first." });
     try {
       const data = await readBody(request);
+      if (url.pathname === "/api/quit") {
+        // The widget's "Quit Goblin Horde": answer first, then stop Codex and exit like a stop would.
+        response.on("finish", () => setTimeout(() => { reader.close(); process.exit(0); }, 50));
+        return json(response, 200, { quitting: true });
+      }
       if (url.pathname === "/api/autostart") {
         const paths = installed ? shortcutPaths() : null;
         if (!paths) return json(response, 409, { error: "Starting at sign-in needs an installed copy on Windows." });
         if (typeof data.enabled !== "boolean") return json(response, 400, { error: "Say whether to start at sign-in." });
-        if (data.enabled) writeShortcut(paths.startup, shortcutSpec({ nodePath: process.execPath, installDir: here.replace(/[\\/]+$/, "") }));
+        if (data.enabled) writeShortcut(paths.startup, shortcutSpec({ nodePath: process.execPath, installDir: installRoot }));
+        else if (existsSync(paths.startup) && !ownsShortcut(paths.startup, installRoot))
+          return json(response, 409, { error: "The sign-in shortcut starts another Goblin Horde copy, so it was left alone." });
         else removeShortcut(paths.startup);
         return json(response, 200, { autostart: autostartState() });
       }
