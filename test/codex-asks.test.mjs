@@ -39,6 +39,38 @@ test("a finished answer that ends in a question asks for a reply, with a sentenc
   assert.equal(codexAsk({ ...actor, replyAvailable: false }, { now: NOW }).answerHere, null);
 });
 
+test("a Codex answer asks only when it ends in a question: headings and bullets mid-answer do not", () => {
+  const explained = chat([finalTurn("## Why did the export fail?\n- The header row was missing.\n- The fixture was stale.\n\nBoth are fixed and the tests pass.")]);
+  assert.deepEqual(explained.turnStates.at(-1).questions, []);
+  assert.equal(explained.ask, null);
+  assert.equal(classifyCodex(explained, { now: NOW }), "quiet");
+  assert.equal(compose(explained).attention, "quiet");
+  // A question in the middle of the answer, followed by more prose, is not the answer's question either.
+  assert.deepEqual(chat([finalTurn("Should the CSV include archived rows? I left them out for now.\n\nDone.")]).turnStates.at(-1).questions, []);
+  // A closing question followed by numbered options is a real question.
+  const choice = chat([finalTurn("I found two ways to fix the export.\n\nWhich do you want?\n1. Rewrite the writer\n2. Patch the header row")]);
+  assert.deepEqual(choice.turnStates.at(-1).questions, ["I found two ways to fix the export. Which do you want?"]);
+  assert.equal(choice.ask.text, "I found two ways to fix the export. Which do you want?");
+  assert.equal(compose(choice).attention, "needs");
+  // Commentary along the way never asks.
+  const commentary = chat([{ ...finalTurn("Done."), items: [{ type: "agentMessage", id: "c1", phase: "commentary", text: "Should I check the importer too?" },
+    { type: "agentMessage", id: "m1", phase: "final_answer", text: "Done." }] }]);
+  assert.deepEqual(commentary.turnStates.at(-1).questions, []);
+});
+
+test("an MCP elicitation or another request names what it asks, in the request's own words", () => {
+  const actor = chat([{ id: "t1", status: "inProgress", completedAt: null, items: [] }]);
+  const elicited = requestAsk(actor, { id: 12, method: "mcpServer/elicitation/request", receivedAt: NOW,
+    params: { threadId: actor.id, serverName: "tracker", message: "Which project should the issue go in?", requestedSchema: { type: "object" } } });
+  assert.equal(elicited.kind, "question");
+  assert.equal(elicited.text, "Which project should the issue go in?");
+  assert.equal(elicited.tool, "tracker");
+  assert.equal(elicited.answerHere, null);
+  const other = requestAsk(actor, { id: 13, method: "item/somethingNew/request", receivedAt: NOW, params: { threadId: actor.id, reason: "Needs a second look." } });
+  assert.equal(other.text, "Needs a second look.");
+  assert.equal(requestAsk(actor, { id: 14, method: "item/somethingNew/request", receivedAt: NOW, params: { threadId: actor.id } }).text, "Codex is waiting for your answer.");
+});
+
 test("a Codex subagent thread never asks the person, but its pending approvals still do", () => {
   const question = finalTurn("Found the writer in src/csv.js. Want me to refactor it?");
   for (const marker of [{ parentThreadId: "chat-parent-01" }, { agentNickname: "Scout", agentRole: "explorer" }, { source: { subAgent: { thread_spawn: {} } } }, { source: "subAgentThreadSpawn" }]) {
