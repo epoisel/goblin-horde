@@ -184,6 +184,10 @@ test("POST /api/dismiss quiets the alert on the next poll, survives a restart, a
     assert.equal(after.ask, null);
     assert.equal(after.attention, "working");
     assert.equal(after.dismissedAsk.key, before.ask.key);
+    // The selected goblin's detail agrees with the roster.
+    const detail = await (await fetch(`${url}/api/agent?id=${encodeURIComponent(before.id)}`)).json();
+    assert.equal(detail.agent.ask, null);
+    assert.equal(detail.agent.dismissedAsk.key, before.ask.key);
     assert.ok(existsSync(join(state, "dismissed.json")));
     await stop(child);
     child = await start();
