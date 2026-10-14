@@ -281,3 +281,24 @@ test("a session file that has not changed since it was scanned is not read again
   inspectRollout(path, options);
   assert.equal(reads, 4);
 });
+
+test("a now line is filtered before it is cut, so a cut never leaves part of a credential", () => {
+  // A long random token with no keyword is known by its length; cut to the first line's 60 characters, it is not.
+  const TOKEN = ["a1B2", "c3D4"].join("").repeat(6);
+  const command = `git clone https://git.example.test/shop.git ${TOKEN}`;
+  const said = `Cloned it with ${TOKEN} as the deploy token.`;
+  const leaked = (now) => JSON.stringify(now).includes(TOKEN.slice(0, 12));
+  const open = (items) => withCodexNow(chat([{ id: "t1", status: "inProgress", startedAt: (NOW - 300_000) / 1000, completedAt: null, items }]));
+  assert.equal(leaked(open([{ type: "commandExecution", id: "c1", status: "completed", command }]).now), false);
+  assert.equal(leaked(open([{ type: "commandExecution", id: "c2", status: "inProgress", command }]).now), false);
+  assert.equal(leaked(open([{ type: "agentMessage", id: "a1", phase: "commentary", text: said }]).now), false);
+  // The same from a chat's session file: a call still running, a finished command, and what it said.
+  const running = [...turnStart(120), line(100, "response_item", { type: "function_call", name: "shell_command", call_id: "s1", arguments: JSON.stringify({ command }) })];
+  const finished = [...turnStart(120), event(90, { type: "item_completed", turn_id: "t1", item: { type: "CommandExecution", id: "x1", command } })];
+  const spoke = [...turnStart(120), line(80, "response_item", { type: "message", role: "assistant", content: [{ type: "output_text", text: said }] })];
+  for (const lines of [running, finished, spoke]) {
+    const seen = inspectRollout("C:/codex/sessions/rollout-cut.jsonl", { now: NOW, readTail: () => lines.join("\n"), stat: () => { throw new Error("no stat"); } });
+    assert.ok(seen.now, "it says what the chat is doing");
+    assert.equal(leaked(seen.now), false, JSON.stringify(seen.now));
+  }
+});
