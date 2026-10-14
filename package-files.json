@@ -31,6 +31,7 @@
   "lib/claude-hooks.mjs",
   "lib/codex-bin.mjs",
   "lib/descendants.mjs",
+  "lib/dismiss.mjs",
   "lib/diagnostics.mjs",
   "lib/extension.mjs",
   "lib/feed.mjs",
