@@ -18,7 +18,7 @@ import { LinkStore } from "../lib/links.mjs";
 import { CODE_FILE, PHONE_FILE } from "../lib/phone.mjs";
 import { claudeConfigDir } from "../lib/paths.mjs";
 import { WatchList } from "../lib/watch.mjs";
-import { MARKER, SKILL_MARKER, autostart, childEnv, install, locate, makeContext, readManifest, start, stateFiles, status, stop, uninstall, versionBefore } from "../lib/manager.mjs";
+import { MARKER, SKILL_MARKER, autostart, childEnv, install, locate, makeContext, managerCommand, readManifest, start, stateFiles, status, stop, uninstall, versionBefore } from "../lib/manager.mjs";
 import { isAlive, listProcesses, stopPid } from "../lib/processes.mjs";
 import { main, parseArgs } from "../goblin.mjs";
 
@@ -294,8 +294,10 @@ test("Claude Code connected from the window stays connected on an update, and in
 test("every command install prints for a custom install folder names that folder", async () => {
   const box = sandbox();
   try {
-    const commands = (result) => result.messages.flatMap((line) => line.match(/node "[^"]*goblin\.mjs"[^.;)(]*/g) || []);
-    const flag = `--install-dir "${box.flags.installDir}"`;
+    // Windows prints double quotes, other systems shell-safe single quotes; managerCommand makes both.
+    const commands = (result) => result.messages.flatMap((line) => line.match(/node (["'])[^"']*goblin\.mjs\1[^.;)(]*/g) || []);
+    const expected = managerCommand(box.ctx, box.flags.installDir);
+    const flag = expected.slice(expected.indexOf(" --install-dir ") + 1);
     const plain = await install(box.ctx, box.flags);
     const hooked = await install(box.ctx, { ...box.flags, claudeHooks: true });
     for (const result of [plain, hooked]) {
@@ -305,7 +307,7 @@ test("every command install prints for a custom install folder names that folder
     }
     // The installed skill tells an agent the same command.
     const skill = readFileSync(join(box.codexDir, "skills", "goblin-horde-manager", "SKILL.md"), "utf8");
-    assert.ok(skill.includes(`goblin.mjs" ${flag}`) || skill.includes(`goblin.mjs' --install-dir '${box.flags.installDir}'`), skill.slice(0, 400));
+    assert.ok(skill.includes(expected), skill.slice(0, 400));
   } finally { box.cleanup(); }
 });
 
