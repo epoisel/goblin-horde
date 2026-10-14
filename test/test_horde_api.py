@@ -1,10 +1,13 @@
 """The window's one client: routes, the Origin header, older viewers without a route, and the demo world."""
 
 import json
+import os
 import threading
 import time
 import unittest
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 
 from horde_api import ApiError, HordeApi
 from horde_demo import SETS, DemoApi, DemoWorld
@@ -92,6 +95,18 @@ class ClientTests(unittest.TestCase):
             self.api.message("chat-1", "hi")
         self.assertEqual((raised.exception.status, str(raised.exception)), (409, "This chat is open in Codex."))
         self.assertFalse(raised.exception.missing)
+
+    def test_a_proxy_in_the_environment_never_sees_this_computers_traffic(self):
+        FakeViewer.routes[("GET", "/api/scene")] = (200, {"agents": []})
+        FakeViewer.routes[("POST", "/api/dismiss")] = (200, {"ask": None})
+        dead = "http://127.0.0.1:9"  # Nothing listens here: a request sent to it would fail.
+        with mock.patch.dict(os.environ, {"HTTP_PROXY": dead, "http_proxy": dead, "ALL_PROXY": dead, "NO_PROXY": "", "no_proxy": ""}):
+            api = HordeApi(self.server.server_address[1])
+            self.assertEqual(api.scene(), {"agents": []})
+            api.dismiss("claude-agent:s", "k1")
+        self.assertEqual([entry[1] for entry in FakeViewer.seen], ["/api/scene?id=all", "/api/dismiss"])
+        proxies = [handler for handler in api.opener.handlers if isinstance(handler, urllib.request.ProxyHandler) and handler.proxies]
+        self.assertEqual(proxies, [])
 
     def test_answers_and_watch_lists(self):
         FakeViewer.routes[("POST", "/api/respond")] = (200, {"answered": True})

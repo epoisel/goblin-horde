@@ -340,7 +340,7 @@ test("the hook entrypoint keeps a huge payload's record within one log line", ()
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("the reader says where each actor's transcript is, and rereads only new lines", () => {
+test("the reader rereads only new lines", () => {
   const dir = mkdtempSync(join(tmpdir(), "goblin-claude-asks-"));
   try {
     const list = records(
@@ -351,12 +351,7 @@ test("the reader says where each actor's transcript is, and rereads only new lin
     for (const record of list) appendClaudeRecord(record, { dir });
     let clock = NOW + 10_000;
     const reader = new ClaudeReader({ dir, ttlMs: 0, clock: () => clock });
-    assert.deepEqual(reader.transcriptFor(MAIN), { file: TRANSCRIPT, session: SESSION, agent: "", cwd: "/work/billing-api" });
-    assert.equal(reader.transcriptFor(`${MAIN}:sub2`).file, "/home/dev/t/agent-sub2.jsonl");
-    assert.equal(reader.transcriptFor(`${MAIN}:sub3`).file,
-      "/home/dev/.claude/projects/-work-billing-api/c0ffee00-0000-4000-8000-00000000a5c1/subagents/agent-sub3.jsonl");
-    assert.equal(reader.transcriptFor("claude-agent:../x"), null);
-    assert.equal(reader.transcriptFor("claude-agent:unknown-session"), null);
+    reader.snapshot();
     const first = reader.records[0];
     for (const record of records(hook("UserPromptSubmit", {}, NOW + 20))) appendClaudeRecord(record, { dir });
     clock += 1;

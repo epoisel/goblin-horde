@@ -272,7 +272,7 @@ test("the Claude app's session index maps a Claude Code session to the app's own
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("a session's Orca pane and its git branch are found without guessing", () => {
+test("a session's Orca pane and its git branch are found without guessing", async () => {
   const session = { cwd: "C:\\work\\billing-api" };
   const pane = { terminal: "term_p", cwd: "c:/work/billing-api/", role: "claude · working", status: "working" };
   assert.equal(orcaTwin(session, [pane], [session]), pane);
@@ -284,9 +284,9 @@ test("a session's Orca pane and its git branch are found without guessing", () =
   const files = { [join("C:\\repo", ".git", "HEAD")]: "ref: refs/heads/ship-csv\n", [join("C:\\wt", ".git")]: "gitdir: C:\\repo\\.git\\worktrees\\wt\n",
     [join("C:\\repo\\.git\\worktrees\\wt", "HEAD")]: "ref: refs/heads/fix-header\n", [join("C:\\detached", ".git", "HEAD")]: "0123456789abcdef\n" };
   const read = (path) => { if (path in files) return files[path]; throw new Error("ENOENT"); };
-  assert.equal(gitBranch("C:\\repo", { read }), "ship-csv");
-  assert.equal(gitBranch("C:\\wt", { read }), "fix-header");
-  assert.equal(gitBranch("C:\\detached", { read }), "");
-  assert.equal(gitBranch("C:\\nowhere", { read }), "");
-  assert.equal(gitBranch("", { read }), "");
+  assert.equal(await gitBranch("C:\\repo", { read }), "ship-csv");
+  assert.equal(await gitBranch("C:\\wt", { read }), "fix-header");
+  assert.equal(await gitBranch("C:\\detached", { read }), "");
+  assert.equal(await gitBranch("C:\\nowhere", { read }), "");
+  assert.equal(await gitBranch("", { read }), "");
 });
