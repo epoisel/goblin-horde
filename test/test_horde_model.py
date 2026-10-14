@@ -87,6 +87,8 @@ class ClassAndLineTests(unittest.TestCase):
         everything["activities"] = [{"kind": "update", "title": "Update", "description": "Reading   the  code."}]
         self.assertEqual(row_line(everything), ("now", "Reading the code."))
         self.assertEqual(row_line(agent("done", attention="quiet", status="idle")), ("done", "Done."))
+        still_working = agent("w", activities=[{"kind": "command", "title": "Ran checks", "status": "failed"}])
+        self.assertEqual(row_line(still_working), ("failed", "Failed: Ran checks"), "a failed newest step shows in coral")
         self.assertEqual(row_line(agent("p", waitingOn={"who": "parent"})).text, "Waiting on its parent agent")
 
     def test_progress_and_names(self):

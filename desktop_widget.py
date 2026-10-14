@@ -594,9 +594,11 @@ class GoblinWidget:
             parts.append("Reading " + (", ".join(reading[:-1]) + " and " + reading[-1] if len(reading) > 1 else reading[0]) + ".")
         elif not self.demo:
             parts.append("Connecting to the viewer…" if self.connection == "CONNECTING" else
+                         "Waiting for the viewer to answer." if self.connection in ("OFFLINE", "STALE") else
                          "No sources are connected yet; the header shows what needs a fix.")
-        parts.append("Phone access is on." if self.phone.get("enabled") else
-                     "Phone access is off; turn it on from the ⋯ menu.")
+        if self.phone:  # Said only once the viewer has told us.
+            parts.append("Phone access is on." if self.phone.get("enabled") else
+                         "Phone access is off; turn it on from the ⋯ menu.")
         return " ".join(parts)
 
     def sprite_action(self, actor: dict, klass: str) -> str:

@@ -353,6 +353,9 @@ def row_line(actor: dict, klass: str | None = None) -> Line:
     if current:
         return Line("now", " ".join(str(current["title"]).split()))
     if klass == WORKING:
+        activities = actor.get("activities") or []
+        if activities and isinstance(activities[-1], dict) and failed_step(activities[-1]):
+            return Line("failed", failure_text(actor))  # Still at work, but its newest step failed.
         return Line("now", latest_line(actor) or "Working…")
     return Line("done", latest_line(actor) or "Done.")
 
