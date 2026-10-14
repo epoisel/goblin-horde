@@ -100,7 +100,7 @@ test("updating removes files an older version listed, but never a listed path th
   } finally { box.cleanup(); }
 });
 
-test("the installed hook receiver records public activity into the chosen state folder only", async () => {
+test("the installed hook receiver records filtered activity into the chosen state folder only", async () => {
   const box = sandbox();
   try {
     await install(box.ctx, { ...box.flags, claudeHooks: true });
@@ -114,7 +114,9 @@ test("the installed hook receiver records public activity into the chosen state 
     assert.equal(run.stdout, "");
     const log = readFileSync(join(box.flags.stateDir, "claude", "activity.jsonl"), "utf8");
     assert.match(log, /"event":"PreToolUse"/);
-    assert.doesNotMatch(log, /SECRET|curl|private prompt/);
+    // The command is kept for this computer with its credential removed; a prompt never rides on a tool call.
+    assert.match(log, /"detail":"curl -H 'Authorization: Bearer \[secret removed\]' https:\/\/example\.com"/);
+    assert.doesNotMatch(log, /SECRET|private prompt/);
   } finally { box.cleanup(); }
 });
 

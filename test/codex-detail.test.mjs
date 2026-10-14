@@ -1,0 +1,132 @@
+/**
+ * The Codex detail builder: mission, said, now, trail and files from synthetic paged turns, and
+ * the newest update_plan from a synthetic session file.
+ */
+import test from "node:test";
+import assert from "node:assert/strict";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CodexPlanReader, changeStats, codexDetail, codexItemRow, parseRolloutPlan, spawnPromptFor } from "../lib/codex-detail.mjs";
+import { readFileTail } from "../lib/claude.mjs";
+import { diffStats, groupLookups, relativePath, unwrapCommand } from "../lib/detail-text.mjs";
+
+const CWD = "C:\\work\\billing-api";
+const START = 1_780_000_000; // seconds, as Codex sends them
+
+function chat({ running = false } = {}) {
+  return {
+    id: "019a-chat-0001", cwd: CWD, path: "C:\\codex\\sessions\\rollout-1.jsonl",
+    turns: [
+      { id: "t1", status: "completed", startedAt: START, completedAt: START + 60, items: [
+        { type: "userMessage", id: "u1", content: [{ type: "text", text: "Add a CSV export" }] },
+        { type: "agentMessage", id: "m1", text: "Added it.", phase: "final_answer" },
+      ] },
+      { id: "t2", status: running ? "inProgress" : "completed", startedAt: START + 100, ...(running ? {} : { completedAt: START + 200 }), items: [
+        { type: "userMessage", id: "u2", content: [{ type: "text", text: "Now fix the header row" }, { type: "image", url: "data:x" }] },
+        { type: "reasoning", id: "r1", summary: [] },
+        { type: "commandExecution", id: "c1", command: "\"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -Command 'npm test'",
+          status: "completed", exitCode: 1, durationMs: 2300, aggregatedOutput: "FAIL header\ntoken=ghp_abcdefghijklmnopqrstuvwxyz0123456789", commandActions: [{ type: "unknown", command: "npm test" }] },
+        { type: "commandExecution", id: "c2", command: "Get-Content lib/export.mjs", status: "completed", exitCode: 0, durationMs: 40,
+          aggregatedOutput: "export function csv() {}", commandActions: [{ type: "read", path: `${CWD}\\lib\\export.mjs`, name: "export.mjs" }] },
+        { type: "commandExecution", id: "c3", command: "rg header", status: "completed", exitCode: 0, durationMs: 30, commandActions: [{ type: "search", query: "header" }] },
+        { type: "fileChange", id: "f1", status: "completed", changes: [
+          { path: `${CWD}\\lib\\export.mjs`, kind: { type: "update", move_path: null }, diff: "@@ -1,2 +1,3 @@\n-old\n+new\n+newer\n keep" },
+          { path: `${CWD}\\docs\\csv.md`, kind: { type: "add" }, diff: "line one\nline two\n" }] },
+        { type: "mcpToolCall", id: "p1", server: "linear", tool: "create_issue", arguments: { title: "Header row" }, status: "completed", result: { content: [{ type: "text", text: "Created ABC-1" }] }, durationMs: 900 },
+        { type: "webSearch", id: "w1", query: "csv header rfc4180", action: { type: "search", query: "csv header rfc4180" } },
+        { type: "collabAgentToolCall", id: "s1", tool: "spawnAgent", status: "completed", senderThreadId: "019a-chat-0001", receiverThreadIds: ["019a-helper-0002"], prompt: "Check the importer", agentsStates: {} },
+        { type: "agentMessage", id: "m2", text: "Fixed the header; tests pass now.", phase: "final_answer" },
+        ...(running ? [{ type: "commandExecution", id: "c4", command: "npm run lint", status: "inProgress", commandActions: [] }] : []),
+      ] },
+    ],
+  };
+}
+
+test("shared helpers unwrap shells, count diff lines, and make paths relative", () => {
+  assert.equal(unwrapCommand("\"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -Command 'npm test'"), "npm test");
+  assert.equal(unwrapCommand("/bin/bash -lc \"git status\""), "git status");
+  assert.equal(unwrapCommand("npm test"), "npm test");
+  assert.deepEqual(diffStats("--- a/x\n+++ b/x\n@@\n-a\n+b\n+c\n d"), { added: 2, removed: 1 });
+  assert.deepEqual(changeStats({ kind: { type: "add" }, diff: "a\nb\n" }), { added: 2, removed: 0 });
+  assert.deepEqual(changeStats({ kind: { type: "delete" }, diff: "a\nb\nc" }), { added: 0, removed: 3 });
+  assert.equal(relativePath("C:/work/billing-api/lib/x.mjs", "c:\\work\\billing-api\\"), "lib/x.mjs");
+  assert.equal(relativePath("D:\\other\\x.mjs", CWD), "D:\\other\\x.mjs");
+  const grouped = groupLookups([{ id: "a", at: 3, kind: "read", path: "a.mjs", status: "ok" }, { id: "b", at: 2, kind: "read", path: "b.mjs", status: "ok" },
+    { id: "c", at: 1, kind: "command", title: "npm test", status: "ok" }]);
+  assert.deepEqual(grouped[0], { id: "a", at: 3, kind: "read", title: "Read 2 files", status: "ok", paths: ["a.mjs", "b.mjs"], durationMs: 1 });
+  assert.equal(grouped[1].id, "c");
+});
+
+test("a finished chat: mission is this turn's message, said its final answer, nothing running", () => {
+  const detail = codexDetail(chat(), { active: false });
+  assert.deepEqual(detail.mission, { text: "Now fix the header row\n[image]", from: "you", at: (START + 100) * 1000 });
+  assert.equal(detail.said.text, "Fixed the header; tests pass now.");
+  assert.equal(detail.now, null);
+  const titles = detail.trail.map((row) => row.title);
+  assert.equal(titles[0], "Fixed the header; tests pass now.");
+  const failed = detail.trail.find((row) => row.id === "c1");
+  assert.deepEqual([failed.kind, failed.title, failed.status, failed.exitCode, failed.durationMs], ["command", "npm test", "failed", 1, 2300]);
+  assert.match(failed.output, /FAIL header/);
+  assert.doesNotMatch(failed.output, /ghp_abcdefghijklmnopqrstuvwxyz0123456789/);
+  const lookups = detail.trail.find((row) => row.id === "c3");
+  assert.equal(lookups.title, "Read 1 file and searched 1 time", "the read and the search next to it are one row");
+  const change = detail.trail.find((row) => row.id === "f1");
+  assert.deepEqual([change.kind, change.title, change.added, change.removed, change.paths], ["edit", "Edited 2 files", 4, 1, ["lib\\export.mjs", "docs\\csv.md"]]);
+  const mcp = detail.trail.find((row) => row.id === "p1");
+  assert.deepEqual([mcp.title, mcp.output, mcp.durationMs], ["Used linear · create issue", "Created ABC-1", 900]);
+  assert.equal(detail.trail.find((row) => row.id === "w1").title, "Searched the web for \"csv header rfc4180\"");
+  const spawn = detail.trail.find((row) => row.id === "s1");
+  assert.deepEqual([spawn.kind, spawn.title, spawn.agentId, spawn.detail], ["agent", "Started a subagent", "019a-helper-0002", "Check the importer"]);
+  assert.deepEqual(detail.files.map((file) => [file.path, file.added, file.removed]), [["lib\\export.mjs", 2, 1], ["docs\\csv.md", 2, 0]]);
+});
+
+test("a working chat shows the running step as now; a quiet open turn is thinking", () => {
+  const detail = codexDetail(chat({ running: true }), { active: true });
+  assert.deepEqual(detail.now, { kind: "command", title: "Running npm run lint", detail: "npm run lint", startedAt: (START + 100) * 1000 });
+  assert.equal(detail.trail[0].status, "running");
+  const thinking = codexDetail({ turns: [{ id: "t", status: "inProgress", startedAt: START, items: [{ type: "userMessage", content: [{ type: "text", text: "Go" }] }] }] }, { active: true });
+  assert.deepEqual(thinking.now, { kind: "think", title: "Thinking", startedAt: START * 1000 });
+});
+
+test("a helper chat's instructions come from the chat that started it", () => {
+  const parent = chat();
+  assert.deepEqual(spawnPromptFor(parent, "019a-helper-0002"), { text: "Check the importer", at: (START + 100) * 1000 });
+  const helper = codexDetail({ turns: [{ id: "h1", status: "completed", startedAt: START, items: [{ type: "agentMessage", text: "Importer is fine." }] }] },
+    { subagent: true, parentMission: spawnPromptFor(parent, "019a-helper-0002") });
+  assert.deepEqual(helper.mission, { text: "Check the importer", from: "parent", at: (START + 100) * 1000 });
+  const own = codexDetail({ turns: [{ id: "h1", startedAt: START, items: [{ type: "userMessage", content: [{ type: "text", text: "Check X" }] }] }] }, { subagent: true });
+  assert.equal(own.mission.from, "parent");
+  assert.equal(codexItemRow({ type: "userMessage" }), null);
+});
+
+const planLine = (at, plan) => JSON.stringify({ timestamp: new Date(at).toISOString(), type: "response_item",
+  payload: { type: "function_call", name: "update_plan", call_id: `call-${at}`, arguments: JSON.stringify({ explanation: "x", plan }) } });
+
+test("the newest update_plan in a session file is the plan", () => {
+  const text = [
+    planLine(1000, [{ step: "Read the exporter", status: "in_progress" }]),
+    JSON.stringify({ type: "response_item", payload: { type: "function_call", name: "shell", arguments: "{}" } }),
+    planLine(2000, [{ step: "Read the exporter", status: "completed" }, { step: "Fix the header", status: "in_progress" }, { step: "Ship", status: "pending" }]),
+  ].join("\n");
+  assert.deepEqual(parseRolloutPlan(text), { steps: [{ text: "Read the exporter", status: "done" }, { text: "Fix the header", status: "active" }, { text: "Ship", status: "pending" }], at: 2000, source: "plan" });
+  assert.equal(parseRolloutPlan("{\"type\":\"response_item\",\"payload\":{\"type\":\"message\"}}"), null);
+});
+
+test("plans are read from the end of the session file and remembered until it changes", () => {
+  const root = mkdtempSync(join(tmpdir(), "goblin-codex-plan-"));
+  try {
+    const file = join(root, "rollout-1.jsonl");
+    writeFileSync(file, `${planLine(1000, [{ step: "One", status: "in_progress" }])}\n${"x".repeat(5000)}\n`);
+    const calls = [];
+    const reader = new CodexPlanReader({ readTail: (path, bytes) => { calls.push(bytes); return readFileTail(path, bytes); }, steps: [1024, 64 * 1024] });
+    assert.equal(reader.read(file).steps[0].text, "One");
+    assert.deepEqual(calls, [1024, 64 * 1024], "a plan further back costs one longer look");
+    reader.read(file);
+    assert.equal(calls.length, 2, "unchanged files are not read again");
+    appendFileSync(file, `${planLine(2000, [{ step: "One", status: "completed" }, { step: "Two", status: "pending" }])}\n`);
+    assert.deepEqual(reader.read(`\\\\?\\${file}`)?.steps.map((step) => step.status), ["done", "pending"]);
+    assert.equal(reader.read(join(root, "missing.jsonl")), null);
+    assert.equal(reader.read("C:\\not-a-session.txt"), null);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
