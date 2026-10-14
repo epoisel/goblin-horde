@@ -279,6 +279,10 @@ class HordeWindowTests(unittest.TestCase):
         settle(widget)
         self.assertEqual(widget.root.focus_get(), approve)
         self.assertGreater(int(approve.cget("highlightthickness")), 0, "a focus ring is drawn")
+        # A gold button's ring is not gold: it shows against the button's own fill.
+        self.assertNotEqual(approve.cget("highlightcolor").lower(), approve.cget("bg").lower())
+        decline = buttons(view.cards["ask"].body, "Decline")[0]
+        self.assertNotEqual(decline.cget("highlightcolor").lower(), decline.cget("bg").lower())
         approve.event_generate("<Return>")
         wait_for(widget, lambda: not widget.api.world.requests)
         self.click_row(widget, "claude-agent:demo-migration-plan")
@@ -327,6 +331,57 @@ class HordeWindowTests(unittest.TestCase):
         settle(widget)
         self.assertEqual([item["id"] for item in widget.api.world.requests], ["demo-request-7"])
         self.assertIsNotNone(widget.api.world.find("demo-chat-image-pipeline")["ask"])
+
+    def test_clicking_the_need_you_chip_leaves_no_key_that_answers_the_goblin_left_behind(self):
+        widget = self.make()
+        self.click_row(widget, "demo-chat-image-pipeline")
+        approve = buttons(widget.detail_view.cards["ask"].body, "Approve once")[0]
+        approve.focus_force()
+        settle(widget)
+        widget.window.count_chips["needs"].event_generate("<Button-1>")  # A label: the click takes no focus.
+        quiet(widget)
+        settle(widget)
+        self.assertEqual(widget.selected, "demo-chat-release-notes")
+        self.assertIs(widget.root.focus_get(), widget.roster.canvas)
+        self.press_keys(widget, approve)
+        self.assertEqual([item["id"] for item in widget.api.world.requests], ["demo-request-7"])
+
+    def test_a_message_being_written_never_goes_to_the_goblin_chosen_next(self):
+        widget = self.make()
+        self.click_row(widget, "demo-chat-csv-export")
+        view = widget.detail_view
+        press(view.message_button)
+        settle(widget)
+        self.assertTrue(view.composer.winfo_ismapped())
+        view.composer_text.insert("1.0", "Ship it after the review.")
+        view.composer_text.focus_force()
+        settle(widget)
+        widget.window.count_chips["needs"].event_generate("<Button-1>")
+        quiet(widget)
+        settle(widget)
+        self.assertEqual(widget.selected, "demo-chat-release-notes")
+        self.assertIsNot(widget.root.focus_get(), view.composer_text, "the focus left the hidden box")
+        # Typing on and Ctrl+Enter, or a send already on its way, reach nobody.
+        view.composer_text.insert("end", " Typed after the switch.")
+        view.composer_text.event_generate("<Control-Return>")
+        view.send_composer()
+        settle(widget)
+        time.sleep(0.2)
+        settle(widget)
+        for ident in ("demo-chat-csv-export", "demo-chat-release-notes"):
+            trail = widget.api.world.details.get(ident, {}).get("trail", [])
+            self.assertFalse(any(row["title"].startswith("You:") for row in trail), ident)
+        self.assertIsNotNone(widget.api.world.find("demo-chat-release-notes")["ask"])
+        # Opened for the goblin on screen, it sends as before.
+        load_detail(widget)
+        self.assertTrue(view.message_button.winfo_ismapped())
+        press(view.message_button)
+        settle(widget)
+        view.composer_text.delete("1.0", "end")
+        view.composer_text.insert("1.0", "Convert the older ones too.")
+        press(view.composer_send)
+        wait_for(widget, lambda: any(row["title"].startswith("You: Convert the older") for row in
+                                     widget.api.world.details.get("demo-chat-release-notes", {}).get("trail", [])))
 
     def test_a_hidden_reply_box_never_sends_to_the_goblin_left_behind(self):
         widget = self.make()

@@ -225,8 +225,9 @@ class FlatButton(tk.Label):
 
     def _paint(self, hovered: bool) -> None:
         # The focus ring is drawn only with focus; otherwise it blends into whatever is behind the button.
-        self.configure(highlightbackground=self.master.cget("bg"))
+        # It is gold, except around a gold button, where it is ivory so it still shows.
         fill, ink, hover = self._colors()
+        self.configure(highlightbackground=self.master.cget("bg"), highlightcolor=IVORY if fill == GOLD else GOLD)
         if not self.enabled:
             self.configure(bg=fill, fg=FAINT, cursor="")
             return

@@ -437,6 +437,7 @@ class DetailView:
                                                                                                     padx=(px(6), 0))
         self.composer_status = tk.Label(actions, text="Ctrl+Enter sends", bg=CARD, fg=FAINT, font=theme.small)
         self.composer_status.pack(side="left", padx=(px(10), 0))
+        self.composer_for = ""  # The goblin the box was opened for: it sends to that goblin or to nobody.
 
     def toggle_composer(self, show: bool | None = None) -> None:
         show = not self.composer.winfo_manager() if show is None else show
@@ -447,11 +448,15 @@ class DetailView:
             set_text(self.composer_hint, f"Message {display_name(self.actor)}" + (f" · {hint}" if hint else ""))
             set_text(self.composer_status, "Ctrl+Enter sends", fg=FAINT)
             self.composer.pack(fill="x", padx=self.theme.px(18), pady=(self.theme.px(6), 0), after=self.header)
+            self.composer_for = actor_id(self.actor)
             self.composer_text.focus_set()
         elif self.composer.winfo_manager():
             self.composer.pack_forget()
 
     def send_composer(self) -> None:
+        """Send what is written, only from a box on screen that was opened for the goblin on screen."""
+        if not self.composer.winfo_viewable() or self.mode != "agent" or self.composer_for != actor_id(self.actor):
+            return
         text = self.composer_text.get("1.0", "end").strip()
         if not text:
             return
@@ -917,6 +922,7 @@ class DetailView:
             if self.composer.winfo_manager():
                 self.composer.pack_forget()
             self.composer_text.delete("1.0", "end")
+            self.composer_for = ""
             set_text(self.notice, "")
         self.mode = "agent"
         self.actor = actor
