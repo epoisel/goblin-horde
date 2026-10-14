@@ -11,6 +11,7 @@ optional: an older viewer that does not send them still gets a sensible roster.
 
 from __future__ import annotations
 
+import re
 import time
 from typing import NamedTuple
 
@@ -29,6 +30,9 @@ SOURCE_NAMES = {"codex": "Codex", "claude": "Claude Code", "orca": "Orca", "exte
 APP_NAMES = {"codex": "Codex", "claude": "Claude Code", "orca": "Orca", "extension": "its app"}
 DONE_LIMIT = 40
 STRIP_LIMIT = 12
+JUST_FINISHED_MS = 10 * 60_000  # Goblins that finished this recently stand in "Just finished", in view.
+JUST_LIMIT = 12
+SHELL_TOOLS = {"Bash", "PowerShell", "BashOutput"}
 
 
 # Small facts about one actor -------------------------------------------------------------------
@@ -241,6 +245,117 @@ def ask_text(ask: dict | None) -> str:
     return text or str(ask.get("command") or "").strip() or "Waiting for you."
 
 
+SENTENCE_END = re.compile(r"(?<=[.!?…])[\"')\]]*\s+(?=[\"'(\[]?[A-Z0-9])")
+
+
+def final_question(text: str) -> str:
+    """The question a reply ends with, without the lead-in before it: "Merged six entries. Want me to
+    update the README?" -> "Want me to update the README?". Questions asked back to back stay together."""
+    words = " ".join(str(text or "").split())
+    sentences = [part.strip() for part in SENTENCE_END.split(words) if part.strip()]
+    asks = [index for index, sentence in enumerate(sentences) if sentence.rstrip("\"')]").endswith("?")]
+    if not asks:
+        return words
+    end = first = asks[-1]
+    while first > 0 and sentences[first - 1].rstrip("\"')]").endswith("?"):
+        first -= 1
+    return " ".join(sentences[first:end + 1])
+
+
+def first_line(value, limit: int = 160) -> str:
+    line = next((part.strip() for part in str(value or "").splitlines() if part.strip()), "")
+    return clip(line, limit)
+
+
+def asker(ask: dict, source: str = "") -> str:
+    """Who wants permission, in the words a person knows: Bash or PowerShell, else the app."""
+    tool = str(ask.get("tool") or "")
+    if tool in SHELL_TOOLS:
+        return tool
+    return "the agent" if source in ("", "extension") else APP_NAMES.get(source, "the agent")
+
+
+def ask_line(ask: dict | None, source: str = "") -> str:
+    """An ask in one roster line. A permission to run something names it ("Allow Bash: npm test")
+    rather than "Allow Bash to run this command?"; a reply shows its closing question, not the
+    sentence leading up to it. The card keeps the full words."""
+    if not ask:
+        return ""
+    text = ask_text(ask)
+    kind = str(ask.get("kind") or "")
+    if kind == "reply":
+        return final_question(text)
+    command = first_line(ask.get("command"))
+    if kind not in ("permission", "approval") or not command:
+        return text
+    tool = str(ask.get("tool") or "")
+    if tool == "fileChange":
+        return f"Allow {asker(ask, source)} to change {command}"
+    lowered = text.lower()
+    if "may be waiting" in lowered:
+        return f"May be waiting for your OK: {command}"
+    if tool in SHELL_TOOLS or tool == "command" or "this command" in lowered or "waiting for your" in lowered:
+        return f"Allow {asker(ask, source)}: {command}"
+    return text
+
+
+def waiting_now(ask: dict, current: dict | None = None) -> dict:
+    """What the Now card says while a permission is open: the step is waiting on the person, not
+    running, so its timer counts the wait."""
+    command = first_line(ask.get("command"), 200)
+    head = ask_text(ask).split("?")[0].strip()
+    match = re.match(r"^Allow (.+?) to (.+)$", head)
+    tool = str(ask.get("tool") or "")
+    if command and (tool in SHELL_TOOLS or tool == "command" or (match and "this command" in match.group(2))):
+        title = f"Waiting for your OK to run {command}"
+    elif match:
+        title = f"Waiting for your OK to {match.group(2)}"
+    else:
+        title = "Waiting for your OK"
+    started = stamp_ms(ask.get("at")) or stamp_ms((current or {}).get("startedAt"))
+    return {"kind": "ask", "title": title, "detail": str(ask.get("command") or ""), "startedAt": started, "waiting": True}
+
+
+def detail_now(detail: dict | None, agent: dict | None) -> dict | None:
+    """The Now card's step. While the agent waits on the person, a permission shows what waits for an
+    OK (never "running 16m"), and a question hides Now: the ask card above says it all."""
+    agent = agent or {}
+    current = now_of({"now": (detail or {}).get("now")}) or now_of(agent)
+    ask = ask_of(agent)
+    if not ask:
+        return current
+    if str(ask.get("kind") or "") in ("question", "reply"):
+        return None
+    return waiting_now(ask, current)
+
+
+def _norm(value) -> str:
+    return " ".join(str(value or "").split()).rstrip("…").strip()
+
+
+def waiting_steps(trail: list, ask: dict | None) -> set[str]:
+    """The ids of open trail steps that wait on the person rather than run: the call a permission is
+    about (matched by its command or file), or the open question."""
+    if not ask:
+        return set()
+    running = [item for item in trail or [] if isinstance(item, dict) and item.get("status") == "running"]
+    kind = str(ask.get("kind") or "")
+    if kind in ("question", "reply"):
+        return {str(item.get("id")) for item in running if item.get("kind") == "ask"}
+    wanted = _norm(ask.get("command"))
+    found = set()
+    for item in running:
+        have = _norm(item.get("detail") or item.get("title"))
+        if wanted and have and (have.startswith(wanted[:200]) or wanted.startswith(have[:200])):
+            found.add(str(item.get("id")))
+        elif wanted and have and item.get("kind") in ("read", "edit", "write") and \
+                re.split(r"[\\/]", wanted)[-1] == re.split(r"[\\/]", have)[-1]:
+            found.add(str(item.get("id")))
+    if not found and len(running) == 1:
+        found.add(str(running[0].get("id")))  # One open step and a permission prompt: that step asks.
+    return found
+
+
 def waiting_of(actor: dict) -> dict | None:
     waiting = actor.get("waitingOn")
     return waiting if isinstance(waiting, dict) else None
@@ -278,15 +393,22 @@ def failed_step(item: dict) -> bool:
 
 
 def failure_text(actor: dict) -> str:
-    """What failed, in a few words: 'Failed: Ran project tests · exit 1'."""
+    """What failed, in a few words: 'Failed: npm test · exit 1' for a command; for a turn that stopped,
+    why it stopped ('Failed: Claude Code hit a rate limit.'), never just 'Failed: Stopped'."""
+    turns = actor.get("turnStates") or []
+    error = str((turns[-1] or {}).get("error") or "") if turns and isinstance(turns[-1], dict) else ""
     for item in reversed(actor.get("activities") or []):
         if isinstance(item, dict) and failed_step(item):
             exit_code = item.get("exitCode")
-            command = str(item.get("detail") or "") if item.get("kind") == "command" else ""
-            title = clip(command.splitlines()[0] if command.strip() else item.get("title") or "a step", 80)
-            return f"Failed: {title}" + (f" · exit {exit_code}" if exit_code not in (None, 0) else "")
-    turns = actor.get("turnStates") or []
-    error = str((turns[-1] or {}).get("error") or "") if turns and isinstance(turns[-1], dict) else ""
+            kind = item.get("kind")
+            if kind == "command":
+                command = str(item.get("detail") or "")
+                what = first_line(command) if command.strip() else str(item.get("title") or "")
+            elif kind == "update":
+                what = error or str(item.get("description") or "") or str(item.get("title") or "")
+            else:
+                what = str(item.get("title") or item.get("description") or "")
+            return f"Failed: {clip(what or 'a step', 80)}" + (f" · exit {exit_code}" if exit_code not in (None, 0) else "")
     return f"Failed: {clip(error, 120)}" if error else "Something failed."
 
 
@@ -343,7 +465,7 @@ def row_line(actor: dict, klass: str | None = None) -> Line:
     klass = klass or actor_class(actor)
     ask = ask_of(actor)
     if ask:
-        return Line("ask", ask_text(ask))
+        return Line("ask", ask_line(ask, source_of(actor)))
     waiting = waiting_of(actor)
     if waiting:
         return Line("waiting", waiting_text(waiting))
@@ -531,7 +653,10 @@ def _matches(terms: list[str], *fields: str) -> bool:
 def agent_row(actor: dict, klass: str, *, depth: int = 0, section: str, now_ms: float, aliases: dict | None,
               party: str = "", meta: str = "", context: bool = False) -> Row:
     right = " · ".join(part for part in (progress_label(actor), age_short(actor.get("updatedAt"), now_ms)) if part)
-    return Row("agent", actor_id(actor), display_name(actor, aliases), depth, actor, party, section,
+    title = display_name(actor, aliases)
+    if (not meta or meta == title) and source_of(actor) == "claude" and not _is_subagent(actor):
+        meta = project_name(actor)  # A session named for its prompt still says which folder it works in.
+    return Row("agent", actor_id(actor), title, depth, actor, party, section,
                line=row_line(actor, klass), right=right, meta=meta, context=context, klass=klass)
 
 
@@ -539,7 +664,8 @@ def build_roster(actors: list[dict], *, now_ms: float | None = None, catalog: li
                  watched: list[str] | tuple = (), aliases: dict | None = None, memory: RosterMemory | None = None,
                  done_open: bool = False, query: str = "", results: list[dict] | None = None) -> tuple[list[Row], Counts]:
     """The roster's rows: Needs you (the ask in amber), Working grouped by party (lead first, members
-    indented), Watching, Done today (folded unless opened), and chat search results after Enter."""
+    indented; a party of one needs no banner), Watching, Just finished (the last ten minutes, open, with
+    each goblin's last line), Done today (folded unless opened), and chat search results after Enter."""
     now = now_ms if now_ms is not None else time.time() * 1000
     memory = memory or RosterMemory()
     by_catalog = {str(source.get("id")): source for source in catalog if isinstance(source, dict) and source.get("id")}
@@ -616,9 +742,12 @@ def build_roster(actors: list[dict], *, now_ms: float | None = None, catalog: li
             continue
         counted += sum(not row.context for row in members_rows)
         shown.update(row.key for row in members_rows)
-        if len(members_rows) == 1 and members_rows[0].key in (party, lead):
-            # A chat working on its own needs no banner: its row already says what it is.
-            working_rows.append(members_rows[0]._replace(depth=0))
+        if len(members_rows) == 1:
+            # One goblin needs no banner over it (a lone Claude session's would only repeat its name);
+            # when its party has another name, that is said beside the goblin's own.
+            row = members_rows[0]
+            beside = names[party] if names[party] and names[party] != row.title else ""
+            working_rows.append(row._replace(depth=0, meta=beside or row.meta))
             continue
         listed = by_catalog.get(party) or {}
         project = project_name(listed if listed.get("cwd") else next((actor for actor in members if actor.get("cwd")), {}))
@@ -665,11 +794,22 @@ def build_roster(actors: list[dict], *, now_ms: float | None = None, catalog: li
         rows.append(Row("section", "section:watching", "Watching", section="watching", count=len(watch_rows)))
         rows.extend(watch_rows)
 
-    # Done today, newest first, folded unless opened.
+    # Just finished (open, so a finish is seen), then the rest of today, newest first, folded unless opened.
     midnight = start_of_day(now)
-    done = sorted((actor for actor in unique if classes[actor_id(actor)] == DONE and actor_id(actor) not in shown
-                   and updated_ms(actor) >= midnight and wanted(actor)),
-                  key=lambda actor: -updated_ms(actor))
+    finished = sorted((actor for actor in unique if classes[actor_id(actor)] == DONE and actor_id(actor) not in shown
+                       and updated_ms(actor) >= midnight and wanted(actor)),
+                      key=lambda actor: -updated_ms(actor))
+    recent = [actor for actor in finished if updated_ms(actor) >= now - JUST_FINISHED_MS]
+    done = finished[len(recent):]
+    if recent:
+        rows.append(Row("section", "section:just", "Just finished", section="just", count=len(recent)))
+        for actor in recent[:JUST_LIMIT]:
+            row = agent_row(actor, DONE, section="just", now_ms=now, aliases=aliases, party=party_scope(actor),
+                            meta=names.get(party_scope(actor), ""))
+            rows.append(row._replace(line=Line("finished", row.line.text if row.line else "Done.")))
+        if len(recent) > JUST_LIMIT:
+            rows.append(Row("note", "note:just", f"{len(recent) - JUST_LIMIT} more finished in the last few minutes.",
+                            section="just"))
     if done:
         is_open = done_open or bool(terms)
         rows.append(Row("section", "section:done", "Done today", section="done", count=len(done), open=is_open))
@@ -694,7 +834,8 @@ def build_roster(actors: list[dict], *, now_ms: float | None = None, catalog: li
         if not results:
             rows.append(Row("note", "note:results", "No chat matches those words.", section="results"))
 
-    counts = Counts(needs=len(needs), working=working_total,
+    # The header's chips never count one goblin twice: failed ones are counted as failed, not working.
+    counts = Counts(needs=len(needs), working=sum(klass == WORKING for klass in classes.values()),
                     failed=sum(klass == FAILED for klass in classes.values()),
                     done_today=sum(classes[actor_id(actor)] == DONE and updated_ms(actor) >= midnight for actor in unique))
     return rows, counts
@@ -706,8 +847,9 @@ def selectable(rows: list[Row]) -> list[Row]:
 
 
 def default_selection(rows: list[Row]) -> str:
-    """With nothing chosen: the first goblin that needs you, else the first one working, else none."""
-    for section in ("needs", "working"):
+    """With nothing chosen: the first goblin that needs you, else the first one working, else the one
+    that finished last (in the last ten minutes), else none."""
+    for section in ("needs", "working", "just"):
         row = next((row for row in rows if row.kind == "agent" and row.section == section and not row.context), None)
         if row:
             return row.key
@@ -764,6 +906,22 @@ def strip_items(actors: list[dict], *, now_ms: float | None = None, limit: int =
     # A gap marks a new party among the goblins actually shown.
     regapped = [item._replace(gap=index > 0 and item.party != items[index - 1].party) for index, item in enumerate(items)]
     return regapped, len(ordered) - len(items), sum(item.klass == NEEDS for item in ordered)
+
+
+def strip_label(actor: dict, aliases: dict | None = None) -> str:
+    """The few words under a goblin in the strip: the part of its name that tells it apart. A Claude
+    session's older "Claude · <folder> · <id>" name loses its "Claude ·" (every one had it), and a
+    subagent named "Explore: Find invoice fixtures" shows its task."""
+    alias = (aliases or {}).get(actor_id(actor), "")
+    if alias:
+        return alias
+    name = display_name(actor)
+    if source_of(actor) == "claude":
+        if name.startswith("Claude · "):
+            name = name[len("Claude · "):]
+        elif _is_subagent(actor) and re.match(r"^[\w-]+: \S", name):
+            name = name.split(": ", 1)[1]
+    return name
 
 
 def strip_tooltip(actor: dict, aliases: dict | None = None) -> str:
@@ -855,7 +1013,7 @@ def detail_sections(detail: dict | None, agent: dict | None = None) -> list[str]
         "waiting": bool(waiting_of(agent)),
         "mission": bool(str(((detail.get("mission") or {}) if isinstance(detail.get("mission"), dict) else {}).get("text") or "").strip()),
         "plan": bool(plan_steps(detail.get("plan"))),
-        "now": bool(now_of({"now": detail.get("now")}) or now_of(agent)),
+        "now": bool(detail_now(detail, agent)),
         "said": bool(str(((detail.get("said") or {}) if isinstance(detail.get("said"), dict) else {}).get("text") or "").strip()),
         "trail": bool(detail.get("trail")),
         "files": bool(detail.get("files")),
@@ -864,10 +1022,13 @@ def detail_sections(detail: dict | None, agent: dict | None = None) -> list[str]
     return [name for name in DETAIL_ORDER if present[name]]
 
 
-def trail_result(item: dict, now_ms: float | None = None) -> list[tuple[str, str]]:
-    """The right side of a trail row as (text, tone) parts: 'running 12s', 'exit 1 · 2.3s', '+42 −7'."""
+def trail_result(item: dict, now_ms: float | None = None, waiting: bool = False) -> list[tuple[str, str]]:
+    """The right side of a trail row as (text, tone) parts: 'running 12s', 'exit 1 · 2.3s', '+42 −7';
+    a step held by an open permission or question reads 'waiting for you'."""
     now = now_ms if now_ms is not None else time.time() * 1000
     status = str(item.get("status") or "")
+    if status == "running" and waiting:
+        return [("waiting for you", "ask")]
     if status == "running":
         started = stamp_ms(item.get("at"))
         return [(f"running {elapsed(now - started)}" if started else "running", "lively")]
@@ -966,6 +1127,19 @@ def source_chips(sources: dict) -> list[SourceChip]:
     return chips
 
 
+SOURCE_FIXES = {"reconnect_codex": "reconnect Codex", "connect_claude": "connect Claude Code"}
+
+
+def sources_hint(sources: dict) -> str:
+    """For the welcome card when nothing is being read: what the header's feed chips can do, in
+    their own words, or plainly that the tools have to be there first."""
+    fixes = [chip for chip in source_chips(sources) if chip.action in SOURCE_FIXES]
+    if fixes:
+        return " ".join(f"Click {chip.label} {chip.glyph} in the header to {SOURCE_FIXES[chip.action]}." for chip in fixes)
+    return ("No agents to show yet: Codex chats, Claude Code sessions, and Orca workspaces appear here once those "
+            "tools are installed and running.")
+
+
 def search_sources(catalog: list[dict], query: str, limit: int = 60) -> list[dict]:
     """Match every word against title, project, and path; title matches come first."""
     terms = query.lower().split()
@@ -1024,7 +1198,7 @@ def read_settings(saved) -> dict:
     settings = {
         "window": None, "strip": None, "showStrip": False, "surface": "window", "keepOnTop": False,
         "reducedMotion": None, "scaleWithDisplay": True, "selected": "", "doneOpen": False, "welcomed": False,
-        "aliases": {}, "paletteOffset": 0,
+        "stripHinted": False, "aliases": {}, "paletteOffset": 0,
     }
     window = saved.get("window")
     if isinstance(window, dict):
@@ -1036,7 +1210,7 @@ def read_settings(saved) -> dict:
     if isinstance(strip, dict) and _int(strip.get("right")) is not None and _int(strip.get("bottom")) is not None:
         # The strip's bottom-right corner: it grows to the left as goblins join.
         settings["strip"] = {"right": _int(strip["right"]), "bottom": _int(strip["bottom"])}
-    for key in ("showStrip", "keepOnTop", "doneOpen", "welcomed", "scaleWithDisplay"):
+    for key in ("showStrip", "keepOnTop", "doneOpen", "welcomed", "stripHinted", "scaleWithDisplay"):
         if isinstance(saved.get(key), bool):
             settings[key] = saved[key]
     if isinstance(saved.get("reducedMotion"), bool):

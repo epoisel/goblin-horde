@@ -159,7 +159,7 @@ class DemoWorld:
                        progress={"done": 1, "total": 6}))
         for index, page in enumerate(("cart", "shipping", "payment", "review", "receipt")):
             self.add(agent(f"{main}:p{index}", f"Check the {page} page", "claude", updated=self.ago(0.1 * index),
-                           party=f"claude:{session}", nickname=f"Explore subagent · {page}", model=HAIKU, childOf=main,
+                           party=f"claude:{session}", nickname=f"Explore: Check the {page} page", model=HAIKU, childOf=main,
                            cwd="D:/src/web-portal",
                            activities=[step("research" if index % 2 else "command",
                                             "Searched local files" if index % 2 else "Read a local file",
@@ -342,6 +342,7 @@ class DemoWorld:
                                         status="failed", exit_code=1)],
                        ask={"kind": "permission", "tool": "PowerShell", "text": "Allow PowerShell to run this command?",
                             "command": command, "at": self.ago(4), "answerHere": None, "key": "demo-ask-login"},
+                       now={"kind": "command", "title": f"Running {command}", "detail": command, "startedAt": self.ago(4)},
                        progress={"done": 2, "total": 5, "current": "Clear the stale browser cache"}),
                  {"mission": {"text": "The login test fails about one run in five on CI. Find out why and fix it.",
                               "from": "you", "at": self.ago(31)},
@@ -354,7 +355,9 @@ class DemoWorld:
                   "said": {"text": "The test clicks Sign in before the session cookie is written, and an old browser "
                                    "build in the Playwright cache makes that window wider. I'd like to clear the cache "
                                    "and re-run before changing the test.", "at": self.ago(4.2)},
-                  "trail": [trail("l5", "ask", "Asked to run PowerShell", self.ago(4), detail=command),
+                  # The call the permission holds: Claude Code lists it as started, but it waits on the person.
+                  "now": {"kind": "command", "title": f"Running {command}", "detail": command, "startedAt": self.ago(4)},
+                  "trail": [trail("l5", "command", command, self.ago(4), status="running", detail=command),
                             trail("l4", "agent", "Started subagent Explore", self.ago(9), detail="Find every place the "
                                   "login form's selectors are used.", agentId=child),
                             trail("l3", "command", "npx playwright test login.spec.ts --repeat-each=10", self.ago(12),
@@ -366,7 +369,8 @@ class DemoWorld:
                             trail("l1", "search", "Searched for waitForTimeout", self.ago(22), detail="waitForTimeout",
                                   paths=["tests/login.spec.ts", "tests/helpers/session.ts"])],
                   "files": []})
-        self.add(agent(child, "Explore subagent", "claude", updated=self.ago(0.2), party=party, nickname="Explore subagent",
+        self.add(agent(child, "Explore: Find the login selectors", "claude", updated=self.ago(0.2), party=party,
+                       nickname="Explore: Find the login selectors",
                        model=HAIKU, cwd=cwd, childOf=main, agentType="Explore",
                        activities=[step("research", "Searched local files", "data-testid=login", status="inProgress")],
                        now={"kind": "search", "title": "Searching for the login form's selectors",
@@ -484,6 +488,16 @@ class DemoWorld:
                   "screen": {"lines": ["Imported 1,204 synonym pairs.", "", "> "], "at": self.ago(20)}})
 
     def build_done(self) -> None:
+        self.chat("demo-chat-api-client", "Regenerate the API client", "D:/src/web-portal", 4, MINI)
+        self.add(agent("demo-chat-api-client", "Regenerate the API client", "codex", updated=self.ago(4), model=MINI,
+                       cwd="D:/src/web-portal", status="idle", attention="quiet", turn="completed",
+                       activities=[step("update", "Answer", "Regenerated the client from the new schema; all 212 type "
+                                                            "checks pass.")]),
+                 {"mission": {"text": "Regenerate the API client from the new OpenAPI schema.", "from": "you",
+                              "at": self.ago(12)},
+                  "said": {"text": "Regenerated the client from the new schema; all 212 type checks pass.",
+                           "at": self.ago(4)},
+                  "files": [{"path": "web/src/api/client.ts", "added": 310, "removed": 288, "at": self.ago(5)}]})
         cwd = "D:/src/billing-api"
         self.chat("demo-chat-config-keys", "Rename the config keys", cwd, 120, SOL)
         self.add(agent("demo-chat-config-keys", "Rename the config keys", "codex", updated=self.ago(120), model=SOL,

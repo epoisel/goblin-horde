@@ -18,6 +18,22 @@ from horde_theme import (AMBER, CORAL, ENTRY, FAINT, GOLD, HEADER, INK, IVORY, L
 PLACEHOLDER = "Find a chat…"
 
 
+def keyboard(label: tk.Label, action, when=lambda: True) -> None:
+    """A clickable label that Tab also reaches (while `when()` holds), shown by a gold ring, and that
+    Return or Space presses like a click."""
+    background = label.master.cget("bg")
+    label.configure(cursor="hand2", highlightthickness=1, highlightbackground=background, highlightcolor=GOLD,
+                    takefocus=lambda _path="": "1" if when() and label.winfo_viewable() else "0")
+
+    def press(_event=None) -> str:
+        if when():
+            action()
+        return "break"
+    label.bind("<Button-1>", press)
+    for key in ("<Return>", "<KP_Enter>", "<space>"):
+        label.bind(key, press)
+
+
 class HordeWindow:
     """Builds and lays out the main window's widgets; the app owns what they show."""
 
@@ -32,13 +48,14 @@ class HordeWindow:
         self.header = tk.Frame(root, bg=HEADER, height=px(48))
         self.header.pack(fill="x")
         self.header.pack_propagate(False)
-        # The right side is packed first, so a narrow window squeezes the feeds, never the search box.
+        # Made in the order Tab visits them (search, then ⋯); the right side is packed first, so a narrow
+        # window squeezes the feeds, never the search box.
+        self.search = tk.Entry(self.header, bg=ENTRY, fg=FAINT, insertbackground=GOLD, relief="flat", width=22,
+                               font=theme.body, highlightthickness=1, highlightbackground=LINE, highlightcolor=GOLD)
         self.menu_button = FlatButton(self.header, theme, "⋯", app.show_menu, kind="quiet", font=theme.title,
                                       padx=10, pady=0)
         self.menu_button.configure(bg=HEADER)
         self.menu_button.pack(side="right", padx=(px(4), px(10)), fill="y", pady=px(8))
-        self.search = tk.Entry(self.header, bg=ENTRY, fg=FAINT, insertbackground=GOLD, relief="flat", width=22,
-                               font=theme.body, highlightthickness=1, highlightbackground=LINE, highlightcolor=GOLD)
         self.search.pack(side="right", pady=px(9), ipady=px(2))
         self.title = tk.Label(self.header, text="Goblin Horde", bg=HEADER, fg=IVORY, font=theme.title)
         self.title.pack(side="left", padx=(px(16), px(12)))
@@ -51,13 +68,12 @@ class HordeWindow:
             "done": chip(self.counts, theme, fg=MUTED),
             "feed": chip(self.counts, theme, fg=FAINT),
         }
-        self.count_chips["needs"].bind("<Button-1>", lambda _event: app.select_first("needs"))
-        self.count_chips["done"].bind("<Button-1>", lambda _event: app.toggle_done(True))
-        for name in ("needs", "done"):
-            self.count_chips[name].configure(cursor="hand2")
+        keyboard(self.count_chips["needs"], lambda: app.select_first("needs"))
+        keyboard(self.count_chips["done"], lambda: app.toggle_done(True))
         self.sources = tk.Frame(self.header, bg=HEADER)
         self.sources.pack(side="left", padx=(px(10), 0))
         self.source_labels: dict[str, tk.Label] = {}
+        self.chips: list[SourceChip] = []
         self.header.bind("<Configure>", lambda _event: self.fit_header())
         self.search.insert(0, PLACEHOLDER)
         self.search.bind("<FocusIn>", self.on_search_focus)
@@ -118,6 +134,7 @@ class HordeWindow:
             self.sources.pack_forget()
 
     def update_sources(self, chips: list[SourceChip]) -> None:
+        self.chips = chips
         keys = [item.key for item in chips]
         for key in [key for key in self.source_labels if key not in keys]:
             self.source_labels.pop(key).destroy()
@@ -129,7 +146,9 @@ class HordeWindow:
                 label.pack(side="left")
                 label.bind("<Enter>", lambda event, key=item.key: self.app.source_tip(key, event))
                 label.bind("<Leave>", lambda _event: self.app.tooltip.hide())
-                label.bind("<Button-1>", lambda _event, key=item.key: self.app.fix_source(key))
+                # A chip with a fix (reconnect Codex, connect Claude Code) is a button, keyboard included.
+                keyboard(label, lambda key=item.key: self.app.fix_source(key),
+                         when=lambda key=item.key: any(chip.key == key and chip.action for chip in self.chips))
             text = f"{item.label} {item.glyph}"
             if label.cget("text") != text:
                 label.configure(text=text)

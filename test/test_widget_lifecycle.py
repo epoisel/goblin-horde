@@ -228,6 +228,19 @@ class CloseButtonTests(unittest.TestCase):
         self.assertEqual(widget.strip.window.state(), "withdrawn", "the strip hides unless asked to stay")
         self.assertFalse(request.exists())
 
+    def test_the_first_x_says_where_goblin_horde_went_once(self):
+        widget = self.widget
+        self.assertFalse(widget.strip_hinted)
+        self.close_button(widget.root)
+        self.assertTrue(widget.strip_hinted)
+        widget.show_strip_hint()
+        self.assertEqual(widget.tooltip.label.cget("text"), desktop_widget.STRIP_HINT)
+        self.assertIn("Quit is in the ⋯ menu", desktop_widget.STRIP_HINT)
+        widget.hide_strip_hint()
+        self.assertEqual(widget.tooltip.window.state(), "withdrawn")
+        saved = json.loads((Path(self.folder) / "goblins.json").read_text(encoding="utf-8"))
+        self.assertIs(saved["stripHinted"], True, "remembered, so it is said only the first time")
+
     def test_starting_again_after_the_x_opens_the_window_not_the_strip(self):
         widget = self.widget
         self.close_button(widget.root)

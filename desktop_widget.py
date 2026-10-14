@@ -33,8 +33,8 @@ from horde_api import ApiError, HordeApi
 from horde_demo import DemoApi
 from horde_model import (NEEDS, Counts, RosterMemory, actor_id, ask_of, build_roster, clamp_window, coverage_note,
                          default_selection, detail_from_actor, display_name, is_agent, merged_agent, motion_view,
-                         move_selection, party_scope, read_settings, search_sources, settings_to_save, source_chips,
-                         strip_items, with_public_steps)
+                         move_selection, party_scope, read_settings, search_sources, selectable, settings_to_save,
+                         source_chips, sources_hint, strip_items, with_public_steps)
 from horde_theme import HEADER, Theme, Tooltip, WheelRouter
 from horde_window import HordeWindow
 
@@ -54,6 +54,9 @@ SOURCES_MS = 30_000
 OFFLINE_AFTER = 2  # Failed reads in a row before the window says the viewer is not answering.
 DETAIL_CACHE = 40
 QUIT_LABEL = "Quit Goblin Horde"
+STRIP_HINT = ("Goblin Horde keeps watching from here. Click a goblin to open the window again; "
+              "Quit is in the ⋯ menu, or right-click the strip.")
+STRIP_HINT_MS = 8000
 
 
 def state_file() -> Path:
@@ -174,6 +177,7 @@ class GoblinWidget:
         self.surface = surface if surface in ("window", "strip") else "window"
         self.done_open = self.settings["doneOpen"]
         self.welcomed = self.settings["welcomed"]
+        self.strip_hinted = self.settings["stripHinted"]
         self.focus_thread = thread_id or select
         self.selected = "" if self.demo and not select else (select or self.settings["selected"])
         self.chosen = bool(self.selected)
@@ -347,13 +351,30 @@ class GoblinWidget:
         self.kick_detail()
 
     def collapse_to_strip(self) -> None:
-        """The window's X: the goblins stay on the desktop in their strip."""
+        """The window's X: the goblins stay on the desktop in their strip. The first time, a short note
+        says so, since an X that does not quit is a surprise."""
         self.remember_geometry()
         self.surface = "strip"
         self.tooltip.hide()
         self.root.withdraw()
         self.strip.show()
+        if not self.strip_hinted:
+            self.strip_hinted = True
+            self.root.after(250, self.show_strip_hint)
         self.save_settings()
+
+    def show_strip_hint(self) -> None:
+        if self.closing or not self.strip.shown:
+            return
+        self.strip.window.update_idletasks()
+        x, y = self.strip.window.winfo_rootx(), self.strip.window.winfo_rooty()
+        self.tooltip.show(STRIP_HINT, x, y - self.theme.px(70))
+        self.tooltip.text = STRIP_HINT  # So the strip's own tips replace it, and only it is taken down.
+        self.root.after(STRIP_HINT_MS, self.hide_strip_hint)
+
+    def hide_strip_hint(self) -> None:
+        if not self.closing and self.tooltip.text == STRIP_HINT:
+            self.tooltip.hide()
 
     def remember_geometry(self) -> None:
         if not self.window_visible():
@@ -384,8 +405,8 @@ class GoblinWidget:
         settings = {
             "surface": self.surface, "showStrip": self.show_strip_pref, "keepOnTop": self.keep_on_top,
             "reducedMotion": self.reduced_motion_choice, "scaleWithDisplay": self.settings["scaleWithDisplay"],
-            "doneOpen": self.done_open, "welcomed": self.welcomed, "aliases": self.aliases,
-            "paletteOffset": self.palette_offset,
+            "doneOpen": self.done_open, "welcomed": self.welcomed, "stripHinted": getattr(self, "strip_hinted", False),
+            "aliases": self.aliases, "paletteOffset": self.palette_offset,
         }
         if self.geometry and all(isinstance(self.geometry.get(key), int) for key in ("x", "y", "width", "height")):
             settings["window"] = dict(self.geometry)
@@ -521,8 +542,11 @@ class GoblinWidget:
                 not any(row.key == self.selected for row in rows):
             self.chosen = False  # A goblin saved from an earlier run that is gone: choose afresh.
         if not self.chosen:
+            # A goblin on screen stays there when it finishes (it moves to Just finished) or when someone
+            # else starts asking; a new choice is made only when it left the list or nobody is looking.
+            looking = self.window_visible() and any(row.key == self.selected for row in selectable(rows))
             automatic = default_selection(rows)
-            if automatic or not self.query:  # A search that hides everyone keeps the goblin on show.
+            if not looking and (automatic or not self.query):  # A search that hides everyone keeps the goblin on show.
                 self.selected = automatic
         self.roster.render(rows, self.selected)
         note = coverage_note(self.coverage) if self.connection == "PARTIAL" else ""
@@ -558,6 +582,9 @@ class GoblinWidget:
         view = self.detail_view
         if not key:
             view.show_welcome(self.welcome_note())
+            if not self.welcomed and self.window_visible():
+                self.welcomed = True  # The person has seen the welcome; remembered for next time.
+                self.save_settings_soon()
             return
         if key.startswith("result:"):
             party = key.split(":", 1)[1]
@@ -597,7 +624,7 @@ class GoblinWidget:
         elif not self.demo:
             parts.append("Connecting to the viewer…" if self.connection == "CONNECTING" else
                          "Waiting for the viewer to answer." if self.connection in ("OFFLINE", "STALE") else
-                         "No sources are connected yet; the header shows what needs a fix.")
+                         sources_hint(self.sources))
         if self.phone:  # Said only once the viewer has told us.
             parts.append("Phone access is on." if self.phone.get("enabled") else
                          "Phone access is off; turn it on from the ⋯ menu.")

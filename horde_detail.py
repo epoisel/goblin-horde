@@ -18,9 +18,9 @@ import tkinter as tk
 from goblin_sprite import KINDS, SPAN_H, SPAN_W, TOP_ROOM, place_sprite, sprite_scale
 from goblin_motion import stamp_ms
 from horde_model import (APP_NAMES, SOURCE_NAMES, actor_class, actor_id, age_label, ask_of, ask_text,
-                         clock_label, detail_sections, elapsed, family_ink, model_badge, now_of, party_scope,
+                         clock_label, detail_now, detail_sections, elapsed, family_ink, model_badge, party_scope,
                          plan_counts, plan_steps, progress_of, project_name, screen_tail, source_of, status_chip,
-                         trail_result, display_name, waiting_of)
+                         trail_result, display_name, waiting_of, waiting_steps)
 from horde_theme import (AMBER, CARD, CORAL, ENTRY, FAINT, GOLD, HOVER, IVORY, LILAC, LINE, LIVELY, MONO_BG,
                          MUTED, PANEL, FlatButton, ScrollArea, Theme, WheelRouter, chip, copy_menu, fit_text, tone)
 
@@ -75,6 +75,22 @@ class Card:
         self.view.wrapping(label, margin + theme.px(84) + (theme.px(18) if mono else 0))
         copy_menu(label, lambda: label.cget("text"))
         return label
+
+
+def tab_out(box: tk.Text) -> None:
+    """Tab and Shift+Tab leave a text box for the next or previous control, as everywhere else,
+    instead of typing a tab character into the message."""
+    def move(step: int) -> str:
+        target = box.tk_focusNext() if step > 0 else box.tk_focusPrev()
+        if target is not None:
+            target.focus_set()
+        return "break"
+    box.bind("<Tab>", lambda _event: move(1))
+    for sequence in ("<Shift-Tab>", "<ISO_Left_Tab>"):
+        try:
+            box.bind(sequence, lambda _event: move(-1))
+        except tk.TclError:
+            pass  # This platform's Tk has no such key.
 
 
 def set_text(label: tk.Label, text: str, **options) -> None:
@@ -159,20 +175,26 @@ class TrailRow:
         elif self.more.winfo_manager():
             self.more.pack_forget()
 
+    def waiting(self) -> bool:
+        """Held by an open permission or question: it waits for the person, it is not running."""
+        return str(self.item.get("id")) in self.card.view.waiting_ids
+
     def update(self, item: dict) -> None:
         self.item = item
         view = self.card.view
         kind = str(item.get("kind") or "tool")
         failed = item.get("status") == "failed"
+        running = item.get("status") == "running"
         set_text(self.time, clock_label(item.get("at")))
         set_text(self.icon, TRAIL_GLYPHS.get(kind, "•"),
-                 fg=CORAL if failed else LIVELY if item.get("status") == "running" else GOLD if kind == "agent" else MUTED)
+                 fg=CORAL if failed else AMBER if running and self.waiting() else LIVELY if running
+                 else GOLD if kind == "agent" else MUTED)
         title = " ".join(str(item.get("title") or "").split())
         if item.get("agentId") and view.app.has_agent(str(item.get("agentId"))):
             title += "  →"
         self.full_title = title
         self.fit()
-        parts = trail_result(item)
+        parts = trail_result(item, waiting=self.waiting())
         while len(self.result_labels) < len(parts):
             label = tk.Label(self.result, text="", bg=self.line.cget("bg"), font=view.theme.small)
             label.pack(side="left", padx=(view.theme.px(4), 0))
@@ -404,6 +426,7 @@ class DetailView:
                                      relief="flat", font=theme.body, padx=px(8), pady=px(6), highlightthickness=1,
                                      highlightbackground=LINE, highlightcolor=GOLD, undo=True)
         self.composer_text.pack(fill="x", padx=px(12))
+        tab_out(self.composer_text)
         self.composer_text.bind("<Control-Return>", lambda _event: (self.send_composer(), "break")[1])
         self.composer_text.bind("<Escape>", lambda _event: self.toggle_composer(False))
         actions = tk.Frame(self.composer, bg=CARD)
@@ -482,6 +505,7 @@ class DetailView:
         self.wrapping(self.now_title, px(120))
         self.now_detail = now.label(mono=True)
         self.now_started = 0.0
+        self.now_waiting = False
         said = self.cards["said"] = Card(self, "said")
         self.said_text = said.label()
         self.said_text.pack(fill="x")
@@ -489,6 +513,7 @@ class DetailView:
         self.said_open = False
         self.said_more = FlatButton(said.body, theme, "Show all", self.toggle_said, kind="quiet", padx=0)
         self.cards["trail"] = Card(self, "trail")
+        self.waiting_ids: set[str] = set()  # Trail steps an open ask holds: they wait, they do not run.
         self.trail_rows: dict[str, TrailRow] = {}
         self.trail_order: list[str] = []
         self.expanded_for: dict[str, set] = {}
@@ -597,9 +622,10 @@ class DetailView:
                     button.set_enabled(True)
             if error:
                 status.say(str(error), fg=CORAL)
-                if getattr(error, "status", 0) == 409 and app.can("/api/open"):
-                    FlatButton(actions, theme, f"Open in {app_name} ↗", self.on_open, kind="secondary").pack(
-                        side="left", padx=(px(6), 0))
+                # One way to open it however often the answer is refused, not another button each time.
+                if getattr(error, "status", 0) == 409 and app.can("/api/open") and not widgets.get("open"):
+                    widgets["open"] = FlatButton(actions, theme, f"Open in {app_name} ↗", self.on_open, kind="secondary")
+                    widgets["open"].pack(side="left", padx=(px(6), 0))
             else:
                 status.say("Sent. The goblin will pick it up on its next step.", fg=LIVELY)
 
@@ -640,6 +666,8 @@ class DetailView:
                           font=theme.body, padx=px(8), pady=px(6), highlightthickness=1, highlightbackground=LINE,
                           highlightcolor=GOLD, undo=True)
             box.pack(fill="x", pady=(px(10), 0), before=actions)
+            box.lower(actions)  # Tab reaches the box before the buttons that send it.
+            tab_out(box)
             widgets["reply"] = box
 
             def reply() -> None:
@@ -700,14 +728,21 @@ class DetailView:
             if not row.winfo_manager():
                 row.pack(fill="x", pady=(0, px(3)))
 
+    def now_aside(self, now_ms: float) -> str:
+        if not self.now_started:
+            return ""
+        return f"{'waiting' if self.now_waiting else 'running'} {elapsed(now_ms - self.now_started)}"
+
     def update_now(self, now: dict, now_ms: float) -> None:
+        """What it is doing, with a live timer; a step waiting for the person's OK says so, in amber."""
         card = self.cards["now"]
         kind = str(now.get("kind") or "tool")
-        set_text(self.now_icon, NOW_GLYPHS.get(kind, "▶"))
+        self.now_waiting = bool(now.get("waiting"))
+        set_text(self.now_icon, NOW_GLYPHS.get(kind, "▶"), fg=AMBER if self.now_waiting else LIVELY)
         set_text(self.now_title, " ".join(str(now.get("title") or "").split()))
         self.now_started = stamp_ms(now.get("startedAt")) or 0.0
-        card.set_title("Now", f"running {elapsed(now_ms - self.now_started)}" if self.now_started else "")
-        card.aside.configure(fg=LIVELY)
+        card.set_title("Now", self.now_aside(now_ms))
+        card.aside.configure(fg=AMBER if self.now_waiting else LIVELY)
         detail = str(now.get("detail") or "").strip()
         set_text(self.now_detail, detail)
         if detail and not self.now_detail.winfo_manager():
@@ -866,7 +901,7 @@ class DetailView:
         if "plan" in names:
             self.update_plan(self.detail.get("plan") or {})
         if "now" in names:
-            self.update_now(now_of({"now": self.detail.get("now")}) or now_of(actor) or {}, now)
+            self.update_now(detail_now(self.detail, actor) or {}, now)
         if "said" in names:
             said = self.detail.get("said") or {}
             self.cards["said"].set_title("Last said", age_label(stamp_ms(said.get("at"))) if said.get("at") else "")
@@ -874,6 +909,7 @@ class DetailView:
                 self.said_full = str(said.get("text") or "").strip()
             self.show_said()
         if "trail" in names:
+            self.waiting_ids = waiting_steps(self.detail.get("trail") or [], ask_of(actor))
             self.update_trail(self.detail.get("trail") or [])
         if "files" in names:
             self.update_files(self.detail.get("files") or [])
@@ -902,7 +938,7 @@ class DetailView:
         set_text(self.status_chip, status, fg=tone(status_tone))
         self.fit_chips()
         if "now" in self.order and self.now_started:
-            self.cards["now"].set_title("Now", f"running {elapsed(now_ms - self.now_started)}")
+            self.cards["now"].set_title("Now", self.now_aside(now_ms))
         if "ask" in self.order:
             ask = ask_of(self.actor) or {}
             since = stamp_ms(ask.get("at"))
@@ -910,7 +946,7 @@ class DetailView:
             card.set_title(card.title.cget("text"), age_label(since, now_ms) if since else "")
         if "trail" in self.order:
             for row in self.trail_rows.values():
-                if row.item.get("status") == "running":
+                if row.item.get("status") == "running" and not row.waiting():
                     parts = trail_result(row.item, now_ms)
                     if parts and row.result_labels:
                         set_text(row.result_labels[0], parts[0][0])

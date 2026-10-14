@@ -14,10 +14,11 @@ from tkinter import ttk
 from desktop_platform import bind_context
 from goblin_sprite import SPAN_H, SPAN_W, TOP_ROOM, place_sprite, sprite_scale
 from horde_model import Row
-from horde_theme import (AMBER, FAINT, GOLD, HOVER, IVORY, LINE, MUTED, PANEL, SELECTED, Theme, WheelRouter,
+from horde_theme import (AMBER, FAINT, GOLD, HOVER, IVORY, LINE, LIVELY, MUTED, PANEL, SELECTED, Theme, WheelRouter,
                          fit_text, tone)
 
-SECTION_INK = {"needs": AMBER, "results": GOLD}
+SECTION_INK = {"needs": AMBER, "results": GOLD, "just": LIVELY}
+FOCUS_RING = "#5b8068"
 CUE_COLUMNS = SPAN_W  # A goblin and the cue beside its head; text starts after them.
 
 
@@ -175,8 +176,9 @@ class RosterView:
         self.theme = theme
         self.frame = tk.Frame(parent, bg=PANEL, width=theme.px(self.WIDTH), bd=0, highlightthickness=0)
         self.frame.grid_propagate(False)
-        self.canvas = tk.Canvas(self.frame, bg=PANEL, bd=0, highlightthickness=0, takefocus=0,
-                                yscrollincrement=theme.px(20))
+        # Tab reaches the roster (then Up and Down choose a goblin); a quiet ring shows it has the keys.
+        self.canvas = tk.Canvas(self.frame, bg=PANEL, bd=0, highlightthickness=theme.px(1), highlightbackground=PANEL,
+                                highlightcolor=FOCUS_RING, takefocus=1, yscrollincrement=theme.px(20))
         self.bar = ttk.Scrollbar(self.frame, orient="vertical", style="Horde.Vertical.TScrollbar",
                                  command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self._on_scroll)

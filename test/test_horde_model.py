@@ -7,10 +7,11 @@ import unittest
 from goblin_motion import goblin_action
 from horde_demo import DemoWorld
 from horde_model import (DONE, FAILED, NEEDS, WORKING, RosterMemory, actor_class, age_short, ask_of, build_roster,
-                         clamp_window, coverage_note, default_selection, detail_from_actor, detail_sections,
-                         display_name, duration, elapsed, join_reason, model_badge, motion_view, move_selection,
-                         party_tree, progress_label, reachable, read_settings, row_line, search_sources,
-                         settings_to_save, source_chips, status_chip, strip_items, trail_result, with_public_steps)
+                         clamp_window, coverage_note, default_selection, detail_from_actor, detail_now, detail_sections,
+                         display_name, duration, elapsed, final_question, join_reason, model_badge, motion_view,
+                         move_selection, party_tree, progress_label, reachable, read_settings, row_line, search_sources,
+                         settings_to_save, source_chips, sources_hint, status_chip, strip_items, strip_label,
+                         strip_tooltip, trail_result, waiting_steps, with_public_steps)
 
 # Noon, local time, so "today" never straddles midnight in a test.
 NOW = time.mktime((2026, 10, 14, 12, 0, 0, 0, 0, -1)) * 1000
@@ -163,7 +164,7 @@ class RosterTests(unittest.TestCase):
         needs_row = next(row for row in rows if row.key == "older")
         self.assertEqual((needs_row.line.tone, needs_row.line.text), ("ask", "Which one?"))
         self.assertEqual(counts.needs, 2)
-        self.assertEqual(counts.working, 2)
+        self.assertEqual(counts.working, 1, "the failed goblin is counted once, as failed")
         self.assertEqual(counts.failed, 1)
         self.assertEqual(counts.done_today, 1)
         self.assertNotIn("yesterday", [row.key for row in rows])
@@ -233,7 +234,7 @@ class RosterTests(unittest.TestCase):
         world = DemoWorld("crowd", now_ms=NOW)
         rows, counts = build_roster(world.scene(NOW)["agents"], now_ms=NOW, catalog=world.catalog)
         self.assertEqual(sum(row.kind == "agent" for row in rows), 20)
-        self.assertGreaterEqual(counts.working, 19)
+        self.assertEqual((counts.needs, counts.working, counts.failed), (1, 18, 1), "each goblin counted once")
         self.assertEqual(len({row.key for row in rows}), len(rows), "every row key is unique")
 
 
@@ -314,6 +315,112 @@ class DetailTests(unittest.TestCase):
         self.assertEqual(status_chip(working, NOW), ("Working · 12s", "now"))
         waiting = agent("a", waitingOn={"who": "coordinator", "at": NOW - 3000})
         self.assertEqual(status_chip(waiting, NOW), ("Waiting on coordinator · 3s", "waiting"))
+
+
+class ReviewFindingTests(unittest.TestCase):
+    """What the product review found hard to read: whose ask is whose, what a waiting goblin waits on,
+    why one failed, and which one just finished."""
+
+    def test_a_permission_row_names_what_it_would_run(self):
+        bash = ask(text="Allow Bash to run this command?", tool="Bash", command="npm test -- csv\nsecond line")
+        self.assertEqual(row_line(agent("claude-agent:s", source="claude", ask=bash)).text, "Allow Bash: npm test -- csv")
+        codex = ask(kind="approval", text="Allow Codex to run this command? Upgrade Pillow.", tool="command",
+                    command="pip install --upgrade pillow==11.2.1")
+        self.assertEqual(row_line(agent("chat", ask=codex)).text, "Allow Codex: pip install --upgrade pillow==11.2.1")
+        files = ask(kind="approval", text="Allow Codex to change these files?", tool="fileChange", command="src/a.py, src/b.py")
+        self.assertEqual(row_line(agent("chat", ask=files)).text, "Allow Codex to change src/a.py, src/b.py")
+        maybe = ask(kind="approval", text="Codex may be waiting for your approval.", command="make deploy")
+        self.assertEqual(row_line(agent("chat", ask=maybe)).text, "May be waiting for your OK: make deploy")
+        read = ask(text="Allow Read to open cron.conf?", tool="Read", command="C:\\etc\\cron.conf")
+        self.assertEqual(row_line(agent("claude-agent:s", source="claude", ask=read)).text, "Allow Read to open cron.conf?",
+                         "a file ask already names its file")
+        notice = ask(text="Claude Code is waiting for your answer.", tool="PowerShell", command="Remove-Item x")
+        self.assertEqual(row_line(agent("claude-agent:s", source="claude", ask=notice)).text, "Allow PowerShell: Remove-Item x")
+
+    def test_a_reply_row_shows_the_question_not_the_lead_in(self):
+        reply = ask(kind="reply", text="Merged six duplicate entries and sorted releases newest first. Want me to "
+                                       "also update the README?")
+        actor = agent("chat", ask=reply)
+        self.assertEqual(row_line(actor).text, "Want me to also update the README?")
+        self.assertTrue(strip_tooltip(actor).endswith("Want me to also update the README?"))
+        self.assertEqual(final_question("Two formats. Convert them? Or leave them?"), "Convert them? Or leave them?")
+        self.assertEqual(final_question("No question here."), "No question here.")
+
+    def test_while_a_permission_is_open_now_waits_and_the_step_waits_for_you(self):
+        running = {"kind": "command", "title": "Running rm -rf ./.cache", "detail": "rm -rf ./.cache", "startedAt": NOW - 16 * MIN}
+        permission = ask(text="Allow Bash to run this command?", tool="Bash", command="rm -rf ./.cache", at=NOW - 2 * MIN)
+        actor = agent("claude-agent:s", source="claude", ask=permission, now=running)
+        shown = detail_now({"now": running}, actor)
+        self.assertEqual(shown["title"], "Waiting for your OK to run rm -rf ./.cache")
+        self.assertTrue(shown["waiting"])
+        self.assertEqual(shown["startedAt"], NOW - 2 * MIN, "the timer counts the wait, not the run")
+        read = ask(text="Allow Read to open cron.conf?", tool="Read", command="/etc/cron.conf")
+        self.assertEqual(detail_now({}, agent("a", ask=read))["title"], "Waiting for your OK to open cron.conf")
+        question = ask(kind="question", text="Which database first?", tool="AskUserQuestion")
+        self.assertIsNone(detail_now({"now": running}, agent("a", ask=question, now=running)), "the ask card says it all")
+        self.assertNotIn("now", detail_sections({"now": running}, agent("a", ask=question)))
+        self.assertEqual(detail_now({"now": running}, agent("a", now=running))["title"], "Running rm -rf ./.cache")
+        trail = [{"id": "t2", "kind": "command", "title": "rm -rf ./.cache", "detail": "rm -rf ./.cache", "status": "running"},
+                 {"id": "t1", "kind": "command", "title": "npm run build", "detail": "npm run build", "status": "running"},
+                 {"id": "t0", "kind": "command", "title": "ls", "status": "ok"}]
+        self.assertEqual(waiting_steps(trail, permission), {"t2"}, "only the call the permission is about")
+        self.assertEqual(waiting_steps([trail[1]], permission), {"t1"}, "one open step and a prompt: that step")
+        self.assertEqual(waiting_steps([{"id": "q", "kind": "ask", "status": "running"}, trail[1]], question), {"q"})
+        self.assertEqual(waiting_steps(trail, None), set())
+        self.assertEqual(trail_result(trail[0], NOW, waiting=True), [("waiting for you", "ask")])
+
+    def test_a_stopped_turn_says_why(self):
+        stopped = agent("claude-agent:s", source="claude", attention="failed",
+                        turnStates=[{"status": "failed", "error": "Claude Code hit a rate limit."}],
+                        activities=[{"kind": "update", "title": "Stopped", "description": "Claude Code hit a rate limit.",
+                                     "status": "failed"}])
+        self.assertEqual(row_line(stopped), ("failed", "Failed: Claude Code hit a rate limit."))
+        tool = agent("w", attention="failed", activities=[{"kind": "tool", "title": "Read cron.conf",
+                                                           "description": "Opened a local file.", "status": "failed"}])
+        self.assertEqual(row_line(tool).text, "Failed: Read cron.conf")
+
+    def test_one_goblin_gets_no_party_banner_from_any_source(self):
+        session = agent("claude-agent:s1", source="claude", name="Add a CSV export", parentThreadId="claude:s1",
+                        cwd="C:/src/billing-api")
+        worker = agent("orca-agent:w", source="orca", name="ranker-tuning", parentThreadId="orca:ws")
+        idle = agent("orca-agent:i", source="orca", name="synonyms", parentThreadId="orca:ws", attention="quiet",
+                     status="idle", updatedAt=NOW - 50 * MIN)
+        feed = agent("ext-agent:relay:run:scout", source="extension", name="Scout", parentThreadId="ext:relay:run")
+        rows, _ = build_roster([session, worker, idle, feed], now_ms=NOW,
+                               catalog=[{"id": "orca:ws", "name": "Orca · search-service"}])
+        self.assertEqual([row.key for row in rows if row.kind == "party"], [])
+        by_key = {row.key: row for row in rows}
+        self.assertEqual(by_key["orca-agent:w"].meta, "Orca · search-service", "its party is named beside it")
+        self.assertEqual(by_key["claude-agent:s1"].meta, "billing-api", "a session named for its prompt shows its folder")
+        self.assertEqual(by_key["claude-agent:s1"].depth, 0)
+
+    def test_goblins_that_just_finished_stay_in_view_with_their_last_line(self):
+        fresh = agent("fresh", attention="quiet", status="idle", updatedAt=NOW - 3 * MIN,
+                      activities=[{"kind": "update", "title": "Answer", "description": "Fixed: all 14 tests pass."}])
+        older = agent("older", attention="quiet", status="idle", updatedAt=NOW - 90 * MIN)
+        rows, counts = build_roster([fresh, older, agent("busy")], now_ms=NOW)
+        sections = [(row.title, row.count, row.open) for row in rows if row.kind == "section"]
+        self.assertEqual(sections, [("Working", 1, True), ("Just finished", 1, True), ("Done today", 1, False)])
+        row = next(row for row in rows if row.key == "fresh")
+        self.assertEqual((row.section, row.line), ("just", ("finished", "Fixed: all 14 tests pass.")))
+        self.assertNotIn("older", [row.key for row in rows], "earlier ones stay folded")
+        self.assertEqual(counts.done_today, 2)
+        rows, _ = build_roster([fresh], now_ms=NOW)
+        self.assertEqual(default_selection(rows), "fresh", "with nobody busy, the one that just finished")
+
+    def test_strip_labels_keep_the_part_that_differs(self):
+        self.assertEqual(strip_label({"id": "claude-agent:s", "source": "claude", "name": "Claude · billing-api · 1a2b"}),
+                         "billing-api · 1a2b")
+        self.assertEqual(strip_label({"id": "claude-agent:s", "source": "claude", "name": "Tune the ranker"}), "Tune the ranker")
+        child = {"id": "claude-agent:s:a", "source": "claude", "childOf": "claude-agent:s", "nickname": "Explore: Find fixtures"}
+        self.assertEqual(strip_label(child), "Find fixtures")
+        self.assertEqual(strip_label(child, {"claude-agent:s:a": "Scout"}), "Scout")
+
+    def test_the_welcome_says_what_the_feed_chips_can_do(self):
+        self.assertEqual(sources_hint({"claude": {"state": "not-connected", "canConnect": True}}),
+                         "Click Claude + in the header to connect Claude Code.")
+        self.assertIn("Click Codex ✕ in the header to reconnect Codex.", sources_hint({"codex": {"state": "unavailable"}}))
+        self.assertIn("appear here once those tools are installed", sources_hint({"codex": {"state": "not-installed"}}))
 
 
 class SourcesSearchAndBadgesTests(unittest.TestCase):

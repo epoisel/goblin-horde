@@ -34,7 +34,7 @@ BUTTON_HOVER = "#3b5a48"
 SELECTED = "#2d4a3a"
 HOVER = "#223a2d"
 ENTRY = "#122019"
-TONES = {"ask": AMBER, "waiting": LILAC, "failed": CORAL, "now": MUTED, "done": FAINT, "muted": MUTED,
+TONES = {"ask": AMBER, "waiting": LILAC, "failed": CORAL, "now": MUTED, "done": FAINT, "finished": MUTED, "muted": MUTED,
          "lively": LIVELY, "coral": CORAL, "gold": GOLD, "ok": LIVELY, "starting": MUTED, "off": FAINT,
          "broken": CORAL, "offer": GOLD, "faint": FAINT, "ivory": IVORY}
 
@@ -136,7 +136,11 @@ class Theme:
 
 
 class FlatButton(tk.Label):
-    """A flat button that keeps its colours on every platform (Aqua ignores tk.Button colours)."""
+    """A flat button that keeps its colours on every platform (Aqua ignores tk.Button colours).
+
+    It works from the keyboard like a real button: Tab reaches it whenever it can be pressed, a gold
+    ring shows which one has focus, Return or Space presses it, and a button scrolled out of sight
+    comes into view when it gets focus."""
 
     KINDS = {
         "primary": (GOLD, INK, "#ecd09a"),
@@ -155,12 +159,37 @@ class FlatButton(tk.Label):
         self.kind = kind
         self.enabled = True
         background = parent.cget("bg")
+        options.setdefault("highlightthickness", theme.px(2))
         super().__init__(parent, text=text, font=font or theme.small_strong, cursor="hand2",
-                         padx=theme.px(padx), pady=theme.px(pady), bd=0, bg=background, **options)
+                         padx=theme.px(padx), pady=theme.px(pady), bd=0, bg=background, takefocus=self._focusable,
+                         highlightbackground=background, highlightcolor=GOLD, **options)
         self.set_kind(kind)
         self.bind("<Enter>", lambda _event: self._paint(True))
         self.bind("<Leave>", lambda _event: self._paint(False))
         self.bind("<ButtonRelease-1>", self._release)
+        for key in ("<Return>", "<KP_Enter>", "<space>"):
+            self.bind(key, self._key)
+        self.bind("<FocusIn>", self._focused)
+
+    def _focusable(self, _path: str = "") -> str:
+        """Tab stops here only while pressing it would do something (a shown-only option tag never)."""
+        try:
+            return "1" if self.enabled and self.command and self.winfo_viewable() else "0"
+        except tk.TclError:
+            return "0"
+
+    def _key(self, _event=None) -> str:
+        if self.enabled and self.command:
+            self.command()
+        return "break"
+
+    def _focused(self, _event=None) -> None:
+        widget = self.master
+        while widget is not None:
+            if isinstance(widget, ScrollArea):
+                widget.see(self)
+                return
+            widget = getattr(widget, "master", None)
 
     def set_kind(self, kind: str) -> None:
         self.kind = kind
@@ -172,6 +201,8 @@ class FlatButton(tk.Label):
         return fill or background, ink, hover
 
     def _paint(self, hovered: bool) -> None:
+        # The focus ring is drawn only with focus; otherwise it blends into whatever is behind the button.
+        self.configure(highlightbackground=self.master.cget("bg"))
         fill, ink, hover = self._colors()
         if not self.enabled:
             self.configure(bg=fill, fg=FAINT, cursor="")

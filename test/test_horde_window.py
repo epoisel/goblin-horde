@@ -6,6 +6,7 @@ and expanded trail rows), the goblin strip, and an older viewer without the 0.6 
 """
 
 import sys
+import time
 import unittest
 from types import SimpleNamespace
 
@@ -64,9 +65,9 @@ class HordeWindowTests(unittest.TestCase):
         sections = [(row.title, row.count) for row in widget.rows if row.kind == "section"]
         self.assertEqual(sections[:2], [("Needs you", 4), ("Working", 8)])
         self.assertEqual(widget.selected, "demo-chat-release-notes", "the longest-waiting ask is chosen")
-        self.assertTrue(self.row_text(widget, "demo-chat-release-notes", "line").startswith("I found two changelog"))
-        self.assertEqual(self.row_text(widget, "claude-agent:demo-login-fix", "line"),
-                         "Allow PowerShell to run this command?")
+        # A reply shows its question, not the sentence before it; a permission names what it would run.
+        self.assertTrue(self.row_text(widget, "demo-chat-release-notes", "line").startswith("Should I convert the older"))
+        self.assertTrue(self.row_text(widget, "claude-agent:demo-login-fix", "line").startswith("Allow PowerShell: Remove-Item"))
         self.assertEqual(widget.window.count_chips["needs"].cget("text"), "4 need you")
         self.assertEqual(widget.window.count_chips["failed"].cget("text"), "1 failed")
         self.assertEqual([label.cget("text") for label in widget.window.source_labels.values()],
@@ -205,6 +206,66 @@ class HordeWindowTests(unittest.TestCase):
         self.assertIsNone(actor["ask"])
         self.assertNotIn("ask", widget.detail_view.order)
 
+    def test_while_a_permission_is_open_the_step_waits_for_you_instead_of_running(self):
+        widget = self.make()
+        self.click_row(widget, "claude-agent:demo-login-fix")
+        view = widget.detail_view
+        self.assertTrue(view.now_title.cget("text").startswith("Waiting for your OK to run Remove-Item"))
+        self.assertTrue(view.cards["now"].aside.cget("text").startswith("waiting 4m"), view.cards["now"].aside.cget("text"))
+        held = view.trail_rows["l5"]
+        self.assertEqual([label.cget("text") for label in held.result_labels if label.winfo_manager()], ["waiting for you"])
+        view.tick(time.time() * 1000)
+        self.assertEqual(held.result_labels[0].cget("text"), "waiting for you", "the timer never turns it back to running")
+        # A question hides Now altogether: the ask card says what it waits for.
+        self.click_row(widget, "claude-agent:demo-migration-plan")
+        self.assertNotIn("now", widget.detail_view.order)
+
+    def test_a_goblin_that_just_finished_is_in_view_and_stays_selected(self):
+        widget = self.make()
+        sections = [row.title for row in widget.rows if row.kind == "section"]
+        self.assertLess(sections.index("Just finished"), sections.index("Done today"))
+        self.assertTrue(self.row_text(widget, "demo-chat-api-client", "line").startswith("Regenerated the client"))
+        # Looking at a working goblin (not clicked: chosen automatically) that then finishes keeps it on screen.
+        widget.chosen, widget.selected = False, "orca-agent:demo-pane-ranker"
+        actor = widget.api.world.find("orca-agent:demo-pane-ranker")
+        actor.update(attention="quiet", status="idle", now=None)
+        load(widget)
+        self.assertEqual(widget.selected, "orca-agent:demo-pane-ranker")
+        self.assertEqual(next(row for row in widget.rows if row.key == widget.selected).section, "just")
+
+    def test_buttons_work_from_the_keyboard(self):
+        widget = self.make()
+        self.click_row(widget, "demo-chat-image-pipeline")
+        view = widget.detail_view
+        approve = buttons(view.cards["ask"].body, "Approve once")[0]
+        self.assertEqual(widget.roster.canvas.tk_focusNext(), view.open_button, "from the roster, Tab goes to the goblin")
+        self.assertIs(view.open_button.tk_focusNext(), view.message_button)
+        approve.focus_force()
+        settle(widget)
+        self.assertEqual(widget.root.focus_get(), approve)
+        self.assertGreater(int(approve.cget("highlightthickness")), 0, "a focus ring is drawn")
+        approve.event_generate("<Return>")
+        wait_for(widget, lambda: not widget.api.world.requests)
+        self.click_row(widget, "claude-agent:demo-migration-plan")
+        tag = buttons(widget.detail_view.cards["ask"].body, "Postgres 16 replica")[0]
+        self.assertEqual(tag._focusable(), "0", "an option that can only be chosen in Claude Code is not a Tab stop")
+        self.assertEqual(buttons(widget.detail_view.cards["ask"].body, "Dismiss")[0]._focusable(), "1")
+
+    def test_a_refused_reply_offers_one_way_to_open_the_chat(self):
+        widget = self.make()
+        self.click_row(widget, "demo-chat-release-notes")
+
+        def refused(_ident, _text):
+            raise ApiError(409, "This chat is open in the Codex app.")
+        widget.api.message = refused
+        widget.api.available = lambda _path: True
+        for _ in range(3):
+            widget.detail_view.ask_widgets["reply"].insert("1.0", "Convert them.")
+            press(buttons(widget.detail_view.cards["ask"].body, "Reply")[0])
+            wait_for(widget, lambda: "open in the Codex app" in widget.detail_view.ask_widgets["status"].cget("text"))
+            widget.detail_view.ask_widgets["status"].say("")
+        self.assertEqual(len(buttons(widget.detail_view.cards["ask"].body, "Open in Codex ↗")), 1)
+
     def test_question_options_are_shown_but_answered_in_the_agents_own_app(self):
         widget = self.make()
         self.click_row(widget, "claude-agent:demo-migration-plan")
@@ -261,6 +322,11 @@ class HordeWindowTests(unittest.TestCase):
         self.assertEqual(widget.detail_view.mode, "welcome")
         self.assertIn("note:working", widget.roster.views)
         self.assertIn("Phone access is off", widget.detail_view.welcome_sources.cget("text"))
+        self.assertTrue(widget.welcomed, "the welcome was seen; it is remembered")
+        # Without the demo, the welcome says what the feed chips in the header can do.
+        widget.demo, widget.connection = False, "LIVE"
+        widget.sources = {"codex": {"state": "not-installed"}, "claude": {"state": "not-connected", "canConnect": True}}
+        self.assertIn("Click Claude + in the header to connect Claude Code.", widget.welcome_note())
 
     def test_the_viewer_not_answering_says_so(self):
         widget = self.make()
