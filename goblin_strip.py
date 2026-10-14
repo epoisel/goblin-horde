@@ -13,7 +13,7 @@ import tkinter as tk
 
 import desktop_platform
 from desktop_platform import bind_context, float_window, make_transparent, screen_geometry
-from goblin_sprite import SPAN_H, SPAN_W, TOP_ROOM, draw_sprite, sprite_scale
+from goblin_sprite import SPAN_H, SPAN_W, TOP_ROOM, place_sprite, sprite_scale
 from horde_model import DONE, FAILED, NEEDS, StripItem, actor_id, clip, display_name, strip_tooltip
 from horde_theme import AMBER, CORAL, FAINT, GOLD, INK, IVORY, LINE, LIVELY, MUTED, PANEL, Theme, fit_text
 
@@ -112,9 +112,8 @@ class GoblinStrip:
                 x += m["gap"]
             left = x
             tag = f"goblin-{index}"
-            sprite_x = left
-            sprite_y = m["sprite_top"] + TOP_ROOM * self.scale
-            self.sprites.append((tag, sprite_x, sprite_y, item))
+            place_sprite(c, left, m["sprite_top"] + TOP_ROOM * self.scale, self.scale, tag)
+            self.sprites.append((tag, left, m["sprite_top"], item))
             # The bubble over the head: centred over the body (columns 1-17).
             glyph, back, front = BUBBLES.get(item.klass, ("", PANEL, LIVELY))
             center = left + 9 * self.scale
@@ -155,15 +154,14 @@ class GoblinStrip:
         if not self.shown and not force:
             return
         c = self.canvas
-        for tag, x, y, item in self.sprites:
+        for tag, _x, _y, item in self.sprites:
             style, action, frame, still = self.app.sprite_state(item.actor, item.klass, "strip")
-            key = f"{action}:{frame if not still else 0}:{style['name']}"
-            if self.painted.get(tag) == key and not force:
+            done = item.klass == DONE  # Faded, and resting on one frame.
+            image = self.app.sprite_images.image(style, action, frame, self.scale, still or done, faded=done)
+            if self.painted.get(tag) is image and not force:
                 continue
-            self.painted[tag] = key
-            c.delete(tag)
-            draw_sprite(c, x, y, style, action=action, frame=frame, scale=self.scale, still=still, tag=tag,
-                        stipple="gray50" if item.klass == DONE else "")
+            self.painted[tag] = image
+            c.itemconfigure(f"{tag}-image", image=image)
         # Working goblins' bubbles count dots on the shared beat.
         dots = "•" * (1 + self.app.phase % 3) if not self.app.reduced_motion else "•••"
         for index, (_tag, _x, _y, item) in enumerate(self.sprites):
@@ -219,7 +217,10 @@ class GoblinStrip:
         if slot is None:
             return
         _left, _right, kind, ident = slot
-        self.app.open_window(select=ident if kind == "goblin" else None)
+        if kind == "pill" and self.needs:
+            # "2 need you": open on the first of them.
+            ident = next((actor_id(item.actor) for item in self.items if item.klass == NEEDS), "")
+        self.app.open_window(select=ident or None)
 
     def on_motion(self, event) -> None:
         slot = self.slot_at(event.x)

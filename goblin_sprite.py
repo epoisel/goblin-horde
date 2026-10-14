@@ -107,22 +107,27 @@ def sprite_scale(base: int, ui_scale: float) -> int:
     return max(1, int(base * max(ui_scale, 0.5) + 0.5))
 
 
+SHADOW = "#6d765b"
+
+
+def shadow_box(x: int, y: int, scale: int) -> tuple[int, int, int, int]:
+    """The ground shadow's oval under a goblin drawn at (x, y); it was drawn for the 4x goblin."""
+    k = scale / 4
+    return x + round(7 * k), y + round(69 * k), x + round(69 * k), y + round(80 * k)
+
+
 def draw_sprite(c, x: int, y: int, style: dict, action: str = "idle", frame: int = 0, scale: int = 4,
                 still: bool = False, tag: str = "", exit_beat: int | None = None,
-                exit_outcome: str = "finished", stipple: str = "") -> None:
+                exit_outcome: str = "finished") -> None:
     """Draw a goblin on a 17x16 pixel grid with its action cue in the 8 columns to its right.
 
     Body offsets and cues move whole sprite pixels, so every beat stays visible at scale 2.
     ``still`` draws one readable frame for reduced motion. ``exit_beat`` draws the retiring
     goblin sinking through a floor portal instead, in the same footprint; only a finished
-    ``exit_outcome`` waves and sparkles on the way down. ``stipple`` (e.g. "gray50") fades a
-    goblin whose work is done; on a see-through window the gaps show the desktop.
+    ``exit_outcome`` waves and sparkles on the way down.
     """
     s = scale
-    k = scale / 4  # The shadow was drawn for the 4x goblin.
     extra = {"tags": tag} if tag else {}
-    if stipple:
-        extra["stipple"] = stipple
     leaving = exit_frame(exit_beat, still, exit_outcome) if exit_beat is not None else None
     ground_x, ground_y = x, y
     clip_y = None
@@ -136,8 +141,7 @@ def draw_sprite(c, x: int, y: int, style: dict, action: str = "idle", frame: int
                                fill=color, outline=color, tags=(tag, "exit") if tag else ("exit",))
     else:
         pose = pose_for(action, frame, still)
-        c.create_oval(x + round(7 * k), y + round(69 * k), x + round(69 * k), y + round(80 * k),
-                      fill="#6d765b", outline="", stipple="gray50", **({"tags": tag} if tag else {}))
+        c.create_oval(*shadow_box(x, y, s), fill=SHADOW, outline="", stipple="gray50", **extra)
     x += pose.dx * s
     y += pose.dy * s
 
@@ -178,11 +182,10 @@ def draw_sprite(c, x: int, y: int, style: dict, action: str = "idle", frame: int
         cue_x, cue_y = (x, y) if action in HELD else (ground_x, ground_y)
         kind = "exit" if leaving else "cue"
         cue_tags = (tag, kind) if tag else (kind,)
-        faded = {"stipple": stipple} if stipple else {}
         for column, row, length, color in cue_runs(cue):
             c.create_rectangle(cue_x + column * s, cue_y + row * s,
                                cue_x + (column + length) * s, cue_y + (row + 1) * s,
-                               fill=color, outline=color, tags=cue_tags, **faded)
+                               fill=color, outline=color, tags=cue_tags)
     # The right arm draws last so a goblin visibly grips its tool; it starts at the art's shoulder
     # (row 11) and ends where the held props in goblin_cues expect a hand.
     sleeve, skin, ink = style["coat"], style["skin"], ART["colors"]["K"]
@@ -203,3 +206,85 @@ def draw_sprite(c, x: int, y: int, style: dict, action: str = "idle", frame: int
         rect(13, 12, 1, 2, sleeve); rect(13, 14, 1, 1, skin); rect(14, 12, 1, 3, ink)
     else:
         layer(style.get("arm", "armRest"))
+
+
+class _Recorder:
+    """Stands in for a canvas: keeps draw_sprite's shapes, in order, to paint into an image."""
+
+    def __init__(self) -> None:
+        self.shapes: list[tuple[str, tuple, dict]] = []
+
+    def create_rectangle(self, *coords, **options) -> None:
+        self.shapes.append(("rectangle", coords, options))
+
+    def create_oval(self, *coords, **options) -> None:
+        self.shapes.append(("oval", coords, options))
+
+
+def frame_key(action: str, frame: int, still: bool) -> int:
+    """Frames that look the same share one image: four beats per action, and an idle goblin's blink
+    (frames 10 and 11 of every 12)."""
+    if still:
+        return 0
+    return frame % 12 if action == "idle" else frame % 4
+
+
+class SpriteImages:
+    """Every goblin frame painted once into an image and then shown by switching images, so a beat
+    costs one canvas call per goblin instead of a hundred rectangles. The pixels are draw_sprite's
+    own: each rectangle is painted exactly where the canvas would put it (a filled rectangle with an
+    outline covers its right and bottom edge, as on a canvas). The ground shadow never moves, so a
+    view draws it once as a real canvas oval under the image (``place_sprite``), looking exactly as
+    the canvas draws it on each system; screenshots of both renderings match pixel for pixel."""
+
+    def __init__(self, master, limit: int = 900) -> None:
+        self.master = master
+        self.limit = limit
+        self.images: dict[tuple, object] = {}
+
+    def image(self, style: dict, action: str, frame: int, scale: int, still: bool = False, faded: bool = False):
+        key = (style.get("tribe"), style["name"], action, frame_key(action, frame, still), scale, still, faded)
+        found = self.images.pop(key, None)
+        if found is None:
+            found = self.paint(style, action, frame, scale, still, faded)
+            while len(self.images) >= self.limit:
+                self.images.pop(next(iter(self.images)))  # The least recently shown frame goes first.
+        self.images[key] = found
+        return found
+
+    def paint(self, style: dict, action: str, frame: int, scale: int, still: bool, faded: bool):
+        import tkinter as tk
+        recorder = _Recorder()
+        draw_sprite(recorder, 0, TOP_ROOM * scale, style, action=action, frame=frame, scale=scale, still=still)
+        width, height = SPAN_W * scale + 1, SPAN_H * scale + 1
+        image = tk.PhotoImage(master=self.master, width=width, height=height)
+        drawn = [[False] * width for _ in range(height)]
+        for kind, coords, options in recorder.shapes:
+            if kind != "rectangle":
+                continue  # The shadow is the view's own canvas oval.
+            x0, y0, x1, y1 = (int(round(value)) for value in coords)
+            left, top = max(0, min(x0, x1)), max(0, min(y0, y1))
+            right, bottom = min(width, max(x0, x1) + 1), min(height, max(y0, y1) + 1)
+            if right > left and bottom > top:
+                image.put(options.get("fill"), to=(left, top, right, bottom))
+                for row in range(top, bottom):
+                    drawn[row][left:right] = [True] * (right - left)
+        if faded:  # A finished goblin: every other pixel left clear, the desktop or panel showing through.
+            for row in range(height):
+                for column in range(width):
+                    if drawn[row][column] and (column + row) % 2:
+                        image.transparency_set(column, row, True)
+        return image
+
+    def clear(self) -> None:
+        """Drop every image (on the Tk thread, before the window closes)."""
+        self.images.clear()
+
+
+def place_sprite(canvas, x: int, y: int, scale: int, tag: str, shadow: bool = True) -> int:
+    """A goblin's place on a canvas: its ground shadow (drawn as draw_sprite draws it) and an empty
+    image item above it, at sprite origin (x, y). Returns the image item to show frames in."""
+    if shadow:
+        canvas.create_oval(*shadow_box(x, y, scale), fill=SHADOW, outline="", stipple="gray50",
+                           tags=(tag, f"{tag}-shadow"))
+    return canvas.create_image(x, y - TOP_ROOM * scale, anchor="nw", tags=(tag, f"{tag}-image"))

@@ -12,7 +12,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from desktop_platform import bind_context
-from goblin_sprite import SPAN_H, SPAN_W, TOP_ROOM, draw_sprite, sprite_scale
+from goblin_sprite import SPAN_H, SPAN_W, TOP_ROOM, place_sprite, sprite_scale
 from horde_model import Row
 from horde_theme import (AMBER, FAINT, GOLD, HOVER, IVORY, LINE, MUTED, PANEL, SELECTED, Theme, WheelRouter,
                          fit_text, tone)
@@ -33,7 +33,7 @@ class RowView:
         self.texts: dict[str, str] = {}
         self.sprite_tag = f"sprite-{serial}"
         self.sprite_at: tuple[int, int] | None = None
-        self.painted = ""
+        self.painted = None  # The cached frame image now shown.
         c = roster.canvas
         self.bg = c.create_rectangle(0, 0, 0, 0, outline="", fill=PANEL)
         self.bar = c.create_rectangle(0, 0, 0, 0, outline="", fill=GOLD, state="hidden")
@@ -55,6 +55,10 @@ class RowView:
             self.items["line"] = c.create_text(0, 0, anchor="nw", font=theme.small, fill=MUTED)
             if self.kind in ("watch", "result"):
                 self.items["glyph"] = c.create_text(0, 0, anchor="center", font=theme.symbol, fill=GOLD)
+            if self.kind == "agent":
+                # One image item; each beat only swaps which cached frame it shows.
+                self.items["sprite"] = place_sprite(c, 0, 0, roster.sprite_scale, self.sprite_tag)
+                self.sprite_origin = (0, 0)
 
     def text(self, name: str, value: str, **options) -> None:
         if name not in self.items:
@@ -68,7 +72,7 @@ class RowView:
     def delete(self) -> None:
         c = self.roster.canvas
         c.delete(self.bg, self.bar, *self.items.values())
-        c.delete(self.sprite_tag)
+        c.delete(self.sprite_tag)  # The goblin's shadow too.
 
     def layout(self, row: Row, top: int, height: int, width: int) -> None:
         roster, theme, c = self.roster, self.roster.theme, self.roster.canvas
@@ -108,7 +112,9 @@ class RowView:
             sprite_y = top + (height - SPAN_H * scale) // 2 + TOP_ROOM * scale
             if moved or self.sprite_at != (sprite_x, sprite_y):
                 self.sprite_at = (sprite_x, sprite_y)
-                self.painted = ""
+                old_x, old_y = self.sprite_origin
+                c.move(self.sprite_tag, sprite_x - old_x, sprite_y - old_y)  # Shadow and image together.
+                self.sprite_origin = (sprite_x, sprite_y)
             left = indent + CUE_COLUMNS * scale + px(8)
         else:
             glyph = "★" if self.kind == "watch" else "◷"
@@ -152,16 +158,11 @@ class RowView:
             return
         roster = self.roster
         style, action, frame, still = roster.app.sprite_state(self.row.actor, self.row.klass, "roster")
-        key = f"{action}:{frame if not still else 0}:{style['name']}"
-        if key == self.painted and not force:
+        image = roster.app.sprite_images.image(style, action, frame, roster.sprite_scale, still)
+        if image is self.painted and not force:
             return
-        self.painted = key
-        c = roster.canvas
-        c.delete(self.sprite_tag)
-        x, y = self.sprite_at
-        draw_sprite(c, x, y, style, action=action, frame=frame, scale=roster.sprite_scale, still=still,
-                    tag=self.sprite_tag)
-        c.tag_raise(self.sprite_tag, self.bar)
+        self.painted = image
+        roster.canvas.itemconfigure(self.items["sprite"], image=image)
 
 
 class RosterView:

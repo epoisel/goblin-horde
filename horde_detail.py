@@ -15,7 +15,7 @@ from __future__ import annotations
 import time
 import tkinter as tk
 
-from goblin_sprite import KINDS, SPAN_H, SPAN_W, TOP_ROOM, draw_sprite, sprite_scale
+from goblin_sprite import KINDS, SPAN_H, SPAN_W, TOP_ROOM, place_sprite, sprite_scale
 from goblin_motion import stamp_ms
 from horde_model import (APP_NAMES, SOURCE_NAMES, actor_class, actor_id, age_label, ask_of, ask_text,
                          clock_label, detail_sections, elapsed, family_ink, model_badge, now_of, party_scope,
@@ -267,7 +267,8 @@ class DetailView:
         self.sprite = tk.Canvas(self.header, width=SPAN_W * scale, height=SPAN_H * scale, bg=PANEL,
                                 highlightthickness=0, bd=0)
         self.sprite.pack(side="left", anchor="n")
-        self.sprite_painted = ""
+        self.sprite_item = place_sprite(self.sprite, 0, TOP_ROOM * scale, scale, "hero")
+        self.sprite_painted = None
         column = tk.Frame(self.header, bg=PANEL)
         column.pack(side="left", fill="x", expand=True, padx=(px(12), 0))
         self.header_column = column
@@ -345,13 +346,11 @@ class DetailView:
             return
         klass = actor_class(self.actor)
         style, action, frame, still = self.app.sprite_state(self.actor, klass, "detail")
-        key = f"{actor_id(self.actor)}:{action}:{frame if not still else 0}:{style['name']}"
-        if key == self.sprite_painted and not force:
+        image = self.app.sprite_images.image(style, action, frame, self.sprite_scale, still)
+        if image is self.sprite_painted and not force:
             return
-        self.sprite_painted = key
-        self.sprite.delete("all")
-        scale = self.sprite_scale
-        draw_sprite(self.sprite, 0, TOP_ROOM * scale, style, action=action, frame=frame, scale=scale, still=still)
+        self.sprite_painted = image
+        self.sprite.itemconfigure(self.sprite_item, image=image)
 
     def update_header(self, now_ms: float) -> None:
         actor, detail = self.actor, self.detail or {}
@@ -824,7 +823,7 @@ class DetailView:
             self.trail_order = []
             self.ask_key = None
             self.said_open = False
-            self.sprite_painted = ""
+            self.sprite_painted = None
             if self.composer.winfo_manager():
                 self.composer.pack_forget()
             self.composer_text.delete("1.0", "end")
@@ -938,19 +937,22 @@ class DetailView:
         self.welcome_sources.pack(fill="x", pady=(px(16), 0))
         self.wrapping(self.welcome_sources, px(60))
 
+    TRIBE_LABELS = (("shaman", "Hexer · Claude", "think"), ("sapper", "Sapper · Codex", "build"),
+                    ("raider", "Raider · everything else", "search"))
+
     def paint_tribes(self) -> None:
+        """One goblin of each tribe acting out a different job, with what its tribe stands for."""
         canvas, scale, px = self.tribes, self.tribe_scale, self.theme.px
-        canvas.delete("all")
-        labels = (("shaman", "Hexer · Claude", "think"), ("sapper", "Sapper · Codex", "build"),
-                  ("raider", "Raider · everything else", "search"))
-        step = max(px(190), (SPAN_W + 12) * scale)
-        for index, (tribe, label, action) in enumerate(labels):
+        if not canvas.find_all():
+            step = max(px(190), (SPAN_W + 12) * scale)
+            for index, (_tribe, label, _action) in enumerate(self.TRIBE_LABELS):
+                x = px(4) + index * step
+                place_sprite(canvas, x, TOP_ROOM * scale, scale, f"tribe-{index}")
+                canvas.create_text(x, SPAN_H * scale + px(14), text=label, anchor="w", fill=MUTED, font=self.theme.small)
+        for index, (tribe, _label, action) in enumerate(self.TRIBE_LABELS):
             outfit = next(outfit for outfit in KINDS if outfit["tribe"] == tribe)
-            x = px(4) + index * step
-            still = self.app.reduced_motion
-            draw_sprite(canvas, x, TOP_ROOM * scale, outfit, action=action, frame=self.tribe_beat,
-                        scale=scale, still=still)
-            canvas.create_text(x, SPAN_H * scale + px(14), text=label, anchor="w", fill=MUTED, font=self.theme.small)
+            image = self.app.sprite_images.image(outfit, action, self.tribe_beat, scale, self.app.reduced_motion)
+            canvas.itemconfigure(f"tribe-{index}-image", image=image)
 
     def show_welcome(self, sources_note: str = "") -> None:
         self.mode = "welcome"

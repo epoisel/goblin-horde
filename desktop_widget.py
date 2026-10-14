@@ -27,7 +27,7 @@ import desktop_platform
 from desktop_platform import UNAVAILABLE_EXIT, TransparencyUnavailable
 from goblin_cues import ActionClock, system_prefers_reduced_motion
 from goblin_motion import ActionPulse
-from goblin_sprite import KINDS, style_for
+from goblin_sprite import KINDS, SpriteImages, style_for
 from goblin_strip import GoblinStrip
 from horde_api import ApiError, HordeApi
 from horde_demo import DemoApi
@@ -240,6 +240,7 @@ class GoblinWidget:
                                else system_prefers_reduced_motion())
         scale = desktop_platform.display_scale(self.root) if self.settings["scaleWithDisplay"] else 1.0
         self.theme = Theme(self.root, scale)
+        self.sprite_images = SpriteImages(self.root)  # Every goblin frame, painted once.
         desktop_platform.set_icon(self.root, str(HERE / "goblin.ico"))
         self.wheel = WheelRouter(self.root)
         self.tooltip = Tooltip(self.root, self.theme)
@@ -514,6 +515,9 @@ class GoblinWidget:
                                     aliases=self.aliases, memory=self.memory, done_open=self.done_open,
                                     query=self.query, results=self.results)
         self.rows, self.counts = rows, counts
+        if self.chosen and self.last_success and self.selected not in self.known and \
+                not any(row.key == self.selected for row in rows):
+            self.chosen = False  # A goblin saved from an earlier run that is gone: choose afresh.
         if not self.chosen:
             automatic = default_selection(rows)
             if automatic or not self.query:  # A search that hides everyone keeps the goblin on show.
@@ -1270,6 +1274,7 @@ class GoblinWidget:
                 pass
         self.tooltip.destroy()
         self.strip.destroy()
+        self.sprite_images.clear()  # Tk images are freed here, on the Tk thread.
         self.executor.shutdown(wait=False, cancel_futures=True)
         self.root.destroy()
 
