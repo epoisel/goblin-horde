@@ -37,6 +37,18 @@ test("the team package holds exactly the allowlist, byte for byte", () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("every link in a shipped document to another file points at a file that ships too", () => {
+  const manifest = readManifest(sourceDir);
+  for (const doc of manifest.filter((file) => file.endsWith(".md"))) {
+    const text = readFileSync(join(sourceDir, doc), "utf8");
+    for (const [, target] of text.matchAll(/\]\(([^)\s]+)\)/g)) {
+      if (/^(?:[a-z]+:|#)/i.test(target)) continue; // Web links and anchors.
+      const file = join(dirname(doc), target.split("#")[0]).replace(/\\/g, "/");
+      assert.ok(manifest.includes(file), `${doc} links to ${target}, which is not in the package`);
+    }
+  }
+});
+
 test("the README's status line names the release package.json ships", () => {
   const { version } = JSON.parse(readFileSync(join(sourceDir, "package.json"), "utf8"));
   const [major, minor] = version.split(".");

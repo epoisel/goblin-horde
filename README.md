@@ -47,7 +47,7 @@ This stops Goblin Horde and removes its app files, its manager skills, and its o
 
 ## Contributing, security, license
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). Please report security problems privately as described there. Goblin Horde is released under the [MIT license](LICENSE).
+See [CONTRIBUTING.md](https://github.com/epoisel/goblin-horde/blob/main/CONTRIBUTING.md) and [SECURITY.md](SECURITY.md). Please report security problems privately as described there. Goblin Horde is released under the [MIT license](LICENSE).
 
 ---
 
