@@ -577,7 +577,8 @@ function recentScene() {
 }
 // One agent in full, and Open / Message for it: this computer only (see lib/agent-detail.mjs).
 const agentRoute = agentRoutes(new AgentDetailService({
-  scene: () => recentScene(),
+  // Settled like every scene response, so a dismissed alert is dismissed in the detail too.
+  scene: () => recentScene().then((scene) => settled(scene)),
   codex: {
     listThreads: () => reader.listThreads(),
     latestTurns: async (id, limit) => { await reader.ready; return reader.latestTurns(id, limit); },
