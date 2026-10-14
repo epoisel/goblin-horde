@@ -17,11 +17,11 @@ import { ClaudeReader, goblinStateDir } from "./lib/claude.mjs";
 import { ExtensionReader, EXTENSION_PARTY, extensionFeedDir } from "./lib/extension.mjs";
 import { claudeHookReport, claudeSettingsPath, installClaudeHooks } from "./lib/claude-hooks.mjs";
 import { diagnosticReport } from "./lib/diagnostics.mjs";
-import { ownsShortcut, removeShortcut, shortcutPaths, shortcutSpec, writeShortcut } from "./lib/shortcuts.mjs";
+import { ownsShortcut, setSignInStart, shortcutPaths } from "./lib/shortcuts.mjs";
 import { claudeConfigDir } from "./lib/paths.mjs";
 import { CODEX_NOT_FOUND, codexCommand, codexSourceState } from "./lib/codex-bin.mjs";
 import { Pairing, sessionCookie } from "./lib/pairing.mjs";
-import { PhoneAccess, loadPairingCode, localOnlyRefusal, mobileStatus, requestAnswer } from "./lib/phone.mjs";
+import { PhoneAccess, errorText, loadPairingCode, localOnlyRefusal, mobileStatus, requestAnswer } from "./lib/phone.mjs";
 import { publicRequests, publicView } from "./lib/public-view.mjs";
 import { AgentDetailService, ClaudeDesktopIndex, agentRoutes } from "./lib/agent-detail.mjs";
 import { ClaudeDetailReader, ClaudeTitleReader } from "./lib/claude-detail.mjs";
@@ -756,10 +756,9 @@ const handler = async (request, response) => {
         const paths = installed ? shortcutPaths() : null;
         if (!paths) return json(response, 409, { error: "Starting at sign-in needs an installed copy on Windows." });
         if (typeof data.enabled !== "boolean") return json(response, 400, { error: "Say whether to start at sign-in." });
-        if (data.enabled) writeShortcut(paths.startup, shortcutSpec({ nodePath: process.execPath, installDir: installRoot }));
-        else if (existsSync(paths.startup) && !ownsShortcut(paths.startup, installRoot))
-          return json(response, 409, { error: "The sign-in shortcut starts another Goblin Horde copy, so it was left alone." });
-        else removeShortcut(paths.startup);
+        // As install does: the goblin strip only, and never another copy's shortcut.
+        const result = setSignInStart({ enable: data.enabled, link: paths.startup, installDir: installRoot, nodePath: process.execPath });
+        if (result.status !== 200) return json(response, result.status, { error: result.error, autostart: autostartState() });
         return json(response, 200, { autostart: autostartState() });
       }
       if (url.pathname === "/api/reconnect") {
@@ -893,10 +892,13 @@ const handler = async (request, response) => {
   }
 };
 
-/** An error answer, unless a reply is already under way; then the connection is simply ended. */
+/**
+ * An error answer, unless a reply is already under way; then the connection is simply ended. A phone is
+ * never told this computer's paths or a system error's words (see errorText).
+ */
 function fail(response, status, message) {
   if (response.headersSent) return response.destroy();
-  return json(response, status, { error: message });
+  return json(response, status, { error: errorText({ local: Boolean(response.req && isLocal(response.req)), status, message }) });
 }
 
 // Last line of defence: one bad request must never become an unhandled rejection that ends the server.

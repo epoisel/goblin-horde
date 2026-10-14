@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MARKER, autostart, install, makeContext, readManifest, start, status } from "../lib/manager.mjs";
-import { ownsShortcut, shortcutSpec, writeShortcut } from "../lib/shortcuts.mjs";
+import { ownsShortcut, setSignInStart, shortcutSpec, writeShortcut } from "../lib/shortcuts.mjs";
 import { OrcaReader } from "../lib/orca.mjs";
 import { finishLine, main } from "../goblin.mjs";
 
@@ -65,6 +65,29 @@ test("real shortcuts are recognised whether their arguments start on an even or 
     }
     assert.deepEqual([...alignments].sort(), ["even", "odd"], "both alignments were exercised");
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the window's Start with Windows starts the strip and never takes over another copy's shortcut", () => {
+  const link = "C:\\Users\\dev\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\Goblin Horde.lnk";
+  const installDir = "C:\\Users\\dev\\AppData\\Local\\Programs\\GoblinHorde";
+  const run = ({ enable, present = false, ours = false }) => {
+    const calls = [];
+    const result = setSignInStart({ enable, link, installDir, nodePath: "C:\\node\\node.exe", exists: () => present, owns: () => ours,
+      write: (path, spec) => calls.push(["write", path, spec.args]), remove: (path) => calls.push(["remove", path]) });
+    return { result, calls };
+  };
+  const on = run({ enable: true });
+  assert.deepEqual(on.result, { status: 200 });
+  assert.equal(on.calls.length, 1);
+  assert.match(on.calls[0][2], /start --install-dir ".+GoblinHorde" --surface strip$/, "signing in starts the strip only");
+  assert.match(run({ enable: true, present: true, ours: true }).calls[0][2], /--surface strip$/, "this copy's own shortcut is rewritten");
+  const taken = run({ enable: true, present: true, ours: false });
+  assert.equal(taken.result.status, 409);
+  assert.match(taken.result.error, /Another Goblin Horde copy .* autostart on/);
+  assert.deepEqual(taken.calls, [], "another copy's shortcut is not replaced");
+  assert.deepEqual(run({ enable: false, present: true, ours: false }).calls, []);
+  assert.equal(run({ enable: false, present: true, ours: false }).result.status, 409);
+  assert.deepEqual(run({ enable: false, present: true, ours: true }).calls, [["remove", link]]);
 });
 
 test("autostart off and install leave another copy's sign-in shortcut alone", windowsOnly, async () => {
