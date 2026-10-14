@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { classifyCodex, classifyOrca, composeAllScene, FEED_LIMITS, listedThread, noteReadFailure, planCodexReads, pruneCache,
-  selectFeedMembers } from "../lib/feed.mjs";
+  selectFeedMembers, uniqueThreads } from "../lib/feed.mjs";
 
 const NOW = 1_800_000_000_000;
 const HOUR = 3_600_000;
@@ -322,4 +322,15 @@ test("a computer without the Codex CLI is not told its scene is partial", () => 
   const scene = composeAllScene({ codex: { ok: false, threads: [], missing: true }, claude: empty, orca: { ok: true, snapshot: { workspaces: [], warning: "", missing: true } }, now: NOW });
   assert.equal(scene.warning, "");
   assert.match(composeAllScene({ codex: { ok: false, threads: [] }, claude: empty, orca: empty, now: NOW }).warning, /Codex feed is unavailable/);
+});
+
+test("a chat listed on two pages (it changed while they were read) appears once, as its newest copy", () => {
+  const listed = uniqueThreads([
+    { id: "moved", updatedAt: NOW, name: "newest" },
+    { id: "steady", updatedAt: NOW - 5000 },
+    { id: "moved", updatedAt: NOW - 60_000, name: "older page" },
+    { id: "moved", updatedAt: NOW - 90_000, name: "oldest page" },
+  ]);
+  assert.deepEqual(listed.map((thread) => thread.id), ["moved", "steady"]);
+  assert.equal(listed[0].name, "newest");
 });

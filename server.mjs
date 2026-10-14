@@ -9,7 +9,7 @@ import { carryNowStart, codexAsk, markRunningElsewhere, transformThread, withCod
 import { DismissStore, settleActor, settleView } from "./lib/dismiss.mjs";
 import { withApprovalGuess } from "./lib/rollout.mjs";
 import { readDescendants } from "./lib/descendants.mjs";
-import { classifyCodex, composeAllScene, listedThread, noteReadFailure, planCodexReads, pruneCache } from "./lib/feed.mjs";
+import { classifyCodex, composeAllScene, listedThread, noteReadFailure, planCodexReads, pruneCache, uniqueThreads } from "./lib/feed.mjs";
 import { WatchList } from "./lib/watch.mjs";
 import { DiscoveryGate, LinkStore, claudePanePairs, drivenTerminals, identityMark, joinParties, joinSubset } from "./lib/links.mjs";
 import { OrcaReader } from "./lib/orca.mjs";
@@ -321,9 +321,9 @@ class CodexReader {
         cursor = result.nextCursor;
       }
       this.threadListComplete = complete;
-      this.threadList = threads;
+      this.threadList = uniqueThreads(threads);
       this.threadListAt = Date.now();
-      return threads;
+      return this.threadList;
     })().finally(() => { this.threadListPending = null; });
     return this.threadListPending;
   }
