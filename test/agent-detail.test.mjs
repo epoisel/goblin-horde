@@ -102,6 +102,44 @@ test("a Claude Code session's detail comes from its transcript, with its party a
   await assert.rejects(service.message("claude-agent:sess-1", "hi"), (error) => error.statusCode === 409);
 });
 
+test("a Claude Code turn that began beyond the transcript read keeps the prompt and plan the hook recorded", async () => {
+  const main = { id: "claude-agent:sess-9", source: "claude", name: "Reconcile the ledgers", cwd: CWD, parentThreadId: "claude:sess-9", status: "active", attention: "working", activities: [] };
+  const kid = { id: "claude-agent:sess-9:kid", source: "claude", name: "Explore: Sum the north ledger", cwd: CWD, parentThreadId: "claude:sess-9", childOf: main.id, status: "active", attention: "working", activities: [] };
+  const record = (at, event, fields) => ({ v: 1, id: `r${at}`, at, event, session: "sess-9", ...fields });
+  const records = [
+    record(100, "UserPromptSubmit", { prompt: "An earlier turn" }),
+    record(200, "PreToolUse", { tool: "TodoWrite", todos: [{ t: "Old step", s: "completed" }] }),
+    record(300, "UserPromptSubmit", { prompt: "Reconcile every ledger; the staging password=hunter2secret" }),
+    record(400, "PreToolUse", { tool: "TodoWrite", todos: [{ t: "Read the ledgers", s: "completed" }, { t: "Balancing the north ledger", s: "in_progress" }, { t: "Write the report", s: "pending" }] }),
+    record(450, "PreToolUse", { agent: "kid", tool: "TodoWrite", todos: [{ t: "Sum the rows", s: "in_progress" }] }),
+    { v: 1, id: "r460", at: 460, event: "UserPromptSubmit", session: "sess-other", prompt: "Someone else's prompt" },
+  ];
+  let transcript = { mission: null, plan: null, now: null, said: { text: "Still balancing.", at: 500 }, trail: [], files: [], branch: "", startedAt: 0, lastAt: 500 };
+  const service = new AgentDetailService({
+    scene: async () => ({ agents: [main, kid] }),
+    claude: { snapshot: () => ({ sessions: [{ agents: [main, kid] }] }), records: () => records },
+    orca: { snapshot: async () => ({ workspaces: [] }) },
+    claudeDetail: { read: () => transcript },
+    desktop: { linkFor: () => "" }, stat: () => ({ size: 1, mtimeMs: 1 }), branch: () => "", clock: () => 1000,
+  });
+  const detail = await service.detail(main.id);
+  assert.deepEqual(detail.mission, { text: "Reconcile every ledger; the staging password=[secret removed]", from: "you", at: 300 });
+  assert.deepEqual(detail.plan.steps.map((step) => [step.text, step.status]),
+    [["Read the ledgers", "done"], ["Balancing the north ledger", "active"], ["Write the report", "pending"]]);
+  assert.equal(detail.said.text, "Still balancing.", "the transcript's own parts are kept");
+  const child = await service.detail(kid.id);
+  assert.deepEqual(child.plan.steps, [{ text: "Sum the rows", status: "active" }], "a subagent's own list, not its session's");
+  assert.equal(child.mission, null, "a subagent's task comes from its own transcript only");
+  // A transcript that names its own mission and plan wins; one that cannot be read at all still gets the hook's.
+  transcript = { ...transcript, mission: { text: "From the transcript", from: "you", at: 600 }, plan: { steps: [{ text: "T", status: "active" }], at: 600, source: "todos" } };
+  assert.equal((await service.detail(main.id)).mission.text, "From the transcript");
+  transcript = null;
+  assert.equal((await service.detail(main.id)).plan.steps.length, 3);
+  // A cleared list is no plan, even with an older one before it.
+  records.push(record(700, "PreToolUse", { tool: "TodoWrite", todos: [] }));
+  assert.equal((await service.detail(main.id)).plan, null);
+});
+
 test("a Claude Code session in an Orca pane opens and takes messages through that terminal", async () => {
   const { service, log } = world({ twin: true });
   const detail = await service.detail("claude-agent:sess-1");
