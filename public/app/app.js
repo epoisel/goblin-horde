@@ -401,7 +401,7 @@ function renderSidebar() {
   }
   list.setAttribute("aria-label", `Tasks in the last ${windowWords()}`);
   const foot = document.getElementById("side-foot");
-  const parts = [`${state.tasks.length} ${state.tasks.length === 1 ? "task" : "tasks"} · last ${windowWords()}`];
+  const parts = [state.loaded ? `${state.tasks.length} ${state.tasks.length === 1 ? "task" : "tasks"} · last ${windowWords()}` : `Last ${windowWords()}`];
   if (state.truncated) parts.push(`${state.truncated} more not shown`);
   foot.textContent = parts.join(" · ");
   if (state.checkedAt) foot.title = `Checked ${new Date(state.checkedAt).toLocaleTimeString()}`;

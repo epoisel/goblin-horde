@@ -222,7 +222,7 @@ body.side-collapsed { --side: 60px; }
 .btn[aria-pressed="true"] { background: var(--panel-3); border-color: rgba(223, 187, 120, .6); color: var(--gold); }
 /* Narrow columns (Fit, small windows) drop the extras, never the conversation. */
 .col-body { container: col / inline-size; }
-@container col (max-width: 380px) {
+@container col (max-width: 340px) {
   .col-tools .icon-btn:nth-child(2), .col-tools .icon-btn:nth-child(3) { display: none; }
   .col-head > .goblin { width: 39px; height: 42px; }
   .now-detail { display: none; }
