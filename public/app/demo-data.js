@@ -460,7 +460,7 @@ function paymentsEntries(T) {
   out.push(b.read(at + 12 * S, "src/money.ts", "export const toCents = (value: number) => Math.round(value * 100);\nexport const fromCents = (cents: number) => cents / 100;", { durationMs: 18 }));
   out.push(b.search(at + 16 * S, "chargeCart\\(", "src/checkout/submit.ts:31:  const result = await chargeCart(cart);\nsrc/checkout/preorder.ts:58:  await chargeCart(cart);\ntest/payments/payments-140.test.ts:43:  const charged = await chargeCart(cart);", { durationMs: 190 }));
   out.push(b.write(at + 3 * M, "src/checkout/adapter.ts", ADAPTER_FILE, { durationMs: 60 }));
-  out.push(b.edit(at + 5 * M, "src/checkout/payments.ts", PAYMENTS_DIFF, { durationMs: 80, files: [{ path: "src/checkout/payments.ts", added: 39, removed: 16 }] }));
+  out.push(b.edit(at + 5 * M, "src/checkout/payments.ts", PAYMENTS_DIFF, { durationMs: 80 }));
   out.push(b.edit(at + 6 * M, "src/checkout/submit.ts", lines("--- a/src/checkout/submit.ts", "+++ b/src/checkout/submit.ts", "@@ -29,5 +29,8 @@ export async function submit(cart: Cart) {",
     "   validate(cart);", "-  const result = await chargeCart(cart);", "+  const result = await chargeCart(cart, {", "+    idempotencyKey: `${cart.id}:${cart.attempt}`,", "+  });",
     "   return confirm(cart, result);", " }"), { durationMs: 40 }));

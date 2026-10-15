@@ -43,6 +43,8 @@ export class TranscriptStore {
     this.loaded = false;
     this.live = false;
     this.error = "";
+    this.failures = 0;
+    this.failedAt = 0;
     this.listeners = new Set();
   }
 
@@ -106,6 +108,7 @@ export class TranscriptStore {
     this.loaded = true;
     this.live = page?.live ?? this.live;
     this.error = "";
+    this.failures = 0;
     this.emit(change);
     return change;
   }
@@ -124,7 +127,10 @@ export class TranscriptStore {
     for (const entry of this.entries) if (!this.signatures.has(entry.id)) this.signatures.set(entry.id, entrySignature(entry));
   }
 
-  fail(message) {
+  /** A read failed: keep what is shown, say why, and count failures so polling can back off. */
+  fail(message, now = Date.now()) {
+    this.failures = (this.failures || 0) + 1;
+    this.failedAt = now;
     this.error = message || "This transcript could not be read.";
     this.emit({ added: [], prepended: [], changed: [], reset: false, error: this.error });
   }
@@ -266,7 +272,10 @@ export function toolSummary(tool) {
 /** Who sent a prompt, as its bubble's label. */
 export function promptLabel(entry, { agent = null, agentsById = new Map() } = {}) {
   const parent = agent?.parentId ? agentsById.get(agent.parentId) : null;
-  if (entry.from === "coordinator") return parent && parent.role === "coordinator" ? `From the coordinator · ${parent.name}` : "From the coordinator";
+  if (entry.from === "coordinator") {
+    const named = parent && parent.role === "coordinator" && !/^(the )?coordinator$/i.test(parent.name.trim());
+    return named ? `From the coordinator · ${parent.name}` : "From the coordinator";
+  }
   if (entry.from === "parent") return parent ? `From ${parent.name}` : "From the parent chat";
   if (entry.from === "agent") return "From another agent";
   if (entry.from === "system") return "System";

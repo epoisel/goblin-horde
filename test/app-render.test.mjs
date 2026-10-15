@@ -128,7 +128,7 @@ test("every entry kind renders; tool rows build their body only when opened", ()
     assert.equal(node.dataset.id, entry.id);
     assert.ok(node.textContent.length > 0, entry.kind);
   }
-  assert.match(renderEntry(kinds[0], ctx()).textContent, /From the coordinator · Coordinator/);
+  assert.match(renderEntry(kinds[0], ctx()).textContent, /^From the coordinatorCopy prompt/, "a coordinator called Coordinator is not named twice");
   const opened = [];
   const sub = renderEntry(kinds[4], ctx({ openAgent: (id) => opened.push(id) }));
   sub.byClass("sub-open").click();

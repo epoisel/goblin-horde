@@ -11,8 +11,8 @@
  * Address: /app#task=<id>&focus=<agent>&view=timeline ; /app#demo loads the synthetic demo-data.js.
  */
 import { createGoblin, loadArt, modelBadge, setGoblinAction, tribeFor } from "/goblins.js";
-import { agentAction, createClient } from "./adapter.js";
-import { TranscriptStore, clockTime, effectiveTimes, formatDuration, insertionIndex, renderEntry, updateEntry } from "./transcript.js";
+import { agentAction, agentTone, createClient } from "./adapter.js";
+import { TranscriptStore, clockTime, effectiveTimes, insertionIndex, renderEntry, updateEntry } from "./transcript.js";
 
 const TASK_POLL_MS = 3000;
 const TRANSCRIPT_POLL_MS = 2000;
@@ -189,7 +189,12 @@ async function loadTranscript(id, mode = "auto") {
 
 function pollTranscripts() {
   if (document.hidden || !taskView) return;
-  for (const id of taskView.visibleAgentIds()) loadTranscript(id);
+  for (const id of taskView.visibleAgentIds()) {
+    // A transcript that keeps failing is asked less often: 4 s, 8 s, … up to a minute.
+    const store = storeFor(id);
+    if (store.failures && Date.now() - store.failedAt < Math.min(60_000, 2000 * 2 ** store.failures)) continue;
+    loadTranscript(id);
+  }
 }
 
 // ---- Tasks ----
@@ -219,13 +224,13 @@ async function readTasks() {
     Object.assign(state, { tasks: result.tasks, sources: result.sources, checkedAt: result.checkedAt, truncated: result.truncated, loaded: true, error: "", lastGood: Date.now() });
     for (const task of state.tasks) for (const agent of task.agents) {
       // An ask dismissed here stays dismissed until the server's next answer catches up.
-      if (agent.ask && dismissedAsks.has(`${agent.id}:${agent.ask.key}`)) { agent.ask = null; agent.askDismissed = true; }
+      if (agent.ask && dismissedAsks.has(`${agent.id}:${agent.ask.key}`)) { agent.ask = null; agent.askDismissed = true; agent.needsInput = false; agent.tone = agentTone(agent); }
     }
   } catch (error) {
-    state.error = error.message || "The viewer did not answer.";
-    state.loaded = state.loaded || false;
+    state.error = error.status === 404 ? "This copy of Goblin Horde has no task list yet. Update it, or open /app#demo to see the demo."
+      : error instanceof TypeError ? "Goblin Horde is not running on this computer." : error.message || "The viewer did not answer.";
   }
-  if (!state.taskId && state.tasks.length) state.taskId = sidebarOrder()[0]?.id || "";
+  if (!state.taskId && state.tasks.length) { state.taskId = sidebarOrder()[0]?.id || ""; writeHash(); }
   renderSidebar();
   renderMain();
 }
@@ -389,6 +394,7 @@ function renderSidebar() {
   if (!wanted.length) {
     empty = el("div", "side-empty");
     if (!state.loaded && !state.error) empty.append(el("p", "", "Gathering the horde…"));
+    else if (!state.loaded) empty.append(el("p", "", "No task list yet."), el("p", "muted", "Trying again every few seconds."));
     else if (state.query) empty.append(el("p", "", `No task matches “${state.query}”.`));
     else empty.append(el("p", "", `Nothing ran in the last ${windowWords()}.`), el("p", "muted", "Agents appear here as soon as Codex or Claude Code starts work."));
     list.append(empty);
@@ -426,6 +432,9 @@ function renderMain() {
   } else banner.hidden = true;
   const host = document.getElementById("view");
   const task = selectedTask();
+  // The window's title names the task, and how many tasks need the person (it shows in the taskbar).
+  const needs = state.tasks.filter((item) => item.status === "needs").length;
+  document.title = `${needs ? `(${needs}) ` : ""}${task ? `${task.title} · ` : ""}Goblin Horde`;
   if (!task) {
     taskView?.destroy();
     taskView = null;
@@ -445,9 +454,8 @@ function emptyMain() {
   const goblin = createGoblin("welcome", state.error && !state.loaded ? "trouble" : "idle", { size: 4, tribe: "raider", label: "A resting goblin" });
   box.append(goblin);
   if (state.error && !state.loaded) {
-    box.append(el("h1", "", "Goblin Horde isn't answering"),
-      el("p", "", `The task list could not be read: ${state.error}`),
-      el("p", "muted", "Start it with: node goblin.mjs start"));
+    box.append(el("h1", "", "The task list can't be read"), el("p", "", state.error),
+      el("p", "muted", "If Goblin Horde is stopped, start it with: node goblin.mjs start. This page tries again every few seconds."));
     const retry = button("btn gold", "Try again");
     retry.addEventListener("click", () => refreshTasks());
     box.append(retry);
@@ -531,12 +539,19 @@ class TaskView {
     }
     this.showAll = button("btn ghost", "Show all agents");
     this.showAll.addEventListener("click", () => this.setFocus(""));
+    // Fit: every column shares the window's width, to watch the whole crew at once.
+    this.fitButton = button("btn ghost", "⇔ Fit all", "Fit every agent's column in the window");
+    this.fitButton.addEventListener("click", () => {
+      prefs.fit = !prefs.fit;
+      savePrefs();
+      this.applyLayout();
+    });
     this.openButtons = el("div", "tv-open");
-    this.joinButton = button("btn ghost", "+ Join");
+    this.joinButton = button("btn ghost tight", "+ Join");
     this.joinButton.append(el("span", "btn-long", " a chat"));
     this.joinButton.setAttribute("aria-haspopup", "dialog");
     this.joinButton.addEventListener("click", () => this.toggleJoin());
-    actions.append(this.showAll, this.viewSwitch, this.openButtons, this.joinButton);
+    actions.append(this.showAll, this.fitButton, this.viewSwitch, this.openButtons, this.joinButton);
     row.append(titles, actions);
     this.crew = el("div", "crew");
     this.crew.setAttribute("aria-label", "Who works with whom");
@@ -589,7 +604,7 @@ class TaskView {
     for (const agent of this.task.agents) {
       if (seen.has(agent.source) || seen.size >= 2) continue;
       seen.add(agent.source);
-      const open = button("btn", "");
+      const open = button("btn tight", "");
       open.append(el("span", "btn-long", "Open in "), document.createTextNode(SOURCE_WORDS[agent.source] === "Claude Code" ? "Claude" : SOURCE_WORDS[agent.source] || "its app"), el("span", "btn-arrow", " ↗"));
       open.setAttribute("aria-label", `${OPEN_WORDS[agent.source] || "Open"}: ${agent.name}`);
       open.addEventListener("click", () => openAgent(agent));
@@ -674,6 +689,9 @@ class TaskView {
   applyLayout() {
     const timeline = state.view === "timeline";
     for (const choice of this.viewSwitch.children) choice.setAttribute("aria-pressed", String(choice.dataset.view === state.view));
+    // Scroll positions are saved before a view hides and put back when it shows again.
+    for (const [id, column] of this.columns) column.setShown(!timeline && (!state.focusId || id === state.focusId));
+    this.timeline?.setShown(timeline);
     this.columnsNode.hidden = timeline;
     this.columnsNode.classList.toggle("focused", Boolean(state.focusId));
     for (const [id, column] of this.columns) {
@@ -681,6 +699,9 @@ class TaskView {
       column.setFocused(state.focusId === id);
     }
     this.showAll.hidden = !state.focusId || timeline;
+    this.columnsNode.classList.toggle("fit", Boolean(prefs.fit));
+    this.fitButton.hidden = timeline || Boolean(state.focusId) || this.task.agents.length < 3;
+    this.fitButton.setAttribute("aria-pressed", String(Boolean(prefs.fit)));
     for (const chip of this.crew.querySelectorAll(".crew-chip")) chip.setAttribute("aria-pressed", String(chip.dataset.id === state.focusId));
     if (timeline && !this.timeline) {
       this.timeline = new TimelineView(this.task);
@@ -689,6 +710,10 @@ class TaskView {
     }
     if (this.timeline) this.timeline.node.hidden = !timeline;
     if (timeline) for (const agent of this.task.agents) loadTranscript(agent.id);
+    requestAnimationFrame(() => {
+      for (const column of this.columns.values()) column.restoreScroll();
+      this.timeline?.restoreScroll();
+    });
   }
 
   visibleAgentIds() {
@@ -835,6 +860,7 @@ class ColumnView {
     this.resizer.addEventListener("pointerdown", (event) => this.startResize(event));
     node.append(this.rail, body, this.resizer);
     this.scroller.addEventListener("scroll", () => this.onScroll(), { passive: true });
+    this.keepBottomOnResize();
     if (prefs.widths[this.agent.id]) node.style.setProperty("--w", `${prefs.widths[this.agent.id]}px`);
     node.classList.toggle("sized", Boolean(prefs.widths[this.agent.id]));
     node.classList.toggle("collapsed", this.collapsed);
@@ -842,6 +868,7 @@ class ColumnView {
 
   destroy() {
     this.unsubscribe?.();
+    this.resizeObserver?.disconnect();
     this.node.remove();
   }
 
@@ -1282,6 +1309,27 @@ class ColumnView {
     this.unseen = 0;
     this.pill.hidden = true;
   }
+
+  /** Hidden elements lose their scroll position: remember it on the way out, restore it on the way back. */
+  setShown(shown) {
+    if (this.shown !== false && !shown) this.saved = { top: this.scroller.scrollTop, bottom: this.atBottom };
+    if (this.shown === false && shown) this.restorePending = true;
+    this.shown = shown;
+  }
+
+  restoreScroll() {
+    if (this.restorePending && this.saved) {
+      this.restorePending = false;
+      if (this.saved.bottom) this.scrollToBottom();
+      else this.scroller.scrollTop = this.saved.top;
+    } else if (this.shown !== false && this.atBottom) this.scrollToBottom();
+  }
+
+  /** A view that was following the newest entry keeps following it when its size changes. */
+  keepBottomOnResize() {
+    this.resizeObserver = new ResizeObserver(() => { if (this.atBottom && this.scroller.clientHeight) this.scrollToBottom(); });
+    this.resizeObserver.observe(this.scroller);
+  }
 }
 
 const toMsSafe = (value) => (Number(value) < 1e12 ? Number(value) * 1000 : Number(value));
@@ -1303,6 +1351,7 @@ class TimelineView {
     this.pill.hidden = true;
     this.pill.addEventListener("click", () => this.scrollToBottom(true));
     this.node.append(this.scroller, this.pill);
+    this.keepBottomOnResize();
     this.items = []; // { key, at, agentId, node }
     this.byKey = new Map();
     this.unsubscribers = new Map();
@@ -1323,6 +1372,7 @@ class TimelineView {
 
   destroy() {
     for (const off of this.unsubscribers.values()) off();
+    this.resizeObserver?.disconnect();
     this.node.remove();
   }
 
@@ -1338,7 +1388,45 @@ class TimelineView {
       this.unsubscribers.set(agent.id, store.subscribe((change) => this.onChange(agent.id, store, change)));
       if (store.loaded) this.insertMany(agent.id, store, store.entries);
     }
+    this.insertLinks(task);
     this.renderOlder();
+  }
+
+  /** Who started, dispatched, or asked whom, at the moment it happened: the hand-offs between columns. */
+  insertLinks(task) {
+    const byId = new Map(task.agents.map((agent) => [agent.id, agent]));
+    const verbs = { drives: "started driving", dispatched: "handed work to", spawned: "started subagent", asked: "asked" };
+    for (const link of task.links) {
+      if (!link.at) continue;
+      const key = `link|${link.from}|${link.to}|${link.kind}|${link.at}`;
+      if (this.byKey.has(key)) continue;
+      const from = byId.get(link.from);
+      const to = byId.get(link.to);
+      if (!from || !to) continue;
+      const node = el("div", "tl-item tl-link");
+      node.dataset.role = from.role;
+      const stamp = el("div", "tl-badge-plain");
+      stamp.append(el("span", "tl-time", clockTime(link.at)));
+      const row = el("div", `e e-link k-${link.kind}`);
+      const name = (agent) => {
+        const jump = button("rel-link", agent.name);
+        jump.addEventListener("click", () => taskView?.revealAgent(agent.id));
+        return jump;
+      };
+      row.append(el("span", "link-icon", link.kind === "asked" ? "?" : "→"), name(from), document.createTextNode(` ${verbs[link.kind] || "linked"} `), name(to));
+      node.append(stamp, row);
+      this.place({ key, at: link.at, agentId: `link:${link.from}`, node, entryId: key });
+    }
+  }
+
+  /** Put a prepared item in time order. */
+  place(item) {
+    const position = insertionIndex(this.items.map((each) => each.at), item.at);
+    this.items.splice(position, 0, item);
+    this.byKey.set(item.key, item);
+    this.list.insertBefore(item.node, this.items[position + 1]?.node || null);
+    this.markRuns(position);
+    return position === this.items.length - 1;
   }
 
   timeOf(store, entry) {
@@ -1374,13 +1462,7 @@ class TimelineView {
     badge.addEventListener("click", () => taskView?.revealAgent(agentId));
     const content = renderEntry(entry, entryContext(agent || { id: agentId }));
     node.append(badge, content);
-    const position = insertionIndex(this.items.map((item) => item.at), at);
-    const item = { key, at, agentId, node, entryId: entry.id };
-    this.items.splice(position, 0, item);
-    this.byKey.set(key, item);
-    this.list.insertBefore(node, this.items[position + 1]?.node || null);
-    this.markRuns(position);
-    return position === this.items.length - 1;
+    return this.place({ key, at, agentId, node, entryId: entry.id });
   }
 
   /** Consecutive entries of one agent share one badge. */
@@ -1447,11 +1529,17 @@ class TimelineView {
   }
 
   scrollToBottom(smooth = false) {
-    this.scroller.scrollTo({ top: this.scroller.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+    this.scroller.scrollTo({ top: this.scroller.scrollHeight, behavior: smooth && !matchMedia("(prefers-reduced-motion: reduce)").matches ? "smooth" : "auto" });
     this.atBottom = true;
     this.unseen = 0;
     this.pill.hidden = true;
   }
+
+  setShown(shown) { ColumnView.prototype.setShown.call(this, shown); }
+
+  restoreScroll() { ColumnView.prototype.restoreScroll.call(this); }
+
+  keepBottomOnResize() { ColumnView.prototype.keepBottomOnResize.call(this); }
 }
 
 // ---- Wiring ----

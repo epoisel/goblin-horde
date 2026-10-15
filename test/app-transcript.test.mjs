@@ -103,11 +103,13 @@ test("tool rows read like the native apps: verb by status, target by kind", () =
 const pick = ({ verb, target, mono, exit, duration }) => ({ verb, target, mono, exit, duration });
 
 test("prompt labels say who sent them", () => {
-  const coordinator = { id: "c", name: "Coordinator", role: "coordinator" };
+  const coordinator = { id: "c", name: "Checkout lead", role: "coordinator" };
+  const plain = { id: "p", name: "Coordinator", role: "coordinator" };
   const lead = { id: "l", name: "Plan the rewrite", role: "lead" };
-  const byId = new Map([[coordinator.id, coordinator], [lead.id, lead]]);
+  const byId = new Map([[coordinator.id, coordinator], [plain.id, plain], [lead.id, lead]]);
   assert.equal(promptLabel({ from: "you" }), "You");
-  assert.equal(promptLabel({ from: "coordinator" }, { agent: { parentId: "c" }, agentsById: byId }), "From the coordinator · Coordinator");
+  assert.equal(promptLabel({ from: "coordinator" }, { agent: { parentId: "c" }, agentsById: byId }), "From the coordinator · Checkout lead");
+  assert.equal(promptLabel({ from: "coordinator" }, { agent: { parentId: "p" }, agentsById: byId }), "From the coordinator");
   assert.equal(promptLabel({ from: "coordinator" }), "From the coordinator");
   assert.equal(promptLabel({ from: "parent" }, { agent: { parentId: "l" }, agentsById: byId }), "From Plan the rewrite");
   assert.equal(promptLabel({ from: "parent" }), "From the parent chat");
