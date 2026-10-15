@@ -57,6 +57,30 @@ test("a task list with missing fields still lays out lead, coordinator, workers,
   assert.equal(result.window.hours, 24);
 });
 
+test("the server's task list: windows, aliases, and who is waiting on whom right now", () => {
+  assert.deepEqual([4, 24, 168].map((hours) => ENDPOINTS.tasks(hours)), ["/api/tasks?window=4h", "/api/tasks?window=24h", "/api/tasks?window=7d"]);
+  const result = normalizeTasks({
+    tasks: [{ id: "chat-lead-01", title: "Lead", project: "kettle", status: "working", needs: 0, working: 2,
+      agents: [
+        { id: "chat-lead-01", name: "Lead", role: "lead", depth: 0, status: "working", project: "kettle", seenBy: "codex" },
+        { id: "claude-agent:coord", name: "Coordinator", role: "coordinator", parentId: "chat-lead-01", depth: 1, status: "working", orca: { terminal: "term_c1" } },
+        { id: "claude-agent:w1", name: "Worker", role: "worker", parentId: "claude-agent:coord", depth: 2, status: "working" },
+      ],
+      links: [{ from: "chat-lead-01", to: "claude-agent:coord", kind: "drives" }, { from: "claude-agent:coord", to: "claude-agent:w1", kind: "dispatched", at: 1_800_000_000 },
+        { from: "claude-agent:w1", to: "claude-agent:coord", kind: "asked", at: 1_800_000_100, waiting: true }, { from: "chat-lead-01", to: "claude-agent:w1", kind: "drives", manual: true }] }],
+    sources: { orca: { state: "unavailable", say: "Orca is running, but its command line can't reach it — restart Orca.", reason: "unreachable" } },
+    window: { hours: 168, since: 1_799_000_000_000 }, aliases: { "orca-agent:ws:term_c1": "claude-agent:coord", bad: 5 }, counts: { agents: 3, tasks: 1, nodes: 3 },
+  });
+  const [task] = result.tasks;
+  assert.deepEqual(result.aliases, { "orca-agent:ws:term_c1": "claude-agent:coord" });
+  assert.deepEqual(result.window, { hours: 168, since: 1_799_000_000_000 });
+  assert.equal(result.sources[0].say, "Orca is running, but its command line can't reach it — restart Orca.", "the server's words, verbatim");
+  const worker = task.agents[2];
+  assert.deepEqual([worker.tone, worker.waitingOn.on], ["waiting", "claude-agent:coord"], "a waiting 'asked' link is a wait on that agent");
+  assert.deepEqual([task.agents[1].terminal, task.agents[0].seenBy, task.project], ["term_c1", "codex", "kettle"]);
+  assert.equal(task.links.find((link) => link.manual).kind, "drives");
+});
+
 test("the server's own roles and order are kept when it sends them", () => {
   const agents = [
     { id: "a", name: "Lead", role: "lead", depth: 0 },

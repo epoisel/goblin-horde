@@ -132,7 +132,7 @@ function writeHash() {
 const prefs = loadPrefs();
 const start = readHash();
 const state = {
-  tasks: [], sources: [], checkedAt: 0, truncated: 0, loaded: false, error: "", lastGood: 0,
+  tasks: [], sources: [], checkedAt: 0, truncated: 0, aliases: {}, loaded: false, error: "", lastGood: 0,
   windowHours: WINDOWS.includes(prefs.window) ? prefs.window : 24, query: "",
   taskId: start.task, focusId: start.focus, view: start.view,
 };
@@ -166,7 +166,26 @@ function entryContext(agent) {
     openAgent: (id) => taskView?.revealAgent(id),
     isOpen: (id) => openRows.get(id) === true,
     onToggle: (id, open) => { if (open) openRows.set(id, true); else openRows.delete(id); },
+    guessSubagent: (entry) => guessSubagent(agent, entry),
   };
+}
+
+/**
+ * The subagent a spawn row means when the row has no id yet (a spawn still running): the agent's
+ * subagent named in the row, else its only subagent no other row names.
+ */
+function guessSubagent(agent, entry) {
+  if (!agent?.id) return null;
+  const kids = (selectedTask()?.agents || []).filter((item) => item.parentId === agent.id && item.role === "subagent");
+  if (!kids.length) return null;
+  const words = `${entry.tool?.title || ""} ${entry.text || ""}`.toLowerCase();
+  const named = kids.find((kid) => kid.name && words.includes(kid.name.toLowerCase()));
+  if (named) return named.id;
+  const entries = storeFor(agent.id).entries;
+  const claimed = new Set(entries.map((item) => item.agentId || item.tool?.agentId).filter(Boolean));
+  const free = kids.filter((kid) => !claimed.has(kid.id));
+  const unnamed = entries.filter((item) => item.kind === "subagent" && !(item.agentId || item.tool?.agentId));
+  return free.length === 1 && unnamed.length <= 1 ? free[0].id : null;
 }
 
 // ---- Transcript loading ----
@@ -221,7 +240,8 @@ async function readTasks() {
   if (document.hidden && state.loaded) return;
   try {
     const result = await api.tasks(state.windowHours);
-    Object.assign(state, { tasks: result.tasks, sources: result.sources, checkedAt: result.checkedAt, truncated: result.truncated, loaded: true, error: "", lastGood: Date.now() });
+    Object.assign(state, { tasks: result.tasks, sources: result.sources, checkedAt: result.checkedAt, truncated: result.truncated, aliases: result.aliases || {},
+      loaded: true, error: "", lastGood: Date.now() });
     for (const task of state.tasks) for (const agent of task.agents) {
       // An ask dismissed here stays dismissed until the server's next answer catches up.
       if (agent.ask && dismissedAsks.has(`${agent.id}:${agent.ask.key}`)) { agent.ask = null; agent.askDismissed = true; agent.needsInput = false; agent.tone = agentTone(agent); }
@@ -230,9 +250,32 @@ async function readTasks() {
     state.error = error.status === 404 ? "This copy of Goblin Horde has no task list yet. Update it, or open /app#demo to see the demo."
       : error instanceof TypeError ? "Goblin Horde is not running on this computer." : error.message || "The viewer did not answer.";
   }
+  resolveSelection();
   if (!state.taskId && state.tasks.length) { state.taskId = sidebarOrder()[0]?.id || ""; writeHash(); }
   renderSidebar();
   renderMain();
+}
+
+/**
+ * The address may name an agent rather than its task, or an id the server now shows under another
+ * (an Orca agent that is a Claude Code session): find the task and the column it means.
+ */
+function resolveSelection() {
+  const resolve = (id) => state.aliases[id] || id;
+  if (state.taskId && !state.tasks.some((task) => task.id === state.taskId)) {
+    const wanted = resolve(state.taskId);
+    const home = state.tasks.find((task) => task.id === wanted || task.agents.some((agent) => agent.id === wanted));
+    if (home) {
+      if (!state.focusId && home.id !== wanted) state.focusId = wanted;
+      state.taskId = home.id;
+      writeHash();
+    }
+  }
+  const task = selectedTask();
+  if (task && state.focusId && !task.agents.some((agent) => agent.id === state.focusId)) {
+    const wanted = resolve(state.focusId);
+    if (task.agents.some((agent) => agent.id === wanted)) { state.focusId = wanted; writeHash(); }
+  }
 }
 
 /** Tasks in the order the sidebar shows them, filtered by the search box. */
@@ -947,6 +990,13 @@ class ColumnView {
     this.openButton.setAttribute("aria-label", OPEN_WORDS[agent.source] || "Open in its app");
     this.openButton.title = this.openButton.getAttribute("aria-label");
     this.renderRelation(agent, task, byId);
+    // Spawn rows link to subagent columns: redraw them when this agent's subagents change.
+    const kids = task.agents.filter((item) => item.parentId === agent.id).map((item) => `${item.id}:${item.name}`).join("|");
+    if (this.kids !== undefined && kids !== this.kids) {
+      const ctx = this.ctx();
+      for (const entry of this.store.entries) if (entry.kind === "subagent" && this.nodes.has(entry.id)) this.nodes.set(entry.id, updateEntry(this.nodes.get(entry.id), entry, ctx));
+    }
+    this.kids = kids;
     this.renderNow(agent);
     this.renderProgress(agent);
     this.liveNode.hidden = this.nowNode.hidden && this.progressNode.hidden;
@@ -989,12 +1039,12 @@ class ColumnView {
       const spawned = children.every((child) => child.role === "subagent");
       const verb = spawned ? "Spawned " : "Leads ";
       this.relation.append(words(verb));
-      if (children.length <= 2) {
+      if (children.length <= 2 && children.reduce((sum, child) => sum + child.name.length, 0) <= 44) {
         children.forEach((child, index) => {
           if (index) this.relation.append(words(" and "));
           this.relation.append(jump(child, child.name));
         });
-      } else this.relation.append(words(`${children.length} ${spawned ? "subagents" : "agents"}`));
+      } else this.relation.append(words(`${children.length} ${spawned ? (children.length === 1 ? "subagent" : "subagents") : children.length === 1 ? "agent" : "agents"}`));
       plain.push(verb + children.map((child) => child.name).join(", "));
     }
     if (children.length && parent) {
@@ -1017,7 +1067,7 @@ class ColumnView {
     icon.setAttribute("aria-hidden", "true");
     const words = el("span", "now-title", now.done ? `Last: ${now.title}` : now.title);
     this.nowNode.append(icon, words);
-    if (now.detail && now.detail !== now.title) this.nowNode.append(el("span", "now-detail", now.detail));
+    if (now.detail && !now.title.toLowerCase().includes(now.detail.toLowerCase())) this.nowNode.append(el("span", "now-detail", now.detail));
     if (now.startedAt) this.nowNode.append(el("span", "now-time", now.done ? `${age(now.startedAt)} ago` : span(now.startedAt)));
     this.nowNode.title = [now.title, now.detail].filter(Boolean).join("\n");
   }
@@ -1584,7 +1634,7 @@ function bindChrome() {
   });
   window.addEventListener("hashchange", () => {
     const next = readHash();
-    if (next.task && next.task !== state.taskId) { state.taskId = next.task; state.focusId = next.focus; state.view = next.view; renderSidebar(); renderMain(); }
+    if (next.task && next.task !== state.taskId) { state.taskId = next.task; state.focusId = next.focus; state.view = next.view; resolveSelection(); renderSidebar(); renderMain(); }
     else if (next.focus !== state.focusId || next.view !== state.view) { state.focusId = next.focus; state.view = next.view; taskView?.applyLayout(); }
   });
   document.addEventListener("visibilitychange", () => { if (!document.hidden) { refreshTasks(); pollTranscripts(); } });

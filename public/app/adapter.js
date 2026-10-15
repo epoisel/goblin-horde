@@ -12,8 +12,11 @@ import { eventAction } from "../party.js";
 
 // ---- Endpoints: the only addresses the app calls. ----
 
+/** The window as the server reads it: "4h", "24h", "7d". */
+export const windowParam = (hours) => (hours > 24 && hours % 24 === 0 ? `${hours / 24}d` : `${hours}h`);
+
 export const ENDPOINTS = Object.freeze({
-  tasks: (hours) => `/api/tasks?window=${encodeURIComponent(`${hours}h`)}`,
+  tasks: (hours) => `/api/tasks?window=${encodeURIComponent(windowParam(hours))}`,
   transcript: (id, { after = "", before = "", limit = 0, screen = false } = {}) => {
     const query = new URLSearchParams({ id });
     if (after) query.set("after", after);
@@ -220,7 +223,9 @@ export function normalizeAgent(raw, index = 0) {
     updatedAt: toMs(value.updatedAt) || 0,
     startedAt: toMs(first(value.startedAt, value.createdAt)) || 0,
     cwd: text(value.cwd),
-    terminal: text(value.terminal),
+    project: text(value.project) || projectOf(value.cwd),
+    terminal: text(first(value.terminal, value.orca?.terminal)),
+    seenBy: text(value.seenBy),
     needsInput: Boolean(value.needsInput),
   };
   agent.tone = agentTone(agent);
@@ -308,8 +313,17 @@ export function normalizeTask(raw, index = 0) {
   const value = object(raw) || {};
   const given = list(first(value.agents, value.members)).map(normalizeAgent);
   const ids = new Set(given.map((agent) => agent.id));
-  const links = list(value.links).map((link) => ({ from: text(link?.from), to: text(link?.to), kind: LINK_KINDS.has(link?.kind) ? link.kind : "spawned", at: toMs(link?.at) }))
+  const links = list(value.links).map((link) => ({ from: text(link?.from), to: text(link?.to), kind: LINK_KINDS.has(link?.kind) ? link.kind : "spawned", at: toMs(link?.at),
+    waiting: link?.waiting === true, manual: link?.manual === true }))
     .filter((link) => ids.has(link.from) && ids.has(link.to) && link.from !== link.to);
+  // An "asked" link marked waiting says who an agent is waiting on right now.
+  for (const link of links) {
+    if (link.kind !== "asked" || !link.waiting) continue;
+    const asker = given.find((agent) => agent.id === link.from);
+    if (!asker) continue;
+    asker.waitingOn = { ...(asker.waitingOn || { at: link.at || 0 }), on: asker.waitingOn?.on || link.to, text: asker.waitingOn?.text || "" };
+    asker.tone = agentTone(asker);
+  }
   // Parents named only by links (an Orca coordinator's workers) are filled in for the layout,
   // unless that would make an agent its own ancestor.
   const byId = new Map(given.map((agent) => [agent.id, agent]));
@@ -327,7 +341,7 @@ export function normalizeTask(raw, index = 0) {
   const task = {
     id: text(value.id) || lead?.id || `task-${index}`,
     title: text(first(value.title, value.name)) || lead?.name || "Untitled task",
-    project: text(value.project) || projectOf(lead?.cwd),
+    project: text(value.project) || lead?.project || "",
     updatedAt: toMs(value.updatedAt) || Math.max(0, ...agents.map((agent) => agent.updatedAt)),
     startedAt: toMs(value.startedAt) || Math.min(...agents.map((agent) => agent.startedAt || Infinity).concat([Infinity])),
     status: TASK_STATUSES.has(status) ? status : taskTone(agents),
@@ -348,17 +362,24 @@ export function projectOf(cwd) {
   return parts.at(-1) || "";
 }
 
-/** `/api/tasks` as { tasks, sources: [Source], window: { hours }, checkedAt, truncated }. */
+/**
+ * `/api/tasks` as { tasks, sources: [Source], window: { hours, since }, checkedAt, truncated, aliases }.
+ * `aliases` maps an id the strip may still name (an Orca agent shown as its Claude Code session) to
+ * the id the task list shows.
+ */
 export function normalizeTasks(json, { now = Date.now() } = {}) {
   const value = Array.isArray(json) ? { tasks: json } : object(json) || {};
   const tasks = list(first(value.tasks, value.items, value.parties)).map(normalizeTask);
   const sources = Object.entries(object(value.sources) || {}).map(([key, source]) => normalizeSource(key, source));
+  const aliases = {};
+  for (const [from, to] of Object.entries(object(value.aliases) || {})) if (typeof to === "string" && to) aliases[from] = to;
   return {
     tasks: tasks.sort((a, b) => b.updatedAt - a.updatedAt),
     sources,
-    window: { hours: number(object(value.window)?.hours) ?? (number(value.window) || 24) },
+    window: { hours: number(object(value.window)?.hours) ?? (number(value.window) || 24), since: toMs(object(value.window)?.since) || 0 },
     checkedAt: toMs(value.checkedAt) || now,
     truncated: number(value.truncated) || 0,
+    aliases,
   };
 }
 
@@ -424,7 +445,7 @@ export function normalizeTool(raw, entry = {}) {
   return {
     name,
     kind,
-    title: text(first(value.title, value.description, entry.title)),
+    title: text(first(value.title, kind === "agent" ? value.description : "", entry.title)),
     input,
     status,
     exitCode,
@@ -437,17 +458,28 @@ export function normalizeTool(raw, entry = {}) {
       .filter((file) => file.path),
     agentId: text(pick("agentId", "agent_id")) || null,
     cwd: text(pick("cwd")),
+    // Why the agent ran it ("Run the test suite"), as Claude Code records for its shell calls.
+    description: kind === "agent" ? "" : text(value.description),
+    background: value.background === true,
+    interrupted: value.interrupted === true,
+    inputTruncated: Boolean(value.inputTruncated),
+    diffTruncated: Boolean(value.diffTruncated),
   };
 }
 
 const PLAN_STATUS = { done: "done", completed: "done", complete: "done", active: "active", in_progress: "active", inprogress: "active", running: "active",
   pending: "pending", todo: "pending", not_started: "pending" };
 
+/**
+ * A plan: { steps, explanation, change }. `change` ("added" | "updated") marks a single task added or
+ * updated (Claude Code's TaskCreate/TaskUpdate); a plan written as prose (Codex plan items, Claude
+ * Code's ExitPlanMode) has no steps and its words in the entry's text.
+ */
 function normalizePlan(raw) {
   const steps = list(object(raw)?.steps ?? raw).map((step) => (typeof step === "string" ? { text: step, status: "pending" }
     : { text: text(first(step?.text, step?.step, step?.content, step?.title)), status: PLAN_STATUS[lower(step?.status).replace(/[\s-]+/g, "_")] || "pending" }))
     .filter((step) => step.text);
-  return steps.length ? { steps, explanation: text(object(raw)?.explanation) } : null;
+  return { steps, explanation: text(object(raw)?.explanation), change: ["added", "updated"].includes(object(raw)?.change) ? raw.change : "" };
 }
 
 /** One transcript entry in the spec's shape, every field present. `index` only names an id-less entry. */
@@ -471,29 +503,42 @@ export function normalizeEntry(raw) {
     plan: kind === "plan" ? normalizePlan(first(value.plan, value.steps, value.todos)) : null,
     ask: kind === "ask" ? normalizeAsk(first(value.ask, value)) : null,
     agentId: text(first(value.agentId, tool?.agentId)) || null,
+    updated: value.updated === true, // Sent again because it changed (a call that finished).
+    queued: value.queued === true, // A prompt typed while the agent was busy.
+    phase: text(value.phase), // Codex: "commentary" while working, "final_answer" at the end.
+    screen: value.screen === true, // An Orca terminal's screen, as a system entry.
   };
   if (!entry.id) entry.id = `x-${kind}-${at || 0}-${hashText(`${words}|${tool ? `${tool.name}|${tool.input}` : ""}`)}`;
   return entry;
 }
 
-/** `/api/transcript` as { agent, entries, cursor: { first, last }, hasOlder, live, checkedAt, error }. */
+/**
+ * `/api/transcript` as { agent, entries, cursor: { first, last }, hasOlder, live, reset, source,
+ * checkedAt, error }. Cursors are the server's own, passed back as they came ("" included: a Codex chat
+ * says "" when nothing is older); only a server that sends none gets entry ids instead. `reset`: the
+ * page replaces everything shown.
+ */
 export function normalizeTranscript(json, { now = Date.now() } = {}) {
   const value = object(json) || {};
   const entries = list(first(value.entries, value.items, value.records)).map(normalizeEntry);
-  // Duplicate ids inside one page keep the newest version.
-  const seen = new Map();
-  for (const entry of entries) seen.set(entry.id, entry);
-  const unique = entries.filter((entry) => seen.get(entry.id) === entry);
-  const cursor = object(value.cursor) || {};
+  // Duplicate ids inside one page keep the newest version, in the place of the first.
+  const newest = new Map();
+  for (const entry of entries) newest.set(entry.id, entry);
+  const unique = [];
+  for (const entry of entries) if (newest.has(entry.id)) { unique.push(newest.get(entry.id)); newest.delete(entry.id); }
+  const cursor = object(value.cursor);
+  const given = (key) => (cursor && typeof cursor[key] === "string" ? cursor[key] : undefined);
   return {
     agent: object(value.agent) ? normalizeAgent(value.agent) : null,
     entries: unique,
     cursor: {
-      first: text(first(cursor.first, value.firstCursor, value.prevCursor, unique[0]?.id)),
-      last: text(first(cursor.last, typeof value.cursor === "string" ? value.cursor : "", value.lastCursor, value.nextCursor, unique.at(-1)?.id)),
+      first: given("first") ?? text(first(value.firstCursor, value.prevCursor, unique.find((entry) => !entry.updated)?.id)),
+      last: given("last") ?? text(first(typeof value.cursor === "string" ? value.cursor : "", value.lastCursor, value.nextCursor, unique.at(-1)?.id)),
     },
     hasOlder: Boolean(first(value.hasOlder, value.hasMore, value.older)),
     live: Boolean(value.live),
+    reset: value.reset === true,
+    source: text(value.source),
     checkedAt: toMs(value.checkedAt) || now,
     error: text(value.error),
   };

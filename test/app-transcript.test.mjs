@@ -116,6 +116,7 @@ test("prompt labels say who sent them", () => {
 });
 
 test("sizes, durations, and long-output previews", () => {
+  assert.equal(formatDuration(0), "", "no measured time says nothing");
   assert.deepEqual([formatDuration(null), formatDuration(820), formatDuration(4200), formatDuration(72_000), formatDuration(7_500_000)], ["", "820 ms", "4.2 s", "1m 12s", "2h 5m"]);
   assert.deepEqual([formatBytes(512), formatBytes(14 * 1024), formatBytes(1.25 * 1024 * 1024)], ["512 B", "14 KB", "1.3 MB"]);
   assert.deepEqual(textSize("a\nb\n"), { lines: 2, bytes: 4 });

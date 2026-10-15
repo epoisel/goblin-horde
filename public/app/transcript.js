@@ -58,8 +58,11 @@ export class TranscriptStore {
   }
 
   apply(page, mode = "after") {
+    // The server may say a page replaces everything (`reset`), e.g. after a transcript was rewritten.
+    if (page?.reset) mode = "initial";
     const change = { added: [], prepended: [], changed: [], reset: false, mode };
     const entries = page?.entries || [];
+    const cursor = (key) => (typeof page?.cursor?.[key] === "string" ? page.cursor[key] : null);
     if (mode === "initial" || !this.loaded) {
       change.reset = this.loaded || this.entries.length > 0;
       this.entries = [];
@@ -67,20 +70,22 @@ export class TranscriptStore {
       this.signatures.clear();
       for (const entry of entries) this.remember(entry, this.entries.length);
       change.added = [...this.entries];
-      this.first = page?.cursor?.first || this.entries[0]?.id || "";
-      this.last = page?.cursor?.last || this.entries.at(-1)?.id || "";
+      this.first = cursor("first") ?? this.entries[0]?.id ?? "";
+      this.last = cursor("last") || this.entries.at(-1)?.id || "";
       this.hasOlder = Boolean(page?.hasOlder);
     } else if (mode === "before") {
-      const fresh = entries.filter((entry) => !this.byId.has(entry.id));
+      const fresh = entries.filter((entry) => !this.byId.has(entry.id) && !entry.updated);
       const unique = [...new Map(fresh.map((entry) => [entry.id, entry])).values()];
       this.entries = [...unique, ...this.entries];
       this.reindex();
       change.prepended = unique;
-      if (page?.cursor?.first || unique[0]) this.first = page?.cursor?.first || unique[0].id;
+      this.first = cursor("first") ?? unique[0]?.id ?? this.first;
       this.hasOlder = Boolean(page?.hasOlder) && entries.length > 0;
     } else {
       for (const entry of entries) {
         const known = this.byId.get(entry.id);
+        // A changed entry from before the oldest one shown: nothing to patch.
+        if (!known && entry.updated) continue;
         if (known) {
           const signature = entrySignature(entry);
           if (signature !== this.signatures.get(entry.id)) {
@@ -177,7 +182,8 @@ export function insertionIndex(times, at) {
 
 /** "820 ms", "4.2 s", "1m 12s", "2h 5m". */
 export function formatDuration(ms) {
-  if (ms == null || ms === "") return "";
+  // No time, or none measured (a call and its result logged in the same instant), says nothing.
+  if (ms == null || ms === "" || Number(ms) === 0) return "";
   const value = Number(ms);
   if (!Number.isFinite(value) || value < 0) return "";
   if (value < 1000) return `${Math.round(value)} ms`;
@@ -243,10 +249,15 @@ export function toolSummary(tool) {
   target = String(target).split(/\r?\n/).map((line) => line.trim()).find(Boolean) || "";
   const multiline = kind === "command" && /\n\s*\S/.test(inputField(input, "command") || input);
   let verb = running ? RUNNING[kind] : DONE[kind];
-  let title = tool.title;
-  if (title && VERBS.test(title)) { verb = ""; target = title; mono = false; }
-  else if (title && kind !== "command" && kind !== "mcp") { target = title; mono = kind === "read" || kind === "edit" || kind === "write" ? mono : false; }
-  else if (title && kind === "command" && !target) target = title;
+  // "Used Bash" is only a fallback name; any other title is the source's own words.
+  const title = tool.title && !/^Used [\w.:-]+$/.test(tool.title) ? tool.title : "";
+  const sentence = (words) => VERBS.test(words) && words !== target;
+  if (kind === "command" && title && !sentence(title)) target = title; // A command's title is the command (unwrapped).
+  else if ((kind === "edit" || kind === "write") && target && (!title || /^(Created|Wrote|Edited)\b/.test(title))) {
+    // "Edited payments.ts": keep the verb, show the whole path.
+    if (!running && title) verb = /^(Created|Wrote|Edited)/.exec(title)[1];
+  } else if (title && sentence(title)) { verb = ""; target = title; mono = false; }
+  else if (title) { target = title; mono = kind === "command"; }
   if (tool.status === "denied") verb = kind === "command" ? "Not run:" : "Denied:";
   let added = null;
   let removed = null;
@@ -266,6 +277,7 @@ export function toolSummary(tool) {
     status: tool.status,
     exit: tool.exitCode != null && tool.exitCode !== 0 ? `exit ${tool.exitCode}` : "",
     duration: formatDuration(tool.durationMs),
+    badges: [tool.background ? "background" : "", tool.interrupted ? "interrupted" : ""].filter(Boolean),
   };
 }
 
@@ -387,6 +399,7 @@ function toolHead(ctx, tool, { label = "" } = {}) {
   if (summary.more) title.append(element(doc, "span", "tool-more", "…"));
   head.append(title);
   const meta = element(doc, "span", "tool-meta");
+  for (const badge of summary.badges) meta.append(element(doc, "span", `tool-badge ${badge}`, badge));
   if (summary.added != null || summary.removed != null) {
     const stat = element(doc, "span", "tool-stat");
     stat.append(element(doc, "span", "plus", `+${summary.added || 0}`), element(doc, "span", "minus", `−${summary.removed || 0}`));
@@ -399,13 +412,14 @@ function toolHead(ctx, tool, { label = "" } = {}) {
   const chevron = element(doc, "span", "chev", "›");
   chevron.setAttribute("aria-hidden", "true");
   head.append(chevron);
-  head.title = [summary.verb, summary.target].filter(Boolean).join(" ");
+  head.title = [[summary.verb, summary.target].filter(Boolean).join(" "), tool.description].filter(Boolean).join("\n");
   return head;
 }
 
 function toolBody(ctx, tool) {
   const { doc } = ctx;
   const body = element(doc, "div", "tool-body");
+  if (tool.description) body.append(element(doc, "p", "tool-why", tool.description));
   const facts = [];
   if (tool.cwd) facts.push(["in", tool.cwd]);
   if (tool.exitCode != null) facts.push(["exit code", String(tool.exitCode)]);
@@ -423,11 +437,13 @@ function toolBody(ctx, tool) {
   if (tool.diff) {
     body.append(renderDiff(tool.diff, { doc, path: tool.files[0]?.path || "", copyButton: ctx.copyButton }));
     const copyRow = element(doc, "div", "io-actions");
+    if (tool.diffTruncated) copyRow.append(element(doc, "span", "io-note", "This diff is long: its start and end are shown."));
     copyRow.append(ctx.copyButton(tool.diff, "Copy diff"));
     body.append(copyRow);
   }
   const showInput = tool.input && !(tool.diff && (tool.kind === "edit" || tool.kind === "write"));
-  if (showInput) body.append(renderBlock(ctx, tool.kind === "command" ? "Command" : "Input", tool.input, { className: tool.kind === "command" ? "command" : "" }));
+  if (showInput) body.append(renderBlock(ctx, tool.kind === "command" ? "Command" : "Input", tool.input,
+    { className: tool.kind === "command" ? "command" : "", note: tool.inputTruncated ? "start and end shown" : "" }));
   if (tool.output) {
     const truncated = tool.outputTruncated;
     const note = truncated ? `showing ${formatBytes(truncated.shownBytes)} of ${formatBytes(truncated.totalBytes)}` : "";
@@ -477,6 +493,11 @@ function renderPrompt(ctx, entry, node) {
   node.classList.add(`from-${entry.from || "you"}`);
   const head = element(doc, "div", "e-head");
   head.append(element(doc, "span", "e-who", promptLabel(entry, ctx)));
+  if (entry.queued) {
+    const chip = element(doc, "span", "e-chip", "queued");
+    chip.title = "Sent while the agent was busy; it read this after its current step.";
+    head.append(chip);
+  }
   const time = timeTag(ctx, entry);
   if (time) head.append(time);
   head.append(ctx.copyButton(entry.text, "Copy prompt"));
@@ -503,6 +524,7 @@ function renderPrompt(ctx, entry, node) {
 
 function renderMessage(ctx, entry, node) {
   const { doc } = ctx;
+  if (entry.phase) node.dataset.phase = entry.phase;
   const tools = element(doc, "div", "e-tools");
   const time = timeTag(ctx, entry);
   if (time) tools.append(time);
@@ -537,10 +559,14 @@ function renderTool(ctx, entry, node) {
 function renderSubagent(ctx, entry, node) {
   const { doc } = ctx;
   const tool = entry.tool || { name: "Agent", kind: "agent", title: "", input: "", status: "ok", exitCode: null, durationMs: null, output: "", diff: "", files: [], agentId: entry.agentId };
-  const agentId = entry.agentId || tool.agentId;
+  // A spawn still running has no subagent id yet (it comes with the result): the task's own list may know it.
+  const agentId = entry.agentId || tool.agentId || ctx.guessSubagent?.(entry) || null;
   const sub = agentId ? ctx.agentsById?.get(agentId) : null;
   const row = element(doc, "div", "sub-row");
-  const head = toolHead(ctx, { ...tool, kind: "agent" }, { label: tool.status === "running" ? "Subagent working:" : "Subagent:" });
+  // "Started Explore subagent: …" already says what it is; a bare description gets a label.
+  const said = VERBS.test(tool.title || "");
+  const head = toolHead(ctx, { ...tool, kind: "agent", title: tool.title || entry.text.split("\n")[0] },
+    { label: said ? "" : tool.status === "running" ? "Subagent working:" : "Subagent:" });
   row.append(head);
   const open = element(doc, "button", "sub-open", sub ? `Open ${sub.name} ›` : "Not in this task");
   open.type = "button";
@@ -555,6 +581,28 @@ function renderSubagent(ctx, entry, node) {
 function renderPlan(ctx, entry, node) {
   const { doc } = ctx;
   const steps = entry.plan?.steps || [];
+  if (entry.plan?.change && steps.length <= 1) {
+    // One task added or updated: a line, not a whole checklist.
+    const step = steps[0] || { text: entry.text, status: "pending" };
+    node.classList.add("plan-change");
+    const mark = element(doc, "span", `plan-mark ${step.status}`, step.status === "done" ? "✓" : step.status === "active" ? "●" : "");
+    mark.setAttribute("role", "img");
+    mark.setAttribute("aria-label", step.status === "done" ? "Done" : step.status === "active" ? "In progress" : "To do");
+    node.append(element(doc, "span", "plan-title", entry.plan.change === "added" ? "Task added" : "Task updated"), mark, element(doc, "span", "plan-text", step.text));
+    const time = timeTag(ctx, entry);
+    if (time) node.append(time);
+    return;
+  }
+  if (!steps.length) {
+    // A plan written as prose: Codex's plan, or a plan Claude Code proposed.
+    const head = element(doc, "div", "plan-head");
+    head.append(element(doc, "span", "plan-title", "Plan"));
+    const time = timeTag(ctx, entry);
+    if (time) head.append(time);
+    head.append(ctx.copyButton(entry.text, "Copy plan"));
+    node.append(head, renderMarkdown(entry.text || "No plan text was recorded.", { doc, copyButton: ctx.copyButton }));
+    return;
+  }
   const done = steps.filter((step) => step.status === "done").length;
   const head = element(doc, "div", "plan-head");
   head.append(element(doc, "span", "plan-title", "Plan"), element(doc, "span", "plan-count", `${done} of ${steps.length} done`));
@@ -612,6 +660,13 @@ function renderNote(ctx, entry, node) {
   }
   if (entry.kind === "error") {
     node.append(element(doc, "span", "err-mark", "!"), element(doc, "span", "err-text", entry.text || "Something went wrong."));
+    return;
+  }
+  if (entry.screen) {
+    // An Orca terminal's screen, as it looks right now.
+    node.classList.add("e-screen");
+    const time = timeTag(ctx, entry);
+    node.append(renderBlock(ctx, time ? `Terminal screen · ${time.textContent}` : "Terminal screen", entry.text || ""));
     return;
   }
   const words = element(doc, "span", "sys-text", entry.text || "");

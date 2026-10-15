@@ -275,7 +275,9 @@ body.side-collapsed { --side: 60px; }
 .status.t-waiting .dot { background: var(--lilac); }
 .status.t-done .dot { background: var(--green); }
 .col-tools { display: flex; gap: 1px; align-self: flex-start; margin-top: 4px; }
-.col-rel { margin-top: 1px; font-size: 11.5px; line-height: 1.45; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* One line: the words stay whole, long agent names shorten with an ellipsis. */
+.col-rel { display: flex; align-items: baseline; min-width: 0; margin-top: 1px; font-size: 11.5px; line-height: 1.45; color: var(--faint); white-space: pre; overflow: hidden; }
+.col-rel .rel-link { flex: 0 1 auto; min-width: 2em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .col-live { margin: 0 10px 6px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line-soft); overflow: hidden; }
 .rel-link { padding: 0; border: 0; background: none; color: var(--muted); font-size: inherit; text-decoration: underline dotted rgba(179, 201, 180, .5); text-underline-offset: 3px; }
 .rel-link:hover { color: var(--ivory); }
@@ -400,6 +402,19 @@ body.side-collapsed { --side: 60px; }
 .plus { color: var(--green); }
 .minus { color: var(--coral); }
 .tool-exit { color: var(--coral); font-weight: 700; }
+.tool-badge { padding: 0 6px; border-radius: 999px; font-size: 10px; font-weight: 700; background: var(--panel-3); color: var(--muted); }
+.tool-badge.interrupted { background: rgba(240, 199, 94, .14); color: var(--amber); }
+.tool-why { margin: 0 2px; color: var(--muted); font-size: 12.5px; font-style: italic; }
+.e-chip { flex: none; padding: 0 6px; border-radius: 999px; background: rgba(199, 185, 226, .14); color: var(--lilac); font-size: 10.5px; font-weight: 700; }
+.e-plan.plan-change { display: flex; align-items: baseline; gap: 8px; padding: 5px 12px; font-size: 12.5px; }
+.plan-change .plan-title { flex: none; font-size: 11px; }
+.plan-change .plan-text { flex: 1; min-width: 0; color: var(--prose); }
+.plan-change .plan-mark.done { background: rgba(159, 211, 166, .2); border-color: rgba(159, 211, 166, .55); color: var(--green); }
+.plan-change .plan-mark.active { border-color: var(--amber); color: var(--amber); font-size: 8px; }
+.e-plan > .md { margin-top: 6px; }
+.e-plan .plan-head .copy { margin-left: 8px; opacity: 0; }
+.e-plan:hover .plan-head .copy { opacity: 1; }
+.e-sys.e-screen { display: block; text-align: left; }
 .tool-state { display: inline-grid; place-items: center; width: 14px; font-size: 12px; font-weight: 800; }
 .tool-state.ok { color: #7fbf8a; }
 .tool-state.failed { color: var(--coral); }
