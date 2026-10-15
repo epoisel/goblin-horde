@@ -219,6 +219,17 @@ function inputField(input, ...keys) {
 
 const baseName = (path) => String(path).replace(/[\\/]+$/, "").split(/[\\/]/).at(-1) || String(path);
 
+// The last few diffs parsed: a row is summarised on every redraw, and a diff can be 256 KB.
+const parsedDiffs = new Map();
+function parsedDiff(text) {
+  if (!text) return { files: [], truncated: 0 };
+  if (parsedDiffs.has(text)) return parsedDiffs.get(text);
+  const parsed = parseDiff(text);
+  parsedDiffs.set(text, parsed);
+  if (parsedDiffs.size > 32) parsedDiffs.delete(parsedDiffs.keys().next().value);
+  return parsed;
+}
+
 /**
  * How a tool row reads: { icon, verb, target, mono, added, removed, files, status, exit, duration }.
  * The verb follows the status ("Running" / "Ran"); a title that already starts with a verb is kept whole.
@@ -232,7 +243,7 @@ export function toolSummary(tool) {
     if (!paths.length) {
       const named = inputField(input, "file_path", "path", "notebook_path", "filename");
       if (named) paths.push(named);
-      else for (const file of parseDiff(tool.diff).files) if (file.path) paths.push(file.path);
+      else for (const file of parsedDiff(tool.diff).files) if (file.path) paths.push(file.path);
     }
     if (!paths.length) return "";
     return paths.length === 1 ? paths[0] : `${baseName(paths[0])} and ${paths.length - 1} more`;
@@ -265,7 +276,7 @@ export function toolSummary(tool) {
   if (counted.length) {
     added = counted.reduce((sum, file) => sum + (file.added || 0), 0);
     removed = counted.reduce((sum, file) => sum + (file.removed || 0), 0);
-  } else if (tool.diff) ({ added, removed } = diffStats(parseDiff(tool.diff)));
+  } else if (tool.diff) ({ added, removed } = diffStats(parsedDiff(tool.diff)));
   return {
     icon: TOOL_ICONS[kind] || TOOL_ICONS.other,
     verb,
@@ -435,7 +446,7 @@ function toolBody(ctx, tool) {
     body.append(row);
   }
   if (tool.diff) {
-    body.append(renderDiff(tool.diff, { doc, path: tool.files[0]?.path || "", copyButton: ctx.copyButton }));
+    body.append(renderDiff(parsedDiff(tool.diff), { doc, path: tool.files[0]?.path || "", copyButton: ctx.copyButton }));
     const copyRow = element(doc, "div", "io-actions");
     if (tool.diffTruncated) copyRow.append(element(doc, "span", "io-note", "This diff is long: its start and end are shown."));
     copyRow.append(ctx.copyButton(tool.diff, "Copy diff"));
