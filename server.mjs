@@ -12,7 +12,7 @@ import { readDescendants } from "./lib/descendants.mjs";
 import { classifyCodex, composeAllScene, listedThread, noteReadFailure, planCodexReads, pruneCache, uniqueThreads } from "./lib/feed.mjs";
 import { WatchList } from "./lib/watch.mjs";
 import { DiscoveryGate, LinkStore, claudePanePairs, drivenTerminals, identityMark, joinParties, joinSubset } from "./lib/links.mjs";
-import { OrcaReader } from "./lib/orca.mjs";
+import { OrcaReader, orcaProcessRunning } from "./lib/orca.mjs";
 import { ClaudeReader, goblinStateDir } from "./lib/claude.mjs";
 import { ExtensionReader, EXTENSION_PARTY, extensionFeedDir } from "./lib/extension.mjs";
 import { claudeHookReport, claudeSettingsPath, installClaudeHooks, markHooksConnected } from "./lib/claude-hooks.mjs";
@@ -24,8 +24,12 @@ import { Pairing, sessionCookie } from "./lib/pairing.mjs";
 import { PhoneAccess, errorText, loadPairingCode, localOnlyRefusal, mobileStatus, requestAnswer } from "./lib/phone.mjs";
 import { publicRequests, publicView } from "./lib/public-view.mjs";
 import { AgentDetailService, ClaudeDesktopIndex, agentRoutes } from "./lib/agent-detail.mjs";
-import { ClaudeDetailReader, ClaudeTitleReader } from "./lib/claude-detail.mjs";
+import { ClaudeDetailReader, ClaudeSessionIndex, ClaudeTitleReader } from "./lib/claude-detail.mjs";
 import { CodexPlanReader } from "./lib/codex-detail.mjs";
+import { TaskService, taskRoutes } from "./lib/task-service.mjs";
+import { TaskMemory } from "./lib/tasks.mjs";
+import { ClaudeTranscripts, CodexTranscripts } from "./lib/transcript.mjs";
+import { openAppWindow } from "./lib/app-window.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = resolve(here, "public");
@@ -328,6 +332,41 @@ class CodexReader {
     return this.threadListPending;
   }
 
+  /**
+   * Chats other chats spawned (subagents), updated since `since`, newest first, with their parent: the main
+   * list leaves them out. Paged until the window's start; Codex lists these slowly, so the task view
+   * asks at most every 30 seconds.
+   */
+  async listSpawned(since = 0) {
+    await this.ready;
+    const threads = [];
+    let cursor = null;
+    for (let page = 0; page < 10; page++) {
+      const result = await this.request("thread/list", { limit: 100, sortKey: "updated_at",
+        sourceKinds: ["subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther"], ...(cursor ? { cursor } : {}) });
+      const data = result.data || [];
+      threads.push(...data.filter((item) => item?.id && item.parentThreadId).map((item) => ({ ...listedThread(item), parentThreadId: String(item.parentThreadId),
+        ...(item.agentNickname ? { agentNickname: String(item.agentNickname).slice(0, 80) } : {}), ...(item.agentRole ? { agentRole: String(item.agentRole).slice(0, 80) } : {}) })));
+      if (!result.nextCursor || result.nextCursor === cursor || !data.length || listedThread(data.at(-1)).updatedAt < since) break;
+      cursor = result.nextCursor;
+    }
+    return uniqueThreads(threads);
+  }
+
+  /** A chat's session file, folder, and parent, from a metadata-only read, remembered for a minute. */
+  async meta(threadId) {
+    await this.ready;
+    this.metas ||= new Map();
+    const saved = this.metas.get(threadId);
+    if (saved && Date.now() - saved.at < 60_000) return saved.meta;
+    const thread = (await this.request("thread/read", { threadId, includeTurns: false })).thread || {};
+    const meta = { path: typeof thread.path === "string" ? thread.path : "", cwd: typeof thread.cwd === "string" ? thread.cwd : "",
+      parentThreadId: typeof thread.parentThreadId === "string" ? thread.parentThreadId : "" };
+    this.metas.set(threadId, { at: Date.now(), meta });
+    if (this.metas.size > 200) this.metas.delete(this.metas.keys().next().value);
+    return meta;
+  }
+
   async readScene(threadId) {
     await this.ready;
     const root = await this.readThread(threadId);
@@ -585,6 +624,8 @@ function recentScene() {
   if (allSceneCached && age < ALL_SCENE_STALE_MS) return Promise.resolve(allSceneCached);
   return allScenePending;
 }
+// Plans and step times from Codex session files, shared by the agent detail and the task view's transcripts.
+const codexPlans = new CodexPlanReader();
 // One agent in full, and Open / Message for it: this computer only (see lib/agent-detail.mjs).
 const agentRoute = agentRoutes(new AgentDetailService({
   // Settled like every scene response, so a dismissed alert is dismissed in the detail too.
@@ -601,10 +642,40 @@ const agentRoute = agentRoutes(new AgentDetailService({
   claude: { snapshot: () => claude.snapshot(), records: () => claude.detailRecords(), marks: (id) => sessionMarks({ id }) },
   orca, extensions,
   claudeDetail: claudeTranscripts,
-  codexPlans: new CodexPlanReader(),
+  codexPlans,
   desktop: new ClaudeDesktopIndex(),
 }));
 
+// The task view: every task in the window, and one agent's whole conversation, for this computer only.
+const taskService = new TaskService({
+  // The scene keeps the Codex chats in use read; the task list reuses those reads.
+  scene: () => recentScene(),
+  codex: {
+    listThreads: () => reader.listThreads(),
+    listSpawned: (since) => reader.listSpawned(since),
+    actors: () => new Map([...reader.threadReads].map(([id, record]) => [id, { ...record.thread, attention: record.attention }])),
+    requests: (id) => reader.listRequests(id),
+    meta: (id) => reader.meta(id),
+    health: () => codexSource(),
+    listComplete: () => reader.threadListComplete,
+  },
+  claude,
+  sessions: new ClaudeSessionIndex({ locator: claudeTranscripts }),
+  claudeTranscripts: new ClaudeTranscripts({ locator: claudeTranscripts }),
+  codexTranscripts: new CodexTranscripts({ request: async (method, params) => { await reader.ready; return reader.request(method, params); },
+    plans: (path) => codexPlans.updates(path) }),
+  orca,
+  orcaRunning: () => orcaProcessRunning(),
+  links,
+  memory: new TaskMemory({ dir: stateDir }),
+  settle: (actor) => settleActor(actor, settleOptions()),
+  hooks: () => claudeHookReport(claudeSettingsPath(claudeConfigDir())),
+  projectsExist: () => existsSync(join(claudeConfigDir(), "projects")),
+});
+const taskRoute = taskRoutes(taskService, { open: ({ taskId, agentId }) => openAppWindow({ port, taskId, agentId, stateDir }) });
+
+// The task view's own files (public/app), the only ones served under /app/.
+const APP_FILES = /^(index\.html|app\.css|app\.js|transcript\.js|markdown\.js|diff\.js|demo-data\.js)$/;
 const mime = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8" };
 const commonHeaders = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer" };
 
@@ -736,6 +807,7 @@ const handler = async (request, response) => {
     catch { return fail(response, 500, "Unable to pair this phone."); }
   }
   if (await agentRoute(request, response, { url, local: isLocal(request), origin, json, readBody, fail })) return;
+  if (await taskRoute(request, response, { url, local: isLocal(request), origin, json, readBody, fail })) return;
   if (["/api/reconnect", "/api/connect-claude", "/api/autostart", "/api/phone", "/api/phone/reset", "/api/quit"].includes(url.pathname)
     && request.method === "POST") {
     // Only this computer may restart a source, change Claude Code's settings, turn phone access on, or quit; never a paired phone.
@@ -887,6 +959,19 @@ const handler = async (request, response) => {
 
     // The pixel goblins share one sprite file with the desktop widget.
     if (url.pathname === "/goblin_art.json") return await serveFile(response, "goblin_art.json", here);
+    // The task view (public/app), this computer only. "/app" moves to "/app/" (the #task=… part goes along),
+    // so the page's own files load from /app/ and never as the classic viewer's /app.js.
+    if (url.pathname === "/app" || url.pathname.startsWith("/app/")) {
+      if (!isLocal(request)) return json(response, 403, { error: "The task view opens on this computer only." });
+      if (url.pathname === "/app") {
+        response.writeHead(302, { ...commonHeaders, Location: "/app/" });
+        return response.end();
+      }
+      const appFile = url.pathname === "/app/" ? "index.html" : url.pathname.slice(5);
+      if (!APP_FILES.test(appFile)) return json(response, 404, { error: "Not found" });
+      if (!existsSync(join(publicDir, "app", appFile))) return json(response, 404, { error: "The task view is not part of this copy of Goblin Horde." });
+      return await serveFile(response, appFile, join(publicDir, "app"));
+    }
     const file = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
     if (!/^(index\.html|app\.js|styles\.css|mobile\.css|interactive\.css|demo\.js|party\.js|goblins\.js)$/.test(file)) return json(response, 404, { error: "Not found" });
     return await serveFile(response, file);

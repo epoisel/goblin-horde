@@ -4,7 +4,7 @@
  *
  *   node goblin.mjs doctor                  Check what this computer has; changes nothing.
  *   node goblin.mjs install [--claude-hooks | --no-claude-hooks]
- *   node goblin.mjs start | stop | status | open [--compact]
+ *   node goblin.mjs start | stop | status | open [--compact] | app [--task ID] [--agent ID]
  *   node goblin.mjs uninstall [--remove-settings]
  *   node goblin.mjs hooks install | remove | status
  *   node goblin.mjs emit --feed NAME [--check] [--record '{...}']   (or NDJSON on stdin)
@@ -26,7 +26,7 @@ const { claudeSettingsPath } = await import("./lib/claude-hooks.mjs");
 const { appendExtensionRecord, extensionFeedDir, validateExtensionRecord } = await import("./lib/extension.mjs");
 
 const BOOLEAN = new Set(["json", "no-start", "skip-skill", "remove-settings", "claude-hooks", "no-claude-hooks", "check", "no-browser", "compact", "help", "report", "yes"]);
-const VALUE = new Set(["install-dir", "state-dir", "claude-config-dir", "codex-home", "codex-skill-dir", "port", "ui", "surface", "feed", "record"]);
+const VALUE = new Set(["install-dir", "state-dir", "claude-config-dir", "codex-home", "codex-skill-dir", "port", "ui", "surface", "feed", "record", "task", "agent"]);
 
 export function parseArgs(argv) {
   const positional = [];
@@ -69,6 +69,7 @@ const HELP = `Goblin Horde manager
       --ui auto|widget|browser|none --no-browser
       --surface strip               Start with only the goblin strip (what signing in to Windows does).
   node goblin.mjs open [--compact]  Open the viewer in your browser.
+  node goblin.mjs app [--task ID]   Open the task view in its own window (Edge or Chrome, else your browser).
   node goblin.mjs stop              Stop only this installation's own processes.
   node goblin.mjs status            Show what is installed and running.
   node goblin.mjs uninstall         Remove the app, its skills, and its Claude Code hooks.
@@ -132,6 +133,23 @@ async function emit(ctx, flags) {
     }
   }
   return { accepted: results.filter((item) => item.ok).length, rejected: results.filter((item) => !item.ok).length, results, checkOnly: Boolean(flags.check) };
+}
+
+/**
+ * `app`: the task view in its own window, for the running viewer of this installation (or the --port
+ * given). Nothing is started: a viewer that is not running is reported, with how to start it.
+ * `ctx.openApp` (lib/app-window.mjs openAppWindow) is replaceable in tests.
+ */
+export async function openApp(ctx, options, { taskId = "", agentId = "" } = {}) {
+  const loc = locate(ctx, options);
+  const health = await getLocalJson(loc.port, "/api/health", 3000).catch(() => null);
+  if (health?.product !== "GoblinHorde") throw new ManagerError(`Goblin Horde is not running on port ${loc.port}. Start it with: node goblin.mjs start`);
+  const open = ctx.openApp || (await import("./lib/app-window.mjs")).openAppWindow;
+  let result;
+  try { result = open({ port: loc.port, taskId, agentId, stateDir: loc.stateDir, platform: ctx.platform, env: ctx.env }); }
+  catch (error) { throw new ManagerError(error.message); }
+  if (!result?.opened) throw new ManagerError("The task view could not be opened: no browser could be started.");
+  return result;
 }
 
 /** Where the goblins ended up, for setup's last line. */
@@ -291,6 +309,11 @@ export async function main(argv = process.argv.slice(2), ctx = makeContext({ sou
       const url = `http://127.0.0.1:${loc.port}/${flags.compact ? "?compact=1" : ""}`;
       ctx.openUrl(url, ctx.platform);
       out({ url }, () => log(`Opened ${url}`));
+      return 0;
+    }
+    case "app": {
+      const result = await openApp(ctx, options, { taskId: flags.task || "", agentId: flags.agent || "" });
+      out(result, (data) => log(`Opened the task view (${data.browser === "default" ? "your browser" : data.browser}): ${data.url}`));
       return 0;
     }
     case "stop": {
