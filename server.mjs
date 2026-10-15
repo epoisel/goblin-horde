@@ -652,6 +652,7 @@ const taskService = new TaskService({
   scene: () => recentScene(),
   codex: {
     listThreads: () => reader.listThreads(),
+    lastThreads: () => reader.threadList || null,
     listSpawned: (since) => reader.listSpawned(since),
     actors: () => new Map([...reader.threadReads].map(([id, record]) => [id, { ...record.thread, attention: record.attention }])),
     requests: (id) => reader.listRequests(id),

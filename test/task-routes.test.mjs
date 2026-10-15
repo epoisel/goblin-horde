@@ -28,7 +28,8 @@ test("the task routes answer this computer only, and opening the app window take
   const service = {
     tasks: async ({ window }) => ({ tasks: [], window: { hours: window === "4h" ? 4 : 24 } }),
     transcript: async ({ id }) => ({ agent: { id }, entries: [] }),
-    taskOf: async (agentId) => (agentId === "claude-agent:work-1" ? "chat-lead-0001" : ""),
+    // An Orca pane that is a Claude Code session is placed by that session's id.
+    place: async (agentId) => (agentId === "orca-agent:tab-1:leaf-1" ? { taskId: "chat-lead-0001", agentId: "claude-agent:work-1" } : null),
   };
   const route = taskRoutes(service, { open: async (target) => { opened.push(target); return { opened: true, browser: "edge", url: "http://127.0.0.1:1/app" }; } });
   assert.equal((await call(route, { path: "/api/tasks", local: false })).status, 403, "a paired phone never gets the task list");
@@ -40,9 +41,11 @@ test("the task routes answer this computer only, and opening the app window take
   assert.equal((await call(route, { method: "POST", path: "/api/app/open", local: false, headers: json, body: {} })).status, 403);
   assert.equal((await call(route, { method: "POST", path: "/api/app/open", headers: { "content-type": "application/json" }, body: {} })).status, 403, "another site's page cannot open it");
   assert.equal((await call(route, { method: "POST", path: "/api/app/open", headers: json, body: { agentId: "../../etc" } })).status, 400);
-  const ok = await call(route, { method: "POST", path: "/api/app/open", headers: json, body: { agentId: "claude-agent:work-1" } });
+  const ok = await call(route, { method: "POST", path: "/api/app/open", headers: json, body: { agentId: "orca-agent:tab-1:leaf-1" } });
   assert.equal(ok.status, 200);
-  assert.deepEqual(opened, [{ taskId: "chat-lead-0001", agentId: "claude-agent:work-1" }], "the goblin's own task is opened");
+  assert.deepEqual(opened, [{ taskId: "chat-lead-0001", agentId: "claude-agent:work-1" }], "the goblin's own task is opened, on the id the task list shows");
+  await call(route, { method: "POST", path: "/api/app/open", headers: json, body: { agentId: "chat-0009-unlisted" } });
+  assert.deepEqual(opened.at(-1), { taskId: "", agentId: "chat-0009-unlisted" }, "a goblin in no task still opens the task view");
   const failing = taskRoutes(service, { open: async () => ({ opened: false }) });
   assert.equal((await call(failing, { method: "POST", path: "/api/app/open", headers: json, body: {} })).status, 500);
 });
@@ -67,13 +70,16 @@ test("the task list never waits long on a slow source, and a slow spawned-chat l
   let release;
   const slow = new Promise((resolve) => { release = resolve; });
   const service = new TaskService({ clock: () => clock, waitMs: 30,
-    codex: { listThreads: async () => [], listSpawned: () => slow, actors: () => new Map(), health: () => ({ state: "ok" }) },
+    codex: { listThreads: () => new Promise(() => {}), lastThreads: () => [{ id: "chat-last-list-1", name: "From the last list", updatedAt: clock - 1000 }],
+      listSpawned: () => slow, actors: () => new Map(), health: () => ({ state: "ok" }) },
     orca: { snapshot: () => new Promise(() => {}), lastSnapshot: () => ({ workspaces: [], warning: "Orca feed is unavailable: Orca is not running.", failure: "not-running" }) },
     orcaRunning: async () => true });
   const started = Date.now();
   const first = await service.tasks({ window: "24h" });
   assert.ok(Date.now() - started < 2000);
   assert.equal(first.sources.orca.reason, "unreachable");
+  assert.equal(first.sources.codex.state, "partial", "a chat list still loading says so");
+  assert.ok(first.tasks.some((task) => task.id === "chat-last-list-1"), "and the last list stands in");
   release([{ id: "chat-kid-0001", name: "Helper", updatedAt: clock - 1000, parentThreadId: "chat-gone-0001" }]);
   await slow;
   await new Promise((resolve) => setTimeout(resolve, 10));
