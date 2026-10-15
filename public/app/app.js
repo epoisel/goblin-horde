@@ -481,9 +481,15 @@ function renderMain() {
   if (!task) {
     taskView?.destroy();
     taskView = null;
-    host.replaceChildren(emptyMain());
+    // Redrawn only when what it says changes, so its button keeps focus between polls.
+    const key = JSON.stringify([state.loaded, state.error, state.taskId, state.tasks.length, state.windowHours]);
+    if (host.dataset.empty !== key || !host.querySelector(".empty-main")) {
+      host.dataset.empty = key;
+      host.replaceChildren(emptyMain());
+    }
     return;
   }
+  delete host.dataset.empty;
   if (taskView && taskView.task.id !== task.id) { taskView.destroy(); taskView = null; }
   if (!taskView) {
     taskView = new TaskView(task);
@@ -632,10 +638,11 @@ class TaskView {
       } else column.update(agent);
       if (this.columnsNode.children[index] !== column.node) this.columnsNode.insertBefore(column.node, this.columnsNode.children[index] || null);
     });
-    if (state.focusId && !ids.has(state.focusId)) state.focusId = "";
+    if (state.focusId && !ids.has(state.focusId)) { state.focusId = ""; writeHash(); }
     this.applyLayout();
     this.timeline?.updateAgents(task);
-    if (first) for (const agent of task.agents) if (!prefs.collapsed[agent.id]) loadTranscript(agent.id);
+    // Columns load as they scroll into view (see the observer); a focused one at once.
+    if (first && state.focusId) loadTranscript(state.focusId);
   }
 
   renderOpenButtons() {

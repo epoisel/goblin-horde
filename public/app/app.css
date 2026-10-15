@@ -230,6 +230,7 @@ body.side-collapsed { --side: 60px; }
   .col-scroll { padding: 4px 9px 16px; }
   .md { font-size: 13px; }
   .e-prompt { max-width: 100%; }
+  .e-prompt .e-time { display: none; }
   .pbar { flex-basis: 40px; }
 }
 .col-body { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
@@ -351,6 +352,9 @@ body.side-collapsed { --side: 60px; }
 .e-who { min-width: 0; font-weight: 700; color: var(--gold); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .e-time { flex: none; color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .e-head .copy, .e-tools .copy { margin-left: auto; opacity: 0; }
+/* A prompt's copy button floats over its corner, so the sender's label keeps the whole line. */
+.e-prompt { position: relative; }
+.e-prompt > .e-head .copy { position: absolute; top: 4px; right: 6px; background: var(--panel-3); }
 .e:hover .copy, .e .copy:focus-visible { opacity: 1; }
 
 .e-prompt { align-self: flex-end; max-width: 94%; min-width: 50%; padding: 6px 12px 9px; border-radius: 12px 12px 4px 12px; background: var(--panel-3); border: 1px solid #36533f; }
