@@ -42,7 +42,33 @@ const ID = {
   theme: "claude-agent:theme-tokens",
   fresh: "claude-agent:fresh-session",
   audit: "019a2f01-0c9e-7b55-migration-audit",
+  // A wide Codex → Orca task: a lead, a coordinator, and seven workers, four of them named alike.
+  roundLead: "019a3d40-2b6e-7c11-round-lead",
+  roundCoord: "orca:kettle:term-round-coord",
+  roundTotals: "orca:kettle:term-round-totals",
+  roundReceipts: "orca:kettle:term-round-receipts",
+  roundRefunds: "orca:kettle:term-round-refunds",
+  roundTax: "orca:kettle:term-round-tax",
+  roundFind: "orca:kettle:term-round-find",
+  roundSuite: "orca:kettle:term-round-suite",
+  roundDocs: "orca:kettle:term-round-docs",
+  // Subagents the search session ran earlier: yesterday's are stale, one finished a little while ago.
+  lanternRfc: "claude-agent:lantern-session:rfc-draft",
+  lanternParser: "claude-agent:lantern-session:map-parser",
+  lanternCold: "claude-agent:lantern-session:cold-starts",
+  lanternStops: "claude-agent:lantern-session:stop-words",
 };
+
+/** The wide task's workers: id, name, model, what they do, and how far they got. */
+const ROUND_WORKERS = [
+  ["roundTotals", "General-purpose: Fix rounding in totals", "sonnet", "src/money/totals.ts", "working"],
+  ["roundReceipts", "General-purpose: Fix rounding in receipts", "sonnet", "src/receipts/lines.ts", "working"],
+  ["roundRefunds", "General-purpose: Fix rounding in refunds", "haiku", "src/refunds/partial.ts", "asking"],
+  ["roundTax", "General-purpose: Fix rounding in tax lines", "sonnet", "src/tax/lines.ts", "working"],
+  ["roundFind", "Explore: Find every float multiply", "haiku", "src", "done"],
+  ["roundSuite", "Test runner: money suite", "opus", "test/money", "working"],
+  ["roundDocs", "Docs: rounding rules page", "codex", "docs/money.md", "idle"],
+];
 
 // ---- Text builders ----
 
@@ -624,6 +650,56 @@ function auditEntries(T) {
     b.msg(at + 30 * S, "Two migrations have no down step: `0042_add_carts.sql` and `0051_drop_sessions.sql`.")];
 }
 
+function roundLeadEntries(T) {
+  const b = builder("rlead");
+  const at = T - 40 * M;
+  return [
+    b.prompt(at, "Money is rounded three different ways across checkout. Make it one rule (round half to even, in cents) everywhere. Use Orca: one coordinator, as many workers as it needs."),
+    b.reason(at + 5 * S, "Seven places touch money. One worker each, a finder first, the test runner throughout."),
+    b.cmd(at + 20 * S, "orca orchestration run create --name round-money --coordinator term-round-coord", { output: "Created run round-money (coordinator: term-round-coord)", durationMs: 1100 }),
+    b.msg(at + 40 * S, "The run is started. The coordinator splits it into seven workers; I'll watch for its report."),
+    finishes(b.cmd(T - 30 * M, "orca orchestration wait --run round-money --for report --timeout 60m"), T + 40 * M, { status: "ok", exitCode: 0, output: "Report received." }),
+  ];
+}
+
+function roundCoordEntries(T) {
+  const b = builder("rcoord");
+  const at = T - 38 * M;
+  const out = [b.prompt(at, "Coordinate **round-money**: one rule for money, round half to even in cents. Split the work by folder; the test runner checks every change.", "parent")];
+  out.push(b.plan(at + 10 * S, [["done", "Find every float multiply"], ["active", "Fix totals, receipts, refunds, tax lines"], ["active", "Keep the money suite green"], ["pending", "Write the rounding rules page"]]));
+  ROUND_WORKERS.forEach(([key, name], index) => out.push(b.cmd(at + (20 + index * 6) * S, `orca orchestration dispatch --run round-money --to term-${key.replace(/^round/, "round-").toLowerCase()} --task ${index + 1}`,
+    { output: `Dispatched task ${index + 1} (${name}).`, durationMs: 700 + index * 40 })));
+  out.push(b.msg(at + 70 * S, "Seven workers are briefed. Refunds may need a decision on partial refunds; I'll answer it."));
+  return out;
+}
+
+/** A worker of the wide task: its brief, a few steps, and where it got to. */
+function roundWorkerEntries(T, key, name, file, state, index) {
+  const b = builder(`r${index}`);
+  const at = T - 36 * M + index * 40 * S;
+  const task = name.replace(/^[\w -]+: /, "");
+  const out = [b.prompt(at, `**Task ${index + 1}: ${task}** (from the round-money coordinator)\n\nUse \`toCents\` and round half to even. Touch only \`${file}\`. Report the exact lines you changed.`, "coordinator")];
+  out.push(b.search(at + 20 * S, "\\* (price|amount|rate)", `${file}:${12 + index}:  const value = price * rate;\n${file}:${30 + index}:  return amount * 1.0;`, { durationMs: 150 + index * 10 }));
+  if (key === "roundReceipts") {
+    // A message from a fellow worker, naming who sent it.
+    out.push({ ...b.prompt(at + 2 * M, "Heads up: I changed `toCents()` to round half to even. Receipts should call it rather than rounding on their own.", "agent"),
+      fromId: ID.roundTotals, fromName: "General-purpose: Fix rounding in totals" });
+  }
+  if (state !== "idle") out.push(b.edit(at + 4 * M, file, lines(`--- a/${file}`, `+++ b/${file}`, `@@ -${12 + index},2 +${12 + index},2 @@`, "-  const value = price * rate;", "+  const value = fromCents(roundHalfEven(toCents(price) * rate));", "   return value;"), { durationMs: 40 }));
+  if (state === "working" && key === "roundSuite") out.push(finishes(b.cmd(T - 20 * S, "npm test -- test/money"), T + 25 * S, { status: "ok", exitCode: 0, durationMs: 45 * S, output: " PASS  test/money/round.test.ts\n    ✓ rounds half to even (4 ms)\n\nTests: 31 passed, 31 total" }));
+  else if (state === "working") out.push(b.msg(at + 6 * M, `Changed \`${file}\` to round in cents. Running its tests next.`));
+  if (state === "asking") out.push(b.msg(at + 6 * M, "**Question for the coordinator:** a partial refund of an odd cent: round it toward the customer, or half to even like everything else?"));
+  if (state === "done") out.push(b.msg(at + 5 * M, "Found **11** float multiplies in money code: totals (3), receipts (2), refunds (2), tax lines (4). Listed them for the coordinator."));
+  return out;
+}
+
+function lanternEarlierEntries(T, key, name, hoursAgo) {
+  const b = builder(`le-${key}`);
+  const at = T - hoursAgo * H;
+  return [b.prompt(at, name.replace(/^[\w -]+: /, ""), "parent"), b.search(at + 30 * S, "tokenize", "crates/search/src/tokenize.rs:12: pub fn tokenizer(", { durationMs: 120 }),
+    b.msg(at + 2 * M, `Done: ${name.replace(/^[\w -]+: /, "").toLowerCase()}.`)];
+}
+
 // ---- The demo service ----
 
 /** The demo's answers to every client call; `clock` is injectable for tests. */
@@ -635,6 +711,12 @@ export function createDemo({ clock = () => Date.now(), latency = true } = {}) {
     [ID.lead]: leadEntries(T), [ID.coord]: coordEntries(T), [ID.pay]: paymentsEntries(T), [ID.tests]: testsEntries(T, log), [ID.docs]: docsEntries(T),
     [ID.lantern]: lanternEntries(T), [ID.explore]: exploreEntries(T), [ID.bench]: benchEntries(T), [ID.config]: configEntries(T), [ID.flaky]: flakyEntries(T),
     [ID.notes]: notesEntries(T), [ID.fresh]: [], [ID.audit]: auditEntries(T),
+    [ID.roundLead]: roundLeadEntries(T), [ID.roundCoord]: roundCoordEntries(T),
+    ...Object.fromEntries(ROUND_WORKERS.map(([key, name, , file, state], index) => [ID[key], roundWorkerEntries(T, key, name, file, state, index)])),
+    [ID.lanternRfc]: lanternEarlierEntries(T, "rfc", "General-purpose: Draft the tokenizer RFC", 20),
+    [ID.lanternParser]: lanternEarlierEntries(T, "parser", "Explore: Map the query parser", 19),
+    [ID.lanternCold]: lanternEarlierEntries(T, "cold", "General-purpose: Profile cold starts", 5),
+    [ID.lanternStops]: lanternEarlierEntries(T, "stops", "Explore: Check the stop-word list", 0.7),
   };
   const keepalive = (now) => {
     // The tests worker keeps running suites and the coordinator keeps checking in, so the demo never goes still.
@@ -721,8 +803,34 @@ export function createDemo({ clock = () => Date.now(), latency = true } = {}) {
           agent(ID.bench, { source: "claude", name: "Benchmark tokenizer settings", model: MODELS.sonnet, role: "subagent", parentId: ID.lantern, depth: 1, status: now > T + 44 * S ? "done" : "working", attention: "working",
             now: now > T + 44 * S ? { kind: "message", title: "Reported cold-cache numbers", startedAt: T + 44 * S, done: true } : { kind: "command", title: "Running the cold-cache benchmark", detail: "lantern-bench tokenizer --cache cold", startedAt: T - 6 * M },
             updatedAt: now - 6 * S, startedAt: T - 2 * H + 3 * M }),
+          // Earlier subagents: two the server marks stale, one finished hours ago, one a little while ago.
+          ...[["lanternRfc", "General-purpose: Draft the tokenizer RFC", 20, true], ["lanternParser", "Explore: Map the query parser", 19, true],
+            ["lanternCold", "General-purpose: Profile cold starts", 5, false], ["lanternStops", "Explore: Check the stop-word list", 0.7, false]]
+            .map(([key, name, hoursAgo, stale]) => agent(ID[key], { source: "claude", name, model: MODELS.haiku, role: "subagent", parentId: ID.lantern, depth: 1, status: "done", attention: "quiet",
+              ...(stale ? { stale: true } : {}), now: { kind: "message", title: "Reported back", startedAt: T - hoursAgo * H + 2 * M, done: true },
+              updatedAt: T - hoursAgo * H + 2 * M, startedAt: T - hoursAgo * H })),
         ],
-        links: [{ from: ID.lantern, to: ID.explore, kind: "spawned", at: T - 2 * H + 20 * S }, { from: ID.lantern, to: ID.bench, kind: "spawned", at: T - 2 * H + 3 * M }],
+        links: [{ from: ID.lantern, to: ID.explore, kind: "spawned", at: T - 2 * H + 20 * S }, { from: ID.lantern, to: ID.bench, kind: "spawned", at: T - 2 * H + 3 * M },
+          ...["lanternRfc", "lanternParser", "lanternCold", "lanternStops"].map((key) => ({ from: ID.lantern, to: ID[key], kind: "spawned" }))],
+      },
+      {
+        id: "task-round", title: "Round money consistently", project: "copperkettle-cli", startedAt: T - 40 * M, updatedAt: now - 3 * S,
+        agents: [
+          agent(ID.roundLead, { source: "codex", name: "Round money consistently", model: MODELS.sol, role: "lead", depth: 0, status: "working", attention: "working",
+            now: { kind: "command", title: "Waiting for the coordinator's report", startedAt: T - 30 * M }, updatedAt: now - 20 * S, startedAt: T - 40 * M }),
+          agent(ID.roundCoord, { source: "orca", name: "Rounding coordinator", model: MODELS.opus, role: "coordinator", parentId: ID.roundLead, depth: 1, status: "working", attention: "working",
+            now: { kind: "think", title: "Watching seven workers", startedAt: T - 5 * M }, progress: { done: 1, total: 4, current: "Fix totals, receipts, refunds, tax lines" }, updatedAt: now - 9 * S, startedAt: T - 38 * M }),
+          ...ROUND_WORKERS.map(([key, name, model, file, state], index) => agent(ID[key], { source: "orca", name, model: MODELS[model], role: "worker", parentId: ID.roundCoord, depth: 2,
+            status: state === "asking" || state === "working" ? "working" : state === "done" ? "done" : "idle", attention: state === "done" || state === "idle" ? "quiet" : "working",
+            ...(state === "asking" ? { waitingOn: { on: ID.roundCoord, text: "A partial refund of an odd cent: round toward the customer, or half to even?", at: T - 4 * M } } : {}),
+            now: state === "done" ? { kind: "message", title: "Listed 11 float multiplies", startedAt: T - 30 * M, done: true }
+              : state === "idle" ? null : key === "roundSuite" ? { kind: "command", title: "Running npm test -- test/money", startedAt: T - 20 * S }
+                : { kind: "edit", title: `Editing ${file}`, startedAt: T - (index + 1) * 40 * S },
+            updatedAt: state === "done" ? T - 30 * M : state === "idle" ? T - 34 * M : now - (index + 2) * S, startedAt: T - 36 * M + index * 40 * S })),
+        ],
+        links: [{ from: ID.roundLead, to: ID.roundCoord, kind: "drives", at: T - 38 * M },
+          ...ROUND_WORKERS.map(([key], index) => ({ from: ID.roundCoord, to: ID[key], kind: "dispatched", at: T - 37 * M + index * 6 * S })),
+          { from: ID.roundRefunds, to: ID.roundCoord, kind: "asked", at: T - 4 * M, waiting: true }],
       },
       {
         id: "task-fresh", title: "Rename the CLI flags", project: "copperkettle-cli", startedAt: T - 20 * S, updatedAt: T - 20 * S,
@@ -766,7 +874,8 @@ export function createDemo({ clock = () => Date.now(), latency = true } = {}) {
     return delay({
       tasks: all.filter((task) => task.updatedAt >= cutoff),
       sources: {
-        codex: { state: "ok", say: "Reading 14 Codex chats from the last 24 hours." },
+        // A cold start: Codex is still listing its chats for the first 25 seconds.
+        codex: now < T + 25 * S ? { state: "partial", say: "Codex is still listing its chats; this is the last list." } : { state: "ok", say: "Reading 14 Codex chats from the last 24 hours." },
         claude: { state: "ok", say: "Recording Claude Code activity on this computer." },
         orca: { state: "unavailable", say: "Orca is running, but its command line can't reach it. Restart Orca to see its workers live; workers it already saw stay grouped." },
       },

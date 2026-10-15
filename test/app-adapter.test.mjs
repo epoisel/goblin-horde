@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ENDPOINTS, agentAction, agentTone, asText, createClient, normalizeEntry, normalizeSource, normalizeTasks, normalizeTranscript, orderAgents,
-  stripAnsi, toMs, toolKindOf } from "../public/app/adapter.js";
+import { ENDPOINTS, PARTIAL_GRACE_MS, agentAction, agentTone, asText, createClient, cutText, cutTextEnd, isFinishedSubagent, isStale, normalizeEntry, normalizeSource,
+  normalizeTasks, normalizeTranscript, orderAgents, shortName, shownSourceState, stripAnsi, tellApart, toMs, toolKindOf } from "../public/app/adapter.js";
 import { createDemo } from "../public/app/demo-data.js";
 import { scanFile } from "../scripts/package.mjs";
 
@@ -81,6 +81,54 @@ test("the server's task list: windows, aliases, and who is waiting on whom right
   assert.equal(task.links.find((link) => link.manual).kind, "drives");
 });
 
+test("columns read lead, coordinator, workers at work first, subagents running first, and long-finished subagents last", () => {
+  const now = 1_800_000_000_000;
+  const agent = (id, role, status, minutesAgo, extra = {}) => ({ id, name: id, role, status, updatedAt: now - minutesAgo * 60_000, ...extra });
+  const [task] = normalizeTasks({ checkedAt: now, tasks: [{ id: "t", agents: [
+    agent("lead", "lead", "idle", 30),
+    agent("sub-old", "subagent", "done", 600, { parentId: "lead" }),
+    agent("w-done", "worker", "done", 20, { parentId: "coord" }),
+    agent("coord", "coordinator", "working", 0, { parentId: "lead" }),
+    agent("sub-flagged", "subagent", "done", 10, { parentId: "lead", stale: true }),
+    agent("w-busy", "worker", "working", 0, { parentId: "coord" }),
+    agent("sub-recent", "subagent", "done", 20, { parentId: "lead" }),
+    agent("w-quiet-now", "worker", "idle", 0.5, { parentId: "coord" }),
+    agent("sub-run", "subagent", "working", 0, { parentId: "lead" }),
+  ] }] }).tasks;
+  assert.deepEqual(task.agents.map((item) => item.id), ["lead", "coord", "w-busy", "w-quiet-now", "w-done", "sub-run", "sub-recent", "sub-old", "sub-flagged"]);
+  assert.deepEqual(task.agents.filter((item) => item.stale).map((item) => item.id), ["sub-old", "sub-flagged"], "the server's flag, or done over an hour ago");
+  assert.deepEqual(task.agents.filter((item) => isFinishedSubagent(item, now)).map((item) => item.id), ["sub-recent", "sub-old", "sub-flagged"], "these start folded");
+  assert.equal(isStale({ role: "worker", tone: "done", updatedAt: 1 }, now), false, "only subagents go stale");
+});
+
+test("names are fitted and told apart the way the goblin strip does it", () => {
+  const fits = (max) => (value) => cutText(value, max);
+  const ends = (max) => (value) => cutTextEnd(value, max);
+  const names = ["General-purpose: Fix rounding in totals", "General-purpose: Fix rounding in receipts", "Docs: rounding page"];
+  assert.deepEqual(tellApart(names, names.map(() => fits(26)), names.map(() => ends(26))), ["…Fix rounding in totals", "…Fix rounding in receipts", "Docs: rounding page"],
+    "two that would read 'General-purpose: Fix roun…' show how they end, from a whole word");
+  const middles = ["Fix the totals on the cart page", "Fix the receipts on the cart page"];
+  assert.deepEqual(tellApart(middles, middles.map(() => fits(9)), middles.map(() => ends(9))), ["…totals…", "…receipt…"],
+    "names that start and end alike show the words after the ones they share");
+  assert.equal(cutTextEnd("General-purpose: Fix rounding in totals", 12), "…in totals", "an end cut starts at a word");
+  const same = ["Please carry out this task from my Orca coordinator", "Please carry out this task from my Orca coordinator"];
+  assert.deepEqual(tellApart(same, same.map(() => fits(20)), same.map(() => ends(20))), ["1 · Please carry ou…", "2 · Please carry ou…"], "the same name twice is numbered");
+  assert.deepEqual(tellApart(["Ab"], [() => ""], [() => ""]), ["A"], "never an empty label");
+  assert.equal(shortName({ role: "subagent", name: "General-purpose: Fix rounding" }), "Fix rounding");
+  assert.equal(shortName({ role: "worker", name: "General-purpose: Fix rounding" }), "General-purpose: Fix rounding", "a worker keeps its name");
+});
+
+test("a partly read source says so only after ten seconds", () => {
+  const since = new Map();
+  const source = { key: "codex", state: "partial", say: "Codex is still listing its chats; this is the last list." };
+  assert.equal(shownSourceState(source, since, 1000), "ok");
+  assert.equal(shownSourceState(source, since, 1000 + PARTIAL_GRACE_MS), "ok");
+  assert.equal(shownSourceState(source, since, 1001 + PARTIAL_GRACE_MS), "partial");
+  assert.equal(shownSourceState({ ...source, state: "ok" }, since, 20_000), "ok");
+  assert.equal(shownSourceState(source, since, 21_000), "ok", "a new spell of it starts the wait again");
+  assert.equal(shownSourceState({ key: "orca", state: "unavailable" }, since, 0), "unavailable", "only partial waits");
+});
+
 test("the server's own roles and order are kept when it sends them", () => {
   const agents = [
     { id: "a", name: "Lead", role: "lead", depth: 0 },
@@ -133,6 +181,8 @@ test("entries from Codex items and Claude records normalise to the spec's kinds"
   assert.match(change.tool.diff, /^--- a\/src\/a\.ts\n\+\+\+ b\/src\/a\.ts\n@@ -1 \+1 @@/);
   assert.match(change.tool.diff, /\+\+\+ b\/src\/b\.ts\n@@ -0,0 \+1 @@\n\+new$/);
   assert.equal(normalizeEntry({ id: "9", kind: "mystery", text: "?" }).kind, "system");
+  const peer = normalizeEntry({ id: "11", kind: "prompt", from: "agent", fromId: "claude-agent:s:w1", fromName: "Fix rounding in totals", text: "Heads up" });
+  assert.deepEqual([peer.from, peer.fromId, peer.fromName], ["agent", "claude-agent:s:w1", "Fix rounding in totals"]);
   assert.equal(normalizeEntry({ kind: "error", text: "boom" }).kind, "error");
   // Entries without ids get stable ones, so a re-sent entry is recognised.
   assert.equal(normalizeEntry({ kind: "message", text: "same", at: 5 }).id, normalizeEntry({ kind: "message", text: "same", at: 5 }).id);
@@ -188,7 +238,15 @@ test("the demo covers every case the task view must show, in the spec's shapes",
   const checkout = tasks.find((task) => task.id === "task-checkout");
   assert.deepEqual(checkout.agents.map((agent) => agent.role), ["lead", "coordinator", "worker", "worker", "worker"]);
   assert.deepEqual(checkout.agents.map((agent) => agent.tone), ["working", "working", "waiting", "working", "done"]);
-  assert.deepEqual(tasks.find((task) => task.id === "task-lantern").agents.map((agent) => agent.role), ["lead", "subagent", "subagent"]);
+  // The lead, the subagent at work, the one that finished a little while ago, then the stale ones (folded, last).
+  const lantern = tasks.find((task) => task.id === "task-lantern");
+  assert.deepEqual(lantern.agents.map((agent) => [agent.id.split(":").at(-1), agent.stale]), [["lantern-session", false], ["bench-tokenizer", false], ["stop-words", false],
+    ["explore-readers", true], ["rfc-draft", true], ["map-parser", true], ["cold-starts", true]]);
+  // The wide Codex → Orca task: nine agents, the worker asking the coordinator among those at work, the idle and done ones last.
+  const round = tasks.find((task) => task.id === "task-round");
+  assert.deepEqual(round.agents.map((agent) => `${agent.role}:${agent.tone}`), ["lead:working", "coordinator:working", "worker:working", "worker:working", "worker:waiting",
+    "worker:working", "worker:working", "worker:done", "worker:idle"]);
+  assert.equal(sources.find((source) => source.key === "codex").state, "partial", "a cold start lists Codex's chats partly");
   assert.equal(tasks.find((task) => task.id === "task-config").agents[0].ask.answerHere, "respond");
   assert.equal(sources.find((source) => source.key === "orca").state, "unavailable");
   assert.equal((await client.tasks(168)).tasks.length, tasks.length + 1, "the 7-day window shows one more task");
@@ -221,7 +279,7 @@ test("the demo covers every case the task view must show, in the spec's shapes",
 });
 
 test("the shipped app files have no personal paths, addresses, or credentials", () => {
-  for (const file of ["index.html", "app.css", "app.js", "adapter.js", "transcript.js", "markdown.js", "diff.js", "demo-data.js"]) {
+  for (const file of ["index.html", "app.css", "app.js", "adapter.js", "transcript.js", "markdown.js", "diff.js", "demo-data.js", "manifest.json", "icon.svg"]) {
     const text = readFileSync(join(root, "public", "app", file), "utf8");
     assert.deepEqual(scanFile(`public/app/${file}`, text), [], file);
   }

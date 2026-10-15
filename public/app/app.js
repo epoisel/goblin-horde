@@ -11,7 +11,7 @@
  * Address: /app#task=<id>&focus=<agent>&view=timeline ; /app#demo loads the synthetic demo-data.js.
  */
 import { createGoblin, loadArt, modelBadge, setGoblinAction, tribeFor } from "/goblins.js";
-import { agentAction, agentTone, createClient } from "./adapter.js";
+import { agentAction, agentTone, createClient, cutText, cutTextEnd, isFinishedSubagent, shortName, shownSourceState, tellApart, wordStart } from "./adapter.js";
 import { TranscriptStore, clockTime, effectiveTimes, insertionIndex, renderEntry, updateEntry } from "./transcript.js";
 
 const TASK_POLL_MS = 3000;
@@ -61,12 +61,20 @@ function span(ms, now = Date.now()) {
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
 }
 
+// `collapsed` / `expanded`: columns the person folded or opened against their default (agent id → true).
+const PREF_DEFAULTS = () => ({ widths: {}, collapsed: {}, expanded: {}, sidebar: true, window: 24 });
+
 function loadPrefs() {
-  try { return { widths: {}, collapsed: {}, sidebar: true, window: 24, ...JSON.parse(localStorage.getItem(PREFS_KEY) || "{}") }; }
-  catch { return { widths: {}, collapsed: {}, sidebar: true, window: 24 }; }
+  try { return { ...PREF_DEFAULTS(), ...JSON.parse(localStorage.getItem(PREFS_KEY) || "{}") }; }
+  catch { return PREF_DEFAULTS(); }
 }
 
 function savePrefs() {
+  // Per-agent choices are kept for the newest few hundred agents only.
+  for (const key of ["widths", "collapsed", "expanded"]) {
+    const ids = Object.keys(prefs[key] || {});
+    for (const id of ids.slice(0, Math.max(0, ids.length - 300))) delete prefs[key][id];
+  }
   try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* Private window: preferences last for this visit only. */ }
 }
 
@@ -100,6 +108,23 @@ function copyButton(text, label = "Copy") {
     setTimeout(() => { node.classList.remove("copied", "copy-failed"); node.querySelector(".copy-word").textContent = "Copy"; }, 1600);
   });
   return node;
+}
+
+const measurer = document.createElement("canvas").getContext("2d");
+
+/** Text cut to `width` pixels in `font`, from its end ("Fix roun…") or, `fromStart`, its start ("…in totals"). */
+function fitWidth(value, width, font, fromStart = false) {
+  measurer.font = font;
+  if (measurer.measureText(value).width <= width) return value;
+  const cut = (count) => (fromStart ? `…${wordStart(value, value.length - count)}` : `${value.slice(0, count).trimEnd()}…`);
+  let low = 1;
+  let high = value.length;
+  while (low < high) {
+    const middle = (low + high + 1) >> 1;
+    if (measurer.measureText(cut(middle)).width <= width) low = middle;
+    else high = middle - 1;
+  }
+  return cut(low); // At least one character, never nothing.
 }
 
 function goblinFor(agent, size, { still = false } = {}) {
@@ -142,6 +167,13 @@ const inflight = new Map(); // agent id → the transcript request in flight.
 const openRows = new Map(); // entry id → opened by the person; kept across redraws and views.
 const dismissedAsks = new Set(); // agent id + ask key dismissed here, until the next poll agrees.
 let taskView = null;
+
+/** Whether a column starts folded: the person's own choice for it, else folded for a finished subagent. */
+function startsCollapsed(agent) {
+  if (prefs.collapsed[agent.id]) return true;
+  if (prefs.expanded[agent.id]) return false;
+  return isFinishedSubagent(agent);
+}
 
 function storeFor(id) {
   if (!stores.has(id)) stores.set(id, new TranscriptStore(id));
@@ -337,19 +369,26 @@ function taskCounts(task) {
 const cards = new Map(); // task id → { node, task }
 const groupHeads = {};
 
+const partialSince = new Map(); // source key → when it was first seen partly read (see shownSourceState)
+
 function renderSources() {
   const host = document.getElementById("sources");
   host.replaceChildren();
+  const notes = [];
   for (const source of state.sources) {
-    const chip = el("div", `source s-${source.state}`);
+    const shown = shownSourceState(source, partialSince);
+    const chip = el("div", `source s-${shown}`);
     const head = el("div", "source-head");
     head.append(el("span", "source-dot"), el("span", "source-name", source.name),
-      el("span", "source-state", source.state === "ok" ? "" : source.state === "not-installed" ? "not installed" : source.state === "partial" ? "partly" : "can't reach"));
+      el("span", "source-state", shown === "ok" ? "" : shown === "not-installed" ? "not installed" : shown === "partial" ? "partly" : "can't reach"));
     chip.append(head);
     chip.title = source.say;
-    if (source.state !== "ok" && source.state !== "not-installed") chip.append(el("p", "source-say", source.say));
+    // Unreachable: a box that says what to do. Partly read: a quiet note under the chips.
+    if (shown === "unavailable") chip.append(el("p", "source-say", source.say));
+    if (shown === "partial") notes.push(el("p", "source-note", source.say));
     host.append(chip);
   }
+  host.append(...notes);
   host.hidden = !state.sources.length;
 }
 
@@ -388,9 +427,10 @@ function updateCard(entry) {
   lineNode.textContent = compact && task.project ? `${task.project} · ${line.text}` : line.text;
   lineNode.dataset.tone = line.tone;
   node.querySelector(".tc-counts").replaceChildren(...(compact || task.agents.length < 2 ? [] : taskCounts(task).map((part) => el("span", "", part))));
-  // Goblins: the crew in tree order; a big card shows up to six, a compact one only the lead.
+  // Goblins: the crew in column order (long-finished subagents left out); a compact card shows only the lead.
   const crew = node.querySelector(".tc-crew");
-  const shown = task.agents.slice(0, compact ? 1 : 6);
+  // Up to five goblins; a bigger crew shows four and "+N", so the row never runs into the counts beside it.
+  const shown = task.agents.filter((agent) => !agent.stale).slice(0, compact ? 1 : task.agents.length > 5 ? 4 : 5);
   const size = compact ? 1 : 2;
   const keep = new Set(shown.map((agent) => agent.id));
   for (const [id, canvas] of goblins) if (!keep.has(id) || Number(canvas.dataset.size) !== size) { canvas.remove(); goblins.delete(id); }
@@ -475,9 +515,8 @@ function renderMain() {
   } else banner.hidden = true;
   const host = document.getElementById("view");
   const task = selectedTask();
-  // The window's title names the task, and how many tasks need the person (it shows in the taskbar).
-  const needs = state.tasks.filter((item) => item.status === "needs").length;
-  document.title = `${needs ? `(${needs}) ` : ""}${task ? `${task.title} · ` : ""}Goblin Horde`;
+  // The window's title (and the taskbar's) names the task: "<task> · Goblin Horde".
+  document.title = task ? `${task.title} · Goblin Horde` : "Goblin Horde";
   if (!task) {
     taskView?.destroy();
     taskView = null;
@@ -523,7 +562,8 @@ function emptyMain() {
 /** Stages of the crew strip: agents by depth, with the link word between stages. */
 function crewStages(task) {
   const stages = [];
-  for (const agent of task.agents) {
+  // Subagents that finished long ago wait behind one "finished earlier" chip.
+  for (const agent of task.agents.filter((item) => !item.stale)) {
     const depth = Math.min(agent.depth || 0, 4);
     (stages[depth] ||= []).push(agent);
   }
@@ -553,9 +593,11 @@ class TaskView {
     this.observer = new IntersectionObserver((items) => {
       for (const item of items) {
         const id = item.target.dataset.id;
-        if (item.isIntersecting) { this.visible.add(id); loadTranscript(id); } else this.visible.delete(id);
+        if (item.isIntersecting) { this.visible.add(id); if (!this.columns.get(id)?.collapsed) loadTranscript(id); } else this.visible.delete(id);
       }
     }, { root: this.columnsNode, rootMargin: "0px 200px" });
+    // Column names are fitted again whenever a header changes width.
+    this.nameObserver = new ResizeObserver(() => this.scheduleFit());
     this.buildHead();
   }
 
@@ -565,6 +607,7 @@ class TaskView {
 
   destroy() {
     this.observer.disconnect();
+    this.nameObserver.disconnect();
     for (const column of this.columns.values()) column.destroy();
     this.timeline?.destroy();
     this.node.remove();
@@ -635,12 +678,19 @@ class TaskView {
         column = new ColumnView(agent, this);
         this.columns.set(agent.id, column);
         this.observer.observe(column.node);
+        this.nameObserver.observe(column.nameNode.parentElement);
       } else column.update(agent);
-      if (this.columnsNode.children[index] !== column.node) this.columnsNode.insertBefore(column.node, this.columnsNode.children[index] || null);
+      if (this.columnsNode.children[index] !== column.node) {
+        // A moved column (one that started or finished work) keeps where its reader was.
+        const kept = column.node.isConnected ? { top: column.scroller.scrollTop, bottom: column.atBottom } : null;
+        this.columnsNode.insertBefore(column.node, this.columnsNode.children[index] || null);
+        if (kept) requestAnimationFrame(() => { if (kept.bottom) column.scrollToBottom(); else column.scroller.scrollTop = kept.top; });
+      }
     });
     if (state.focusId && !ids.has(state.focusId)) { state.focusId = ""; writeHash(); }
     this.applyLayout();
     this.timeline?.updateAgents(task);
+    this.scheduleFit();
     // Columns load as they scroll into view (see the observer); a focused one at once.
     if (first && state.focusId) loadTranscript(state.focusId);
   }
@@ -667,7 +717,7 @@ class TaskView {
 
   renderCrew() {
     // Redrawn only when something it shows changed, so its scroll position and keyboard focus stay.
-    const signature = JSON.stringify([this.task.agents.map((agent) => [agent.id, agent.name, agent.role, agent.tone, agent.depth, agent.waitingOn?.on, agentAction(agent)]), this.task.links.map((link) => `${link.from}>${link.to}:${link.kind}`)]);
+    const signature = JSON.stringify([this.task.agents.map((agent) => [agent.id, agent.name, agent.role, agent.tone, agent.depth, agent.stale, agent.waitingOn?.on, agentAction(agent)]), this.task.links.map((link) => `${link.from}>${link.to}:${link.kind}`)]);
     if (signature === this.crewSignature) return;
     this.crewSignature = signature;
     const scroll = this.crew.scrollLeft;
@@ -679,6 +729,11 @@ class TaskView {
       if (focused) this.crew.querySelector(`.crew-chip[data-id="${CSS.escape(focused)}"]`)?.focus();
     });
     const byId = new Map(this.task.agents.map((agent) => [agent.id, agent]));
+    // Chip names as they fit a chip, told apart when two would read the same.
+    const shown = this.task.agents.filter((agent) => !agent.stale);
+    const names = shown.map(shortName);
+    const labels = new Map(tellApart(names, names.map(() => (value) => cutText(value, 30)), names.map(() => (value) => cutTextEnd(value, 30)))
+      .map((label, index) => [shown[index].id, label]));
     crewStages(this.task).forEach((stage, index) => {
       if (index) {
         const arrow = el("span", "crew-link");
@@ -692,7 +747,7 @@ class TaskView {
         chip.setAttribute("aria-pressed", String(state.focusId === agent.id));
         chip.title = `${agent.name}${ROLE_WORDS[agent.role] ? ` · ${ROLE_WORDS[agent.role]}` : ""} · ${TONE_WORDS[agent.tone]} — click to show its column`;
         const goblin = goblinFor(agent, 1);
-        chip.append(goblin, el("span", "crew-name", agent.name));
+        chip.append(goblin, el("span", "crew-name", labels.get(agent.id) || shortName(agent)));
         if (agent.tone !== "working" && agent.tone !== "idle") chip.append(el("span", `crew-tone t-${agent.tone}`, agent.tone === "waiting" ? "asked" : TONE_WORDS[agent.tone].toLowerCase()));
         const on = agent.waitingOn ? byId.get(agent.waitingOn.on) : null;
         if (on) chip.title += ` · waiting on ${on.name}`;
@@ -701,7 +756,35 @@ class TaskView {
       }
       this.crew.append(group);
     });
+    const stale = this.task.agents.filter((agent) => agent.stale);
+    if (stale.length) {
+      const chip = button("crew-chip crew-stale", "");
+      chip.append(el("span", "crew-name", `+${stale.length} finished earlier`));
+      chip.title = `${stale.map((agent) => agent.name).join("\n")}\n— their columns wait, folded, at the end`;
+      chip.addEventListener("click", () => this.columns.get(stale[0].id)?.node.scrollIntoView({ behavior: "smooth", inline: "start", block: "nearest" }));
+      this.crew.append(chip);
+    }
     this.markCrewOverflow();
+  }
+
+  /**
+   * Fit every open column's name to its header and tell apart the ones that would read the same
+   * ("General-purpose: Fix roun…" twice becomes "…in totals" and "…in receipts"); the full name is the tooltip.
+   */
+  fitNames() {
+    const open = [...this.columns.values()].filter((column) => !column.collapsed && !column.node.hidden);
+    if (!open.length) return;
+    const font = getComputedStyle(open[0].nameNode).font;
+    const widths = open.map((column) => Math.max(40, column.nameNode.parentElement.clientWidth - 4));
+    const names = open.map((column) => shortName(column.agent));
+    const labels = tellApart(names, widths.map((width) => (value) => fitWidth(value, width, font)), widths.map((width) => (value) => fitWidth(value, width, font, true)));
+    open.forEach((column, index) => { if (column.nameNode.textContent !== labels[index]) column.nameNode.textContent = labels[index]; });
+  }
+
+  scheduleFit() {
+    if (this.fitPending) return;
+    this.fitPending = true;
+    requestAnimationFrame(() => { this.fitPending = false; this.fitNames(); });
   }
 
   /** A crew wider than the header fades at its right edge, so it reads as scrollable. */
@@ -830,7 +913,7 @@ class ColumnView {
     this.unseen = 0;
     this.atBottom = true;
     this.store = storeFor(agent.id);
-    this.collapsed = Boolean(prefs.collapsed[agent.id]);
+    this.collapsed = startsCollapsed(agent);
     this.build();
     this.update(agent);
     this.unsubscribe = this.store.subscribe((change) => this.onChange(change));
@@ -933,15 +1016,23 @@ class ColumnView {
     this.focusButton.textContent = focused ? "⤡" : "⤢";
     this.focusButton.setAttribute("aria-label", focused ? "Show all agents" : "Focus on this agent");
     this.focusButton.title = this.focusButton.getAttribute("aria-label");
-    if (focused && this.collapsed) this.setCollapsed(false);
+    if (focused && this.collapsed) this.setCollapsed(false, { byPerson: false });
   }
 
-  setCollapsed(collapsed) {
+  /**
+   * Fold the column to its goblin rail, or open it. The person's choice is remembered only where it
+   * differs from the default (a finished subagent starts folded); the default follows the agent.
+   */
+  setCollapsed(collapsed, { byPerson = true } = {}) {
     this.collapsed = collapsed;
     this.node.classList.toggle("collapsed", collapsed);
-    if (collapsed) prefs.collapsed[this.agent.id] = true;
-    else delete prefs.collapsed[this.agent.id];
-    savePrefs();
+    if (byPerson) {
+      const id = this.agent.id;
+      delete prefs.collapsed[id];
+      delete prefs.expanded[id];
+      if (collapsed !== isFinishedSubagent(this.agent)) (collapsed ? prefs.collapsed : prefs.expanded)[id] = true;
+      savePrefs();
+    }
     if (!collapsed) {
       loadTranscript(this.agent.id);
       requestAnimationFrame(() => { if (this.atBottom) this.scrollToBottom(); });
@@ -978,10 +1069,16 @@ class ColumnView {
     const action = agentAction(agent);
     setGoblinAction(this.goblin, action, `${agent.name}, ${TONE_WORDS[agent.tone].toLowerCase()}`);
     setGoblinAction(this.railGoblin, action, `${agent.name}, ${TONE_WORDS[agent.tone].toLowerCase()}`);
-    this.rail.querySelector(".rail-name").textContent = agent.name;
+    this.rail.querySelector(".rail-name").textContent = shortName(agent);
+    this.rail.title = `${agent.name} · ${TONE_WORDS[agent.tone]}${agent.stale ? " · finished earlier" : ""} — click to open`;
     this.rail.dataset.tone = agent.tone;
-    this.nameNode.textContent = agent.name;
+    this.node.classList.toggle("stale", Boolean(agent.stale));
+    // The label itself is fitted to the column by the task view (see TaskView.fitNames).
+    if (!this.nameNode.textContent) this.nameNode.textContent = shortName(agent);
     this.nameNode.title = agent.name;
+    // A finished subagent folds itself away (unless the person chose otherwise); one at work again opens.
+    const folded = startsCollapsed(agent);
+    if (folded !== this.collapsed && state.focusId !== agent.id) this.setCollapsed(folded, { byPerson: false });
     this.roleNode.textContent = ROLE_WORDS[agent.role] || "";
     this.roleNode.hidden = !ROLE_WORDS[agent.role];
     this.roleNode.dataset.role = agent.role;

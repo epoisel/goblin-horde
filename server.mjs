@@ -676,8 +676,9 @@ const taskService = new TaskService({
 const taskRoute = taskRoutes(taskService, { open: ({ taskId, agentId }) => openAppWindow({ port, taskId, agentId, stateDir }) });
 
 // The task view's own files (public/app), the only ones served under /app/.
-const APP_FILES = /^(index\.html|app\.css|app\.js|adapter\.js|transcript\.js|markdown\.js|diff\.js|demo-data\.js)$/;
-const mime = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8" };
+const APP_FILES = /^(index\.html|app\.css|app\.js|adapter\.js|transcript\.js|markdown\.js|diff\.js|demo-data\.js|manifest\.json|icon\.svg)$/;
+const mime = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml" };
 const commonHeaders = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer" };
 
 function json(response, status, data) {
@@ -702,7 +703,8 @@ async function serveFile(response, file, folder = publicDir) {
   const info = await stat(path);
   const type = mime[`.${file.split(".").at(-1)}`];
   response.writeHead(200, { ...commonHeaders, "Content-Type": type, "Content-Length": info.size,
-    ...(file.endsWith(".html") ? { "Content-Security-Policy": pageCsp } : {}) });
+    // An SVG opened on its own is a document too: it gets the same policy (no scripts from anywhere).
+    ...(file.endsWith(".html") || file.endsWith(".svg") ? { "Content-Security-Policy": pageCsp } : {}) });
   // Headers are already out, so a read error can only end the connection.
   createReadStream(path).on("error", () => response.destroy()).pipe(response);
 }

@@ -80,16 +80,15 @@ body.side-collapsed { --side: 60px; }
 .source-head { display: inline-flex; align-items: center; gap: 5px; }
 .source-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex: none; }
 .source-state { color: var(--faint); }
-.source:not(.s-ok) { flex: 1 0 100%; padding: 7px 9px; border-radius: 8px; border: 1px solid; }
-.source.s-partial { border-color: rgba(240, 199, 94, .4); background: rgba(240, 199, 94, .07); }
-.source.s-unavailable { border-color: rgba(225, 138, 120, .45); background: rgba(225, 138, 120, .08); }
-.source.s-not-installed { flex: 0 0 auto; border: 0; padding: 0; background: none; }
+.source.s-unavailable { flex: 1 0 100%; padding: 7px 9px; border-radius: 8px; border: 1px solid rgba(225, 138, 120, .45); background: rgba(225, 138, 120, .08); }
+/* Partly read is a quiet note under the chips, not a warning. */
+.source-note { flex: 1 0 100%; margin: 0; color: var(--faint); font-size: 11px; line-height: 1.4; }
 .s-partial .source-dot { background: var(--amber); }
 .s-unavailable .source-dot { background: var(--coral); }
 .s-not-installed .source-dot { background: var(--faint); }
-.s-partial .source-name, .s-unavailable .source-name { color: var(--ivory); font-weight: 600; }
+.s-unavailable .source-name { color: var(--ivory); font-weight: 600; }
 .s-unavailable .source-state { color: var(--coral); }
-.s-partial .source-state { color: var(--amber); }
+.s-partial .source-state { color: var(--faint); font-style: italic; }
 .source-say { margin: 3px 0 0; color: var(--muted); font-size: 11.5px; line-height: 1.4; }
 .side-tools { display: flex; gap: 6px; padding: 4px 12px 6px; align-items: center; }
 .search { flex: 1; min-width: 0; height: 30px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg-deep); color: var(--ivory); font-size: 12.5px; }
@@ -192,6 +191,7 @@ body.side-collapsed { --side: 60px; }
 .crew-chip.r-lead { border-color: rgba(223, 187, 120, .55); }
 .crew-chip.r-coordinator { border-color: rgba(199, 185, 226, .55); }
 .crew-chip.t-needs { border-color: var(--amber); box-shadow: 0 0 0 2px rgba(240, 199, 94, .15); }
+.crew-chip.crew-stale { padding: 0 12px; border-style: dashed; color: var(--faint); font-weight: 600; }
 .crew-tone { padding: 0 6px; border-radius: 999px; font-size: 10.5px; font-weight: 700; }
 .crew-tone.t-needs { background: rgba(240, 199, 94, .18); color: var(--amber); }
 .crew-tone.t-failed { background: rgba(225, 138, 120, .18); color: var(--coral); }
@@ -209,7 +209,14 @@ body.side-collapsed { --side: 60px; }
 
 /* ---------- Columns ---------- */
 .tv-body { flex: 1; min-height: 0; display: flex; position: relative; }
-.columns { flex: 1; min-width: 0; display: flex; gap: 10px; padding: 10px 12px 12px; overflow-x: auto; overflow-y: hidden; }
+/* Many columns: sideways scrolling settles on a column's edge (each column body is its own layout container, see "container: col"). */
+.columns { flex: 1; min-width: 0; display: flex; gap: 10px; padding: 10px 12px 12px; overflow-x: auto; overflow-y: hidden;
+  scroll-snap-type: x proximity; scroll-padding-left: 12px; overscroll-behavior-x: contain; }
+.col { scroll-snap-align: start; }
+/* Folded columns sit close together, like a row of goblins. */
+.col.collapsed + .col.collapsed { margin-left: -5px; }
+.col.stale .col-rail { opacity: .72; }
+.col.stale .col-rail:hover { opacity: 1; }
 .col { position: relative; display: flex; flex: 1 1 440px; min-width: 380px; min-height: 0; }
 .col.sized { flex: 0 0 var(--w); }
 .col.collapsed { flex: 0 0 48px; min-width: 48px; }
@@ -223,7 +230,9 @@ body.side-collapsed { --side: 60px; }
 /* Narrow columns (Fit, small windows) drop the extras, never the conversation. */
 .col-body { container: col / inline-size; }
 @container col (max-width: 340px) {
-  .col-tools .icon-btn:nth-child(2), .col-tools .icon-btn:nth-child(3) { display: none; }
+  /* The name gets the whole row; the column's buttons float over its corner on hover or keyboard focus. */
+  .col-tools { position: absolute; top: 4px; right: 4px; z-index: 2; margin: 0; padding: 1px; border-radius: 8px; background: var(--panel-2); box-shadow: 0 4px 14px rgba(0, 0, 0, .35); opacity: 0; transition: opacity .12s ease; }
+  .col-body:hover .col-tools, .col-tools:focus-within { opacity: 1; }
   .col-head > .goblin { width: 39px; height: 42px; }
   .now-detail { display: none; }
   .tool-meta .tool-dur { display: none; }
@@ -350,6 +359,8 @@ body.side-collapsed { --side: 60px; }
 .e-reason + .e-tool, .e-reason + .e-sub { margin-top: 6px; }
 .e-head { display: flex; align-items: center; gap: 8px; min-height: 20px; font-size: 11.5px; min-width: 0; }
 .e-who { min-width: 0; font-weight: 700; color: var(--gold); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.e-who-link { padding: 0; border: 0; background: none; font-size: inherit; text-align: left; }
+.e-who-link:hover { text-decoration: underline; text-underline-offset: 3px; }
 .e-time { flex: none; color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .e-head .copy, .e-tools .copy { margin-left: auto; opacity: 0; }
 /* A prompt's copy button floats over its corner, so the sender's label keeps the whole line. */

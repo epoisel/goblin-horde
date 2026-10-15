@@ -113,6 +113,10 @@ test("prompt labels say who sent them", () => {
   assert.equal(promptLabel({ from: "coordinator" }), "From the coordinator");
   assert.equal(promptLabel({ from: "parent" }, { agent: { parentId: "l" }, agentsById: byId }), "From Plan the rewrite");
   assert.equal(promptLabel({ from: "parent" }), "From the parent chat");
+  // A prompt from another agent names it when the source does: the task's name for it first.
+  assert.equal(promptLabel({ from: "agent" }), "From another agent");
+  assert.equal(promptLabel({ from: "agent", fromName: "Fix rounding in totals" }), "From Fix rounding in totals");
+  assert.equal(promptLabel({ from: "agent", fromId: "l", fromName: "old name" }, { agentsById: byId }), "From Plan the rewrite");
 });
 
 test("sizes, durations, and long-output previews", () => {

@@ -295,12 +295,14 @@ export function toolSummary(tool) {
 /** Who sent a prompt, as its bubble's label. */
 export function promptLabel(entry, { agent = null, agentsById = new Map() } = {}) {
   const parent = agent?.parentId ? agentsById.get(agent.parentId) : null;
+  // The sender, when the source names it (`fromId` / `fromName`): the task's own name for it first.
+  const sender = (entry.fromId && agentsById.get(entry.fromId)?.name) || entry.fromName || "";
   if (entry.from === "coordinator") {
-    const named = parent && parent.role === "coordinator" && !/^(the )?coordinator$/i.test(parent.name.trim());
-    return named ? `From the coordinator · ${parent.name}` : "From the coordinator";
+    const name = sender || (parent && parent.role === "coordinator" ? parent.name : "");
+    return name && !/^(the )?coordinator$/i.test(name.trim()) ? `From the coordinator · ${name}` : "From the coordinator";
   }
-  if (entry.from === "parent") return parent ? `From ${parent.name}` : "From the parent chat";
-  if (entry.from === "agent") return "From another agent";
+  if (entry.from === "parent") return sender || parent ? `From ${sender || parent.name}` : "From the parent chat";
+  if (entry.from === "agent") return sender ? `From ${sender}` : "From another agent";
   if (entry.from === "system") return "System";
   return "You";
 }
@@ -503,7 +505,21 @@ function renderPrompt(ctx, entry, node) {
   const { doc } = ctx;
   node.classList.add(`from-${entry.from || "you"}`);
   const head = element(doc, "div", "e-head");
-  head.append(element(doc, "span", "e-who", promptLabel(entry, ctx)));
+  const label = promptLabel(entry, ctx);
+  // A sender that is a column of this task: its label opens that column.
+  const senderId = entry.fromId && ctx.agentsById?.has(entry.fromId) ? entry.fromId
+    : (entry.from === "coordinator" || entry.from === "parent") && ctx.agent?.parentId && ctx.agentsById?.has(ctx.agent.parentId) ? ctx.agent.parentId : "";
+  if (senderId && ctx.openAgent) {
+    const who = element(doc, "button", "e-who e-who-link", label);
+    who.type = "button";
+    who.title = `${label} — show this agent's column`;
+    who.addEventListener("click", () => ctx.openAgent(senderId));
+    head.append(who);
+  } else {
+    const who = element(doc, "span", "e-who", label);
+    who.title = label;
+    head.append(who);
+  }
   if (entry.queued) {
     const chip = element(doc, "span", "e-chip", "queued");
     chip.title = "Sent while the agent was busy; it read this after its current step.";

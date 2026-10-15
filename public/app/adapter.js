@@ -101,6 +101,20 @@ export function normalizeSource(key, value) {
   return { key, name: SOURCE_NAMES[key] || text(raw.name) || key, state, say };
 }
 
+// A source only partly read (Codex still listing its chats after a start) says so only when that
+// lasts: a few seconds of it is normal, and a warning that comes and goes is noise.
+export const PARTIAL_GRACE_MS = 10_000;
+
+/**
+ * The state a source's chip shows: "partial" only once it has lasted PARTIAL_GRACE_MS, "ok" before.
+ * `since` (Map: source key → first seen partial) is the caller's memory between polls.
+ */
+export function shownSourceState(source, since, now = Date.now()) {
+  if (source.state !== "partial") { since.delete(source.key); return source.state; }
+  if (!since.has(source.key)) since.set(source.key, now);
+  return now - since.get(source.key) > PARTIAL_GRACE_MS ? "partial" : "ok";
+}
+
 // ---- Agents and tasks. ----
 
 const ROLES = new Set(["lead", "coordinator", "worker", "subagent", "solo"]);
@@ -227,6 +241,7 @@ export function normalizeAgent(raw, index = 0) {
     terminal: text(first(value.terminal, value.orca?.terminal)),
     seenBy: text(value.seenBy),
     needsInput: Boolean(value.needsInput),
+    stale: value.stale === true, // The server's word: a subagent that finished over an hour ago.
   };
   agent.tone = agentTone(agent);
   return agent;
@@ -296,6 +311,37 @@ export function orderAgents(agents) {
   return result;
 }
 
+// A finished subagent this long ago is history: its column waits at the end, folded.
+export const STALE_MS = 60 * 60_000;
+// An agent that did something this recently still counts as active, so a session idling between
+// turns does not jump to the back and forth on every poll.
+const ACTIVE_MS = 2 * 60_000;
+
+/** A subagent that finished: the server says so (`stale`), or it is done or idle and quiet for an hour. */
+export function isStale(agent, now = Date.now()) {
+  if (agent.role !== "subagent") return false;
+  if (agent.stale) return true;
+  return (agent.tone === "done" || agent.tone === "idle") && Boolean(agent.updatedAt) && now - agent.updatedAt > STALE_MS;
+}
+
+/** A subagent whose work is over: its column starts folded to the goblin rail (the person can open it). */
+export function isFinishedSubagent(agent, now = Date.now()) {
+  return agent.role === "subagent" && (isStale(agent, now) || agent.tone === "done" || agent.tone === "idle");
+}
+
+/**
+ * Columns in the order the person reads a task: lead, coordinator, workers, then subagents; within
+ * workers and within subagents the ones at work first; finished subagents of long ago last. Ties keep
+ * the tree order (so a parent's helpers stay together). Pure.
+ */
+export function columnOrder(agents, now = Date.now()) {
+  const busy = (agent) => (["working", "waiting", "needs"].includes(agent.tone) || (agent.updatedAt && now - agent.updatedAt < ACTIVE_MS && agent.tone !== "done") ? 0
+    : agent.tone === "failed" ? 1 : 2);
+  return agents.map((agent, index) => ({ agent, index, key: [isStale(agent, now) ? 1 : 0, ROLE_ORDER[agent.role] ?? 2, agent.role === "lead" || agent.role === "solo" ? 0 : busy(agent)] }))
+    .sort((a, b) => a.key[0] - b.key[0] || a.key[1] - b.key[1] || a.key[2] - b.key[2] || a.index - b.index)
+    .map((item) => item.agent);
+}
+
 /** A task's status from its agents when the server sent none. */
 export function taskTone(agents) {
   const tones = agents.map((agent) => agent.tone);
@@ -309,7 +355,7 @@ export function taskTone(agents) {
 const LINK_KINDS = new Set(["drives", "spawned", "asked", "dispatched"]);
 
 /** One task, every field present. */
-export function normalizeTask(raw, index = 0) {
+export function normalizeTask(raw, index = 0, { now = Date.now() } = {}) {
   const value = object(raw) || {};
   const given = list(first(value.agents, value.members)).map(normalizeAgent);
   const ids = new Set(given.map((agent) => agent.id));
@@ -335,7 +381,8 @@ export function normalizeTask(raw, index = 0) {
     const child = byId.get(link.to);
     if (child && !child.parentId && link.kind !== "asked" && !ancestorOf(child.id, link.from)) child.parentId = link.from;
   }
-  const agents = orderAgents(fillRoles(given));
+  const agents = columnOrder(orderAgents(fillRoles(given)), now);
+  for (const agent of agents) agent.stale = isStale(agent, now);
   const lead = agents[0];
   const status = lower(value.status);
   const task = {
@@ -354,6 +401,64 @@ export function normalizeTask(raw, index = 0) {
   return task;
 }
 
+/**
+ * The name a column shows: a subagent's "General-purpose: Fix rounding" shows its task (its role chip
+ * already says it is a subagent); everything else as named.
+ */
+export function shortName(agent) {
+  const name = text(agent?.name) || "Unnamed agent";
+  const typed = /^[\w .-]{2,40}: (\S.*)$/.exec(name);
+  return agent?.role === "subagent" && typed ? typed[1] : name;
+}
+
+/**
+ * Labels that fit their room and can be told apart, the way the goblin strip does it
+ * (horde_model.tell_apart): `fits[i](text)` cuts text to label i's room from its end ("Fix roun…"),
+ * `fitEnds[i](text)` from its start ("…in totals"). Labels that would read the same are told apart by
+ * the words after the ones their names share ("…receipts"), else by how their names end; names that are
+ * the same through and through get a number. Never returns an empty label. Pure.
+ */
+export function tellApart(names, fits, fitEnds) {
+  const shown = names.map((name, index) => fits[index](name) || name.slice(0, 1) || "?");
+  const groups = new Map();
+  shown.forEach((label, index) => groups.set(label, [...(groups.get(label) || []), index]));
+  for (const members of groups.values()) {
+    if (members.length < 2) continue;
+    const words = new Map(members.map((index) => [index, names[index].split(/\s+/).filter(Boolean)]));
+    let shared = 0;
+    while (members.every((index) => words.get(index).length > shared + 1) && new Set(members.map((index) => words.get(index)[shared])).size === 1) shared++;
+    // How each name ends, as much as fits ("…Fix rounding in totals"); else the words after the shared ones.
+    const choices = [
+      (index) => fitEnds[index](names[index]),
+      (index) => (shared ? fits[index](`…${words.get(index).slice(shared).join(" ")}`) : ""),
+    ];
+    let told = false;
+    for (const choose of choices) {
+      const options = members.map(choose);
+      if (options.every(Boolean) && new Set(options).size === options.length) {
+        members.forEach((index, at) => { shown[index] = options[at]; });
+        told = true;
+        break;
+      }
+    }
+    // Still the same (the same name twice): number them in the order they are shown, number first so it survives the cut.
+    if (!told) members.forEach((index, at) => { shown[index] = fits[index](`${at + 1} · ${names[index]}`); });
+  }
+  return shown;
+}
+
+/** Cut text to `max` characters from its end ("Fix roun…") or from its start at a word ("…in totals"). */
+export const cutText = (value, max) => (value.length <= max ? value : `${value.slice(0, Math.max(1, max - 1)).trimEnd()}…`);
+export const cutTextEnd = (value, max) => (value.length <= max ? value : `…${wordStart(value, value.length - Math.max(1, max - 1))}`);
+
+/** The text from `at`, moved on to the next word when `at` falls inside one (a lone long word stays cut). */
+export function wordStart(value, at) {
+  const rest = value.slice(at);
+  if (at === 0 || /\s/.test(value[at - 1]) || /^\s/.test(rest)) return rest.trimStart();
+  const space = rest.search(/\s/);
+  return space > 0 && space < rest.length - 1 ? rest.slice(space).trimStart() : rest;
+}
+
 /** The last folder of a path ("C:\\code\\lantern" → "lantern"); a workspace's name under "workspaces". */
 export function projectOf(cwd) {
   const parts = text(cwd).replace(/\\/g, "/").split("/").filter(Boolean);
@@ -369,7 +474,9 @@ export function projectOf(cwd) {
  */
 export function normalizeTasks(json, { now = Date.now() } = {}) {
   const value = Array.isArray(json) ? { tasks: json } : object(json) || {};
-  const tasks = list(first(value.tasks, value.items, value.parties)).map(normalizeTask);
+  // Ages are judged on the server's clock when it sends one (the answer's own checkedAt).
+  const clock = toMs(value.checkedAt) || now;
+  const tasks = list(first(value.tasks, value.items, value.parties)).map((task, index) => normalizeTask(task, index, { now: clock }));
   const sources = Object.entries(object(value.sources) || {}).map(([key, source]) => normalizeSource(key, source));
   const aliases = {};
   for (const [from, to] of Object.entries(object(value.aliases) || {})) if (typeof to === "string" && to) aliases[from] = to;
@@ -499,6 +606,9 @@ export function normalizeEntry(raw) {
     kind,
     text: words,
     from: FROM[lower(value.from)] || (kind === "prompt" ? "you" : ""),
+    // Who sent a prompt that came from another agent, when the source knows.
+    fromId: text(first(value.fromId, value.from_id)),
+    fromName: text(first(value.fromName, value.from_name)),
     tool,
     plan: kind === "plan" ? normalizePlan(first(value.plan, value.steps, value.todos)) : null,
     ask: kind === "ask" ? normalizeAsk(first(value.ask, value)) : null,

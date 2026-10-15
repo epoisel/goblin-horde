@@ -83,5 +83,7 @@
   "public/app/transcript.js",
   "public/app/markdown.js",
   "public/app/diff.js",
-  "public/app/demo-data.js"
+  "public/app/demo-data.js",
+  "public/app/manifest.json",
+  "public/app/icon.svg"
 ]
