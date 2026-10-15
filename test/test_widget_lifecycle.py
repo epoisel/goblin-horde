@@ -226,7 +226,10 @@ class CloseButtonTests(unittest.TestCase):
         settle(widget)
         self.assertEqual(widget.root.state(), "normal")
         self.assertEqual(widget.surface, "window")
-        self.assertEqual(widget.strip.window.state(), "withdrawn", "the strip hides unless asked to stay")
+        self.assertEqual(widget.strip.window.state(), "normal", "the strip stays on the desktop beside the window")
+        widget.toggle_strip()  # ⋯ Show goblin strip, turned off
+        settle(widget)
+        self.assertEqual(widget.strip.window.state(), "withdrawn", "turned off, the strip hides while the window is open")
         self.assertFalse(request.exists())
 
     def test_the_first_x_says_where_goblin_horde_went_once(self):

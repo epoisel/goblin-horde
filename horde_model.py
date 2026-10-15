@@ -1310,6 +1310,8 @@ RETIRED_SETTINGS = frozenset({
     "x", "y", "columns", "rotating", "hiddenIds", "threadId", "sourceName", "displayMode", "dockX", "dockY",
     "partyView", "hiddenFrom", "partyMode", "homeView", "focusedStreamId", "streams", "dismissedStreams",
     "placements", "partingNotes", "retiredMarkers",
+    # 0.6 previews hid the strip while the window was open; that choice was never asked for, so it is not kept.
+    "showStrip",
 })
 WINDOW_MIN = (720, 460)
 WINDOW_DEFAULT = (1000, 660)
@@ -1327,7 +1329,7 @@ def read_settings(saved) -> dict:
     (or a file from an older widget) never drops the rest."""
     saved = saved if isinstance(saved, dict) else {}
     settings = {
-        "window": None, "strip": None, "showStrip": False, "surface": "window", "keepOnTop": False,
+        "window": None, "strip": None, "stripWithWindow": True, "surface": "window", "keepOnTop": False,
         "reducedMotion": None, "scaleWithDisplay": True, "selected": "", "doneOpen": False, "welcomed": False,
         "stripHinted": False, "aliases": {}, "paletteOffset": 0,
     }
@@ -1341,7 +1343,7 @@ def read_settings(saved) -> dict:
     if isinstance(strip, dict) and _int(strip.get("right")) is not None and _int(strip.get("bottom")) is not None:
         # The strip's bottom-right corner: it grows to the left as goblins join.
         settings["strip"] = {"right": _int(strip["right"]), "bottom": _int(strip["bottom"])}
-    for key in ("showStrip", "keepOnTop", "doneOpen", "welcomed", "stripHinted", "scaleWithDisplay"):
+    for key in ("stripWithWindow", "keepOnTop", "doneOpen", "welcomed", "stripHinted", "scaleWithDisplay"):
         if isinstance(saved.get(key), bool):
             settings[key] = saved[key]
     if isinstance(saved.get("reducedMotion"), bool):

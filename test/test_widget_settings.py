@@ -49,7 +49,7 @@ class SettingsFileTests(unittest.TestCase):
             self.assertNotIn(retired, saved)
         self.assertEqual(saved["window"], {"x": -1200, "y": 40, "width": 1100, "height": 700, "zoomed": False})
         self.assertEqual(saved["strip"], {"right": 1900, "bottom": 1040})
-        self.assertEqual((saved["surface"], saved["showStrip"], saved["doneOpen"]), ("strip", True, True))
+        self.assertEqual((saved["surface"], saved["stripWithWindow"], saved["doneOpen"]), ("strip", True, True))
         self.assertEqual(saved["selected"], "orca-agent:p1")
         self.assertEqual(saved["aliases"], {"chat-1": "Scout"})
         again = read_settings(saved)

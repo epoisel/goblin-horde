@@ -172,7 +172,7 @@ class GoblinWidget:
         self.palette_offset = self.settings["paletteOffset"] % len(KINDS)
         self.reduced_motion_choice = self.settings["reducedMotion"]
         self.keep_on_top = self.settings["keepOnTop"]
-        self.show_strip_pref = self.settings["showStrip"]
+        self.show_strip_pref = self.settings["stripWithWindow"]
         # Starting from the Start menu, `start`, or a double-click always opens the window; only the
         # sign-in shortcut asks for the strip (`--surface strip`). Where it was last closed is not reused.
         self.surface = surface if surface in ("window", "strip") else "window"
@@ -404,7 +404,7 @@ class GoblinWidget:
     # Settings ---------------------------------------------------------------------------------
     def settings_now(self) -> dict:
         settings = {
-            "surface": self.surface, "showStrip": self.show_strip_pref, "keepOnTop": self.keep_on_top,
+            "surface": self.surface, "stripWithWindow": self.show_strip_pref, "keepOnTop": self.keep_on_top,
             "reducedMotion": self.reduced_motion_choice, "scaleWithDisplay": self.settings["scaleWithDisplay"],
             "doneOpen": self.done_open, "welcomed": self.welcomed, "stripHinted": getattr(self, "strip_hinted", False),
             "aliases": self.aliases, "paletteOffset": self.palette_offset,

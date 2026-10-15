@@ -575,13 +575,15 @@ class SourcesSearchAndBadgesTests(unittest.TestCase):
 class SettingsTests(unittest.TestCase):
     def test_one_bad_value_keeps_every_other_setting(self):
         settings = read_settings({"window": {"x": 10, "y": 20, "width": 1100, "height": 700, "zoomed": True},
-                                  "strip": {"right": "far", "bottom": 5}, "keepOnTop": "yes", "showStrip": True,
+                                  "strip": {"right": "far", "bottom": 5}, "keepOnTop": "yes", "stripWithWindow": False,
                                   "reducedMotion": True, "selected": 42, "aliases": {"a": "Scout", "b": 3},
                                   "paletteOffset": True, "surface": "nowhere"})
         self.assertEqual(settings["window"], {"x": 10, "y": 20, "width": 1100, "height": 700, "zoomed": True})
         self.assertIsNone(settings["strip"])
         self.assertFalse(settings["keepOnTop"])
-        self.assertTrue(settings["showStrip"])
+        self.assertFalse(settings["stripWithWindow"])
+        self.assertTrue(read_settings({})["stripWithWindow"], "the strip stays on screen unless turned off")
+        self.assertTrue(read_settings({"showStrip": False})["stripWithWindow"], "an old preview choice is not kept")
         self.assertIs(settings["reducedMotion"], True)
         self.assertEqual(settings["selected"], "")
         self.assertEqual(settings["aliases"], {"a": "Scout"})
