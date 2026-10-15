@@ -75,5 +75,12 @@
   "public/pair.css",
   "public/pair.html",
   "public/pair.js",
-  "public/styles.css"
+  "public/styles.css",
+  "public/app/index.html",
+  "public/app/app.css",
+  "public/app/app.js",
+  "public/app/transcript.js",
+  "public/app/markdown.js",
+  "public/app/diff.js",
+  "public/app/demo-data.js"
 ]
