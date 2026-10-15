@@ -119,6 +119,15 @@ class HordeApi:
         """Open the agent in its own app (Codex, Orca, Claude)."""
         return self.post("/api/open", {"id": actor_id})
 
+    def open_app(self, agent_id: str = "", task_id: str = "") -> dict:
+        """Open the task view in its own window, on this agent's task (the viewer finds it), or a task."""
+        data = {}
+        if agent_id:
+            data["agentId"] = agent_id
+        if task_id:
+            data["taskId"] = task_id
+        return self.post("/api/app/open", data)
+
     def message(self, actor_id: str, text: str) -> dict:
         """Send words to an agent: a Codex reply, or text typed into an Orca terminal. A viewer
         without /api/message still takes Codex replies through /api/reply."""
