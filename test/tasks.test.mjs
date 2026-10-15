@@ -52,7 +52,7 @@ function input(overrides = {}) {
   const { records, parties } = orchestra();
   return {
     now: NOW, since: NOW - 24 * HOUR,
-    codex: { chats: [{ id: CHAT, name: "Ship the invoice export", updatedAt: NOW - 20 * MIN, cwd: "/work/export", status: "notLoaded", source: "codex" }], spawned: [], actors: new Map() },
+    codex: { chats: [{ id: CHAT, name: "Ship the invoice export", updatedAt: NOW - 20 * MIN, createdAt: NOW - 4 * HOUR, cwd: "/work/export", status: "notLoaded", source: "codex" }], spawned: [], actors: new Map() },
     claude: { parties, transcripts: [], identities: claudeIdentities(records), addressing: claudeAddressing(records) },
     orca: { agents: [] },
     links: { auto: new Map([[term(1), { chat: CHAT, verb: "terminal send", at: NOW - 3 * HOUR + 2 * MIN }]]), manual: new Map() },
@@ -89,6 +89,9 @@ test("with Orca unreachable, the hook's terminal ids put the lead, its coordinat
   assert.equal(task.status, "working");
   assert.equal(task.working, 2);
   assert.equal(task.title, "Ship the invoice export");
+  assert.equal(task.project, "export");
+  assert.equal(task.startedAt, NOW - 4 * HOUR, "the task began when its lead chat did");
+  assert.equal(task.updatedAt, Math.max(...task.agents.map((agent) => agent.updatedAt)));
   // The bystander in another worktree stands alone.
   const solo = tasks.find((item) => item.id === "claude-agent:solo-1");
   assert.deepEqual(solo.agents.map((agent) => agent.role), ["solo"]);
