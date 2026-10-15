@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DiscoveryGate, LinkStore, drivenTerminals, joinParties, joinReason, joinSubset } from "../lib/links.mjs";
+import { DiscoveryGate, LinkStore, claudePanePairs, drivenTerminals, identityMark, joinParties, joinReason, joinSubset } from "../lib/links.mjs";
 
 const T1 = "term_c104bbcf-1111-4222-8333-444455556666";
 const T2 = "term_78a8df17-aaaa-4bbb-8ccc-ddddeeeeffff";
@@ -48,11 +48,13 @@ const worker = { id: "orca-agent:p2", source: "orca", role: "claude · working",
 const opus = { id: "claude-agent:s1", source: "claude", parentThreadId: "claude:s1", cwd: "c:/work/lantern-shop-shop-12-fix/" };
 const opusHelper = { id: "claude-agent:s1:a1", source: "claude", parentThreadId: "claude:s1", childOf: "claude-agent:s1", cwd: opus.cwd };
 const elsewhere = { id: "claude-agent:s9", source: "claude", parentThreadId: "claude:s9", cwd: "C:\\other" };
-const links = (auto, manual = new Map()) => ({ auto: new Map(Object.entries(auto)), manual });
+const links = (auto, manual = new Map(), pairs = new Map()) => ({ auto: new Map(Object.entries(auto)), manual, pairs });
+// The coordinator pane is proven to be the Opus session (see claudePanePairs).
+const proven = new Map([[coordinator.id, opus.id]]);
 
 test("a chat's Opus coordinator, its workers, and its Claude session join the chat's party as one", () => {
   const { agents, joined } = joinParties([chat, coordinator, worker, opus, opusHelper, elsewhere],
-    links({ [T1]: { chat: chat.id, verb: "orchestration worker-start" } }));
+    links({ [T1]: { chat: chat.id, verb: "orchestration worker-start" } }, new Map(), proven));
   const party = agents.filter((agent) => (agent.parentThreadId || agent.id) === chat.id).map((agent) => agent.id);
   // The Orca pane and the Claude session in the same worktree are one agent: the Claude goblin stays.
   assert.deepEqual(party.sort(), ["chat-aaaa1111", "claude-agent:s1", "claude-agent:s1:a1", "orca-agent:p2"].sort());
@@ -98,7 +100,7 @@ test("another pane in a worktree the chat drives joins too, but not one in the m
 
 test("a scene's membership is the same whether or not the coordinator made the cut", () => {
   const everyone = [chat, helper, coordinator, worker, opus, opusHelper, elsewhere];
-  const linked = links({ [T1]: { chat: helper.id, verb: "orchestration worker-start" } });
+  const linked = links({ [T1]: { chat: helper.id, verb: "orchestration worker-start" } }, new Map(), proven);
   const membership = (shown) => {
     const { agents, joined } = joinSubset(shown.map((agent) => ({ ...agent, attention: "working" })), everyone, linked);
     return { parties: Object.fromEntries(agents.map((agent) => [agent.id, agent.parentThreadId])), joined: Object.fromEntries(joined), agents };
@@ -115,6 +117,63 @@ test("a scene's membership is the same whether or not the coordinator made the c
   // The coordinator pane is the Claude session's twin: hidden while the session is shown, kept when it is not.
   assert.equal(full.parties[coordinator.id], undefined);
   assert.equal(membership([coordinator, worker]).parties[coordinator.id], chat.id);
+});
+
+test("one Claude Code prompt in an Orca pane is one goblin needing you, joined to a chat or not", () => {
+  const ask = (text) => ({ kind: "permission", text, at: 5, answerHere: null, key: `k-${text}` });
+  const pane = { id: "orca-agent:p7", source: "orca", role: "claude · waiting on you", pane: "p7", parentPane: "", terminal: T2, parentThreadId: "orca:wt7",
+    cwd: "C:\\work\\billing-api", mainWorktree: true, status: "waiting", updatedAt: Date.now(), attention: "needs", needsInput: true, ask: ask("Do you want to proceed?") };
+  const session = { id: "claude-agent:s7", source: "claude", parentThreadId: "claude:s7", cwd: "c:/work/billing-api/", attention: "needs", needsInput: true,
+    ask: ask("Allow Bash to run this command?") };
+  const needing = (agents) => agents.filter((agent) => agent.attention === "needs").map((agent) => agent.id);
+  // Proven the same agent: one goblin, the Claude one, whether or not any chat drives the pane.
+  const twinned = joinParties([pane, session], links({}, new Map(), new Map([[pane.id, session.id]])));
+  assert.deepEqual(twinned.agents.map((agent) => agent.id), [session.id]);
+  assert.deepEqual(needing(joinSubset([pane, session], [pane, session], links({}, new Map(), new Map([[pane.id, session.id]]))).agents), [session.id]);
+  // Not proven: both goblins stay, but the one prompt is counted once, on the Claude goblin.
+  for (const result of [joinParties([pane, session], links({})), joinSubset([pane, session], [pane, session], links({}))]) {
+    assert.deepEqual(result.agents.map((agent) => agent.id).sort(), [session.id, pane.id].sort());
+    assert.deepEqual(needing(result.agents), [session.id]);
+    const kept = result.agents.find((agent) => agent.id === pane.id);
+    assert.equal(kept.ask, null);
+    assert.equal(kept.needsInput, false);
+  }
+  // The pane's own ask stays when the session asks nothing, when the session is not shown, or when the session is another pane's.
+  assert.equal(joinParties([pane, { ...session, ask: null, attention: "working", needsInput: false }], links({})).agents.find((agent) => agent.id === pane.id).ask.text, "Do you want to proceed?");
+  assert.equal(joinSubset([pane], [pane, session], links({})).agents[0].ask.text, "Do you want to proceed?");
+  const other = { ...pane, id: "orca-agent:p8", pane: "p8", terminal: T3 };
+  const paired = joinParties([pane, other, session], links({}, new Map(), new Map([[other.id, session.id]])));
+  assert.equal(paired.agents.find((agent) => agent.id === pane.id).ask.text, "Do you want to proceed?");
+  assert.equal(paired.agents.some((agent) => agent.id === other.id), false);
+  // A proven twin that a chat drives brings its link to the Claude goblin, even in the main checkout.
+  const driven = joinParties([chat, pane, session], links({ [T2]: { chat: chat.id, verb: "terminal send" } }, new Map(), new Map([[pane.id, session.id]])));
+  assert.equal(driven.agents.find((agent) => agent.id === session.id).parentThreadId, chat.id);
+  assert.equal(driven.agents.some((agent) => agent.id === pane.id), false);
+});
+
+test("a pane is a Claude Code session only on proof: the same recorded prompt or reply, and no one else's", () => {
+  const prompt = "Ship the CSV export for billing-api and add a test for the header row.";
+  const pane = { id: "orca-agent:p1", source: "orca", role: "claude · working", pane: "p1", cwd: "C:\\work\\billing-api" };
+  const session = { id: "claude-agent:s1", source: "claude", cwd: "c:/work/billing-api" };
+  const marks = new Map([[pane.id, [identityMark(prompt)]], [session.id, [identityMark("An older prompt that was long enough."), identityMark(prompt)]]]);
+  const options = { paneMarks: (agent) => marks.get(agent.id) || [], sessionMarks: (agent) => marks.get(agent.id) || [] };
+  assert.deepEqual([...claudePanePairs([pane, session], options)], [[pane.id, session.id]]);
+  // A shared folder alone is no proof: an unrelated pane there is not this session.
+  assert.equal(claudePanePairs([{ ...pane, id: "orca-agent:p2" }, session], options).size, 0);
+  // Another folder, a Codex pane, a subagent, or a match with two sessions (or two panes) is no proof either.
+  assert.equal(claudePanePairs([{ ...pane, cwd: "C:\\work\\other" }, session], options).size, 0);
+  assert.equal(claudePanePairs([{ ...pane, role: "codex · working" }, session], options).size, 0);
+  assert.equal(claudePanePairs([pane, { ...session, childOf: "claude-agent:s0" }], options).size, 0);
+  const twin = { ...session, id: "claude-agent:s2" };
+  marks.set(twin.id, [identityMark(prompt)]);
+  assert.equal(claudePanePairs([pane, session, twin], options).size, 0);
+  marks.set("orca-agent:p3", [identityMark(prompt)]);
+  assert.equal(claudePanePairs([pane, { ...pane, id: "orca-agent:p3" }, session], options).size, 0);
+  // Marks ignore spacing and credentials (the hook stores prompts filtered), and short words prove nothing.
+  const FAKE = ["ghp", "abcdefghijklmnopqrstuvwxyz0123"].join("_");
+  assert.equal(identityMark(`Push   it with ${FAKE}\nto the staging remote, please.`), identityMark("Push it with [secret removed] to the staging remote, please."));
+  assert.equal(identityMark("yes"), "");
+  assert.equal(identityMark(""), "");
 });
 
 test("a link that cannot be saved still holds, and never fails the chat's read", () => {

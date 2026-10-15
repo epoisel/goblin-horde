@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Pairing, PAIRING_CODE, sessionCookie } from "../lib/pairing.mjs";
 import {
-  PhoneAccess, adapterRefusal, isPrivateIPv4, lanAddress, lanCandidates, loadPairingCode, localOnlyRefusal, readPhoneSetting,
+  PhoneAccess, adapterRefusal, errorText, isPrivateIPv4, lanAddress, lanCandidates, loadPairingCode, localOnlyRefusal, readPhoneSetting,
   writePhoneSetting,
 } from "../lib/phone.mjs";
 
@@ -75,6 +75,16 @@ test("only this computer's own page may use local routes such as /api/phone", ()
   assert.equal(localOnlyRefusal({ local: true, origin, headers: { ...json, origin: "http://evil.example" } }).status, 403);
   assert.equal(localOnlyRefusal({ local: true, origin, headers: { origin, "content-type": "text/plain" } }).status, 403);
   assert.equal(localOnlyRefusal({ local: true, origin, headers: json }), null);
+});
+
+test("a phone is never told this computer's paths in an error", () => {
+  const spawnFailure = ["spawn C:\\Users\\dev\\AppData\\Local\\Programs\\GoblinHorde\\", "no-codex.exe ENOENT"].join("");
+  assert.equal(errorText({ local: true, status: 500, message: spawnFailure }), spawnFailure, "this computer sees why");
+  assert.equal(errorText({ local: false, status: 500, message: spawnFailure }), "Something went wrong on the computer running Goblin Horde.");
+  assert.equal(errorText({ local: false, status: 409, message: "This chat is still working. Wait for the turn to finish before replying." }),
+    "This chat is still working. Wait for the turn to finish before replying.", "the viewer's own answers stay");
+  assert.equal(errorText({ local: false, status: 409, message: "Could not read /home/dev/.codex/sessions/rollout-1.jsonl or C:\\work\\x.json" }),
+    "Could not read … or …");
 });
 
 class FakeServer extends EventEmitter {

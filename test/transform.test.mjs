@@ -59,13 +59,13 @@ test("uses a useful command summary when action metadata has no target", () => {
   assert.equal(result.activities[0].description, "Checked the project with its test suite.");
 });
 
-test("keeps turn outcomes and explicit user questions for alerts", () => {
+test("keeps turn outcomes; a turn's question is only its final answer's closing question", () => {
   const result = transformThread({ id: "t", turns: [
     { id: "done", status: "completed", error: null, items: [{ type: "agentMessage", id: "a", phase: "final_answer", text: "Choose one.", questions: [{ title: "Which layout?" }] }] },
     { id: "failed", status: "failed", error: { message: "Connection lost" }, items: [] },
   ] });
   assert.deepEqual(result.turnStates, [
-    { id: "done", status: "completed", questions: ["Which layout?"], error: "", open: true },
+    { id: "done", status: "completed", questions: [], error: "", open: true },
     { id: "failed", status: "failed", questions: [], error: "Connection lost", open: true },
   ]);
 });

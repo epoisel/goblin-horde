@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { APPROVAL_QUIET_MS, looksLikeApprovalWait, rolloutAwaitsApproval, withApprovalGuess } from "../lib/rollout.mjs";
+import { APPROVAL_QUIET_MS, callSummary, looksLikeApprovalWait, rolloutAwaitsApproval, withApprovalGuess } from "../lib/rollout.mjs";
 import { markAwaitingApproval, markRunningElsewhere, transformThread } from "../lib/transform.mjs";
 import { classifyCodex, planCodexReads } from "../lib/feed.mjs";
 
@@ -11,7 +11,10 @@ const NOW = Date.parse("2026-10-13T10:40:00Z");
 const at = (secondsAgo) => new Date(NOW - secondsAgo * 1000).toISOString();
 const line = (secondsAgo, type, payload = {}) => JSON.stringify({ timestamp: at(secondsAgo), type, payload });
 const context = (policy, secondsAgo = 120) => line(secondsAgo, "turn_context", { approval_policy: policy });
-const call = (secondsAgo, id = "c1") => line(secondsAgo, "response_item", { type: "custom_tool_call", call_id: id, name: "exec" });
+// A command that asks to leave the sandbox: the kind of call that can wait on an approval.
+const call = (secondsAgo, id = "c1") => line(secondsAgo, "response_item", { type: "function_call", call_id: id, name: "exec_command",
+  arguments: JSON.stringify({ cmd: "npm run deploy", sandbox_permissions: "require_escalated", justification: "Deploys to staging." }) });
+const quietCallOf = (payload) => line(90, "response_item", { call_id: "q1", ...payload });
 const output = (secondsAgo, id = "c1") => line(secondsAgo, "response_item", { type: "custom_tool_call_output", call_id: id });
 const finished = (secondsAgo) => line(secondsAgo, "event_msg", { type: "item_completed" });
 const usage = (secondsAgo) => line(secondsAgo, "token_usage_record");
@@ -29,6 +32,45 @@ test("no guess while the chat is still writing, once the call has an answer, or 
   assert.equal(looksLikeApprovalWait([context("on-request"), call(90), finished(85)].join("\n"), { now: NOW }), false, "a step ran");
   assert.equal(looksLikeApprovalWait([context("never"), call(90)].join("\n"), { now: NOW }), false, "never asks");
   assert.equal(looksLikeApprovalWait(call(90), { now: NOW }), false, "policy unknown in this part of the file");
+});
+
+test("only a call that can ask is guessed to wait: waits, plans, and sandboxed commands never are", () => {
+  const waits = (policy, payload) => looksLikeApprovalWait([context(policy), quietCallOf(payload)].join("\n"), { now: NOW });
+  const fn = (name, args) => ({ type: "function_call", name, arguments: JSON.stringify(args) });
+  // Calls that wait on something else, or never touch the sandbox.
+  for (const payload of [fn("wait", { ids: ["a"], timeout_ms: 600_000 }), fn("wait_agent", { id: "a" }), fn("update_plan", { plan: [] }),
+    fn("write_stdin", { session_id: 3, chars: "" }), fn("exec_command", { cmd: "orca terminal wait --terminal term_ab12 --for exit" }),
+    fn("exec_command", { cmd: "orca orchestration ask --question \"Which schema?\"", sandbox_permissions: "require_escalated" }),
+    { type: "function_call", name: "get_issue", namespace: "mcp__tracker", arguments: "{}" },
+    { type: "custom_tool_call", name: "exec", input: "const r = await tools.wait({ ids: ['a'] });" }]) {
+    assert.equal(waits("untrusted", payload), false, JSON.stringify(payload));
+    assert.equal(waits("on-request", payload), false, JSON.stringify(payload));
+  }
+  // A plain command runs in the sandbox under on-request: no approval. Under untrusted it may ask.
+  const plain = fn("exec_command", { cmd: "npm run deploy" });
+  assert.equal(waits("on-request", plain), false);
+  assert.equal(waits("untrusted", plain), true);
+  // An escalation request asks under any policy but never.
+  for (const payload of [fn("exec_command", { cmd: "npm run deploy", sandbox_permissions: "require_escalated" }),
+    fn("shell", { command: ["bash", "-lc", "npm publish"], with_escalated_permissions: true }),
+    { type: "custom_tool_call", name: "exec", input: "await tools.exec_command({ cmd: 'npm publish', sandbox_permissions: 'require_escalated' });" }]) {
+    assert.equal(waits("on-request", payload), true, JSON.stringify(payload));
+    assert.equal(waits("on-failure", payload), true, JSON.stringify(payload));
+    assert.equal(waits("never", payload), false, JSON.stringify(payload));
+  }
+  // A patch asks under untrusted only.
+  const patch = { type: "custom_tool_call", name: "apply_patch", input: "*** Begin Patch\n*** Update File: src/a.js\n@@\n-a\n+b\n*** End Patch" };
+  assert.equal(waits("untrusted", patch), true);
+  assert.equal(waits("on-request", patch), false);
+});
+
+test("a code-mode call with an unclosed object is summarised in linear time", () => {
+  const started = Date.now();
+  const summary = callSummary({ type: "custom_tool_call", name: "exec", input: "tools.exec_command({".repeat(40_000) });
+  assert.ok(Date.now() - started < 1000, `took ${Date.now() - started} ms`);
+  assert.equal(summary.command, "Use exec_command");
+  // The usual shapes still read as before.
+  assert.equal(callSummary({ type: "custom_tool_call", name: "exec", input: "await tools.exec_command({ cmd: \"git push\" });" }).command, "git push");
 });
 
 test("a newer call reopens the wait, and a cut first line is skipped", () => {

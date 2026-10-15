@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { classifyCodex, classifyOrca, composeAllScene, FEED_LIMITS, listedThread, noteReadFailure, planCodexReads, pruneCache,
-  selectFeedMembers } from "../lib/feed.mjs";
+  selectFeedMembers, uniqueThreads } from "../lib/feed.mjs";
 
 const NOW = 1_800_000_000_000;
 const HOUR = 3_600_000;
@@ -172,6 +172,11 @@ test("classification is honest about questions, failures, and running turns", ()
   assert.equal(classifyOrca({ status: "error", updatedAt: NOW }, { now: NOW }), "failed");
   assert.equal(classifyOrca({ status: "waiting", updatedAt: NOW - 50 * HOUR }, { now: NOW }), "quiet");
   assert.equal(classifyOrca({ status: "done", updatedAt: NOW }, { now: NOW }), "quiet");
+  // Orca "waiting" is needs-you only with a real prompt on screen; asking the coordinator is work; idle is quiet.
+  assert.equal(classifyOrca({ status: "waiting", updatedAt: NOW - 1000 }, { now: NOW }), "quiet");
+  assert.equal(classifyOrca({ status: "waiting", updatedAt: NOW - 1000, ask: { kind: "permission", text: "Allow?" } }, { now: NOW }), "needs");
+  assert.equal(classifyOrca({ status: "waiting", updatedAt: NOW - 1000, waitingOn: { who: "coordinator" } }, { now: NOW }), "working");
+  assert.equal(classifyOrca({ status: "unavailable", updatedAt: NOW - 1000, ask: { kind: "permission", text: "Allow?" } }, { now: NOW }), "quiet");
 });
 
 test("the feed carries every active member beyond five plus a few quiet ones", () => {
@@ -213,11 +218,13 @@ test("every returned member carries the feed classification the widget groups by
   const oldQuestion = actor("old-ask", classifyCodex({ updatedAt: NOW - 12 * HOUR, status: "notLoaded",
     turnStates: [{ status: "completed", questions: ["Ship it?"] }] }, { now: NOW }), 12 * HOUR);
   const blocked = { id: "orca-blocked", source: "orca", status: "blocked", updatedAt: NOW - 1000 };
+  // Orca's "waiting" alone is an agent idle at its prompt: only a real prompt (ask) needs the person.
   const waiting = { id: "orca-wait", source: "orca", status: "waiting", updatedAt: NOW - 1000 };
+  const prompt = { id: "orca-prompt", source: "orca", status: "waiting", updatedAt: NOW - 1000, ask: { kind: "permission", text: "Do you want to proceed?" } };
   const done = { id: "orca-done", source: "orca", status: "done", updatedAt: NOW };
-  const { agents } = selectFeedMembers([oldQuestion], [blocked, waiting, done], { now: NOW });
+  const { agents } = selectFeedMembers([oldQuestion], [blocked, waiting, prompt, done], { now: NOW });
   const byId = Object.fromEntries(agents.map((item) => [item.id, item.attention]));
-  assert.deepEqual(byId, { "old-ask": "quiet", "orca-blocked": "working", "orca-wait": "waiting", "orca-done": "quiet" });
+  assert.deepEqual(byId, { "old-ask": "quiet", "orca-blocked": "working", "orca-wait": "quiet", "orca-prompt": "needs", "orca-done": "quiet" });
   // The source snapshot is left untouched.
   assert.equal(blocked.attention, undefined);
 });
@@ -315,4 +322,15 @@ test("a computer without the Codex CLI is not told its scene is partial", () => 
   const scene = composeAllScene({ codex: { ok: false, threads: [], missing: true }, claude: empty, orca: { ok: true, snapshot: { workspaces: [], warning: "", missing: true } }, now: NOW });
   assert.equal(scene.warning, "");
   assert.match(composeAllScene({ codex: { ok: false, threads: [] }, claude: empty, orca: empty, now: NOW }).warning, /Codex feed is unavailable/);
+});
+
+test("a chat listed on two pages (it changed while they were read) appears once, as its newest copy", () => {
+  const listed = uniqueThreads([
+    { id: "moved", updatedAt: NOW, name: "newest" },
+    { id: "steady", updatedAt: NOW - 5000 },
+    { id: "moved", updatedAt: NOW - 60_000, name: "older page" },
+    { id: "moved", updatedAt: NOW - 90_000, name: "oldest page" },
+  ]);
+  assert.deepEqual(listed.map((thread) => thread.id), ["moved", "steady"]);
+  assert.equal(listed[0].name, "newest");
 });

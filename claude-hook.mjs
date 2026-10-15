@@ -2,9 +2,12 @@
 /**
  * Claude Code hook receiver for Goblin Horde.
  *
- * Reads one hook payload from stdin and appends a short public record to Goblin Horde's own
- * state folder. It needs no network and no running viewer, prints nothing (some hook events add
- * stdout to Claude's context), and always exits 0 so Claude Code is never blocked or slowed.
+ * Reads one hook payload from stdin and appends one short record to Goblin Horde's own state folder:
+ * what the call works on, what Claude asks, what its needs-you notices say, its todo list, and prompt
+ * and reply excerpts, each clipped
+ * and passed through the credential filter first (see normalizeHookEvent). It needs no network and no
+ * running viewer, prints nothing (some hook events add stdout to Claude's context), and always exits 0
+ * so Claude Code is never blocked or slowed.
  */
 const MAX_INPUT = 32 * 1024 * 1024; // Tool output can be large; anything bigger is skipped, not parsed.
 const WAIT_MS = 5000;

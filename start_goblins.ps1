@@ -39,4 +39,4 @@ $arguments = @(('"' + $widgetPath + '"'), '--port', [string]$Port)
 if ($ThreadId) { $arguments += @('--thread', $ThreadId) }
 if ($Demo) { $arguments += '--demo' }
 $widget = Start-Process -FilePath $python -ArgumentList $arguments -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -PassThru
-Write-Host "Goblin Horde goblins started (process $($widget.Id)). Use the control strip or right-click a goblin."
+Write-Host "Goblin Horde started (process $($widget.Id)). Closing its window keeps the goblins in a strip on the desktop."
