@@ -11,7 +11,7 @@
  * Address: /app#task=<id>&focus=<agent>&view=timeline ; /app#demo loads the synthetic demo-data.js.
  */
 import { createGoblin, loadArt, modelBadge, setGoblinAction, tribeFor } from "/goblins.js";
-import { agentAction, agentTone, createClient, cutText, cutTextEnd, isFinishedSubagent, shortName, shownSourceState, tellApart, wordStart } from "./adapter.js";
+import { agentAction, agentTone, createClient, isFinishedSubagent, shortName, shownSourceState, tellApart, wordStart } from "./adapter.js";
 import { TranscriptStore, clockTime, effectiveTimes, insertionIndex, renderEntry, updateEntry } from "./transcript.js";
 
 const TASK_POLL_MS = 3000;
@@ -111,6 +111,9 @@ function copyButton(text, label = "Copy") {
 }
 
 const measurer = document.createElement("canvas").getContext("2d");
+
+/** The window is narrow (app.css's 1240px breakpoint): smaller chips and shorter button words. */
+const narrowWindow = () => matchMedia("(max-width: 1240px)").matches;
 
 /** Text cut to `width` pixels in `font`, from its end ("Fix roun…") or, `fromStart`, its start ("…in totals"). */
 function fitWidth(value, width, font, fromStart = false) {
@@ -717,7 +720,8 @@ class TaskView {
 
   renderCrew() {
     // Redrawn only when something it shows changed, so its scroll position and keyboard focus stay.
-    const signature = JSON.stringify([this.task.agents.map((agent) => [agent.id, agent.name, agent.role, agent.tone, agent.depth, agent.stale, agent.waitingOn?.on, agentAction(agent)]), this.task.links.map((link) => `${link.from}>${link.to}:${link.kind}`)]);
+    const signature = JSON.stringify([narrowWindow(), this.task.agents.map((agent) => [agent.id, agent.name, agent.role, agent.tone, agent.depth, agent.stale, agent.waitingOn?.on, agentAction(agent)]),
+      this.task.links.map((link) => `${link.from}>${link.to}:${link.kind}`)]);
     if (signature === this.crewSignature) return;
     this.crewSignature = signature;
     const scroll = this.crew.scrollLeft;
@@ -729,10 +733,12 @@ class TaskView {
       if (focused) this.crew.querySelector(`.crew-chip[data-id="${CSS.escape(focused)}"]`)?.focus();
     });
     const byId = new Map(this.task.agents.map((agent) => [agent.id, agent]));
-    // Chip names as they fit a chip, told apart when two would read the same.
+    // Chip names as they fit a chip (its CSS max-width less the goblin and padding), told apart when two would read the same.
     const shown = this.task.agents.filter((agent) => !agent.stale);
     const names = shown.map(shortName);
-    const labels = new Map(tellApart(names, names.map(() => (value) => cutText(value, 30)), names.map(() => (value) => cutTextEnd(value, 30)))
+    const room = (narrowWindow() ? 170 : 240) - 52;
+    const font = `600 12px ${getComputedStyle(document.body).fontFamily}`;
+    const labels = new Map(tellApart(names, names.map(() => (value) => fitWidth(value, room, font)), names.map(() => (value) => fitWidth(value, room, font, true)))
       .map((label, index) => [shown[index].id, label]));
     crewStages(this.task).forEach((stage, index) => {
       if (index) {
@@ -1739,7 +1745,7 @@ function bindChrome() {
     else if (next.focus !== state.focusId || next.view !== state.view) { state.focusId = next.focus; state.view = next.view; taskView?.applyLayout(); }
   });
   document.addEventListener("visibilitychange", () => { if (!document.hidden) { refreshTasks(); pollTranscripts(); } });
-  window.addEventListener("resize", () => taskView?.markCrewOverflow());
+  window.addEventListener("resize", () => { taskView?.renderCrew(); taskView?.markCrewOverflow(); });
   if (api.demo) document.getElementById("demo-badge").hidden = false;
   const brand = document.getElementById("brand-goblin");
   brand.append(createGoblin("goblin-horde-brand", "idle", { size: 1, tribe: "raider", label: "Goblin Horde" }));
