@@ -50,6 +50,19 @@ test("Orca ids are shape-checked and kept to 120 characters, long ones with a ha
   assert.equal(bad.session, SESSION);
 });
 
+test("a shell command's Orca targets are recorded before the credential filter blanks their handles", () => {
+  const worker = "term_0b1b2c3d-1111-4222-8333-444455556666";
+  const saved = record("PreToolUse", { tool_name: "Bash", tool_use_id: "toolu_d1", tool_input: { command: `orca orchestration dispatch --task t-1 --to ${worker} --from ${HANDLE}` } });
+  assert.doesNotMatch(saved.detail, /term_0b1b/, "the command as kept has the handle blanked");
+  assert.deepEqual(saved.orcaTo, [{ terminal: worker, verb: "orchestration dispatch", flag: "to" }, { terminal: HANDLE, verb: "orchestration dispatch", flag: "from" }]);
+  assert.deepEqual(cleanRecord(JSON.parse(JSON.stringify(saved))).orcaTo, saved.orcaTo);
+  // Only real handles and verbs survive a record read back from disk; only shell calls carry them.
+  const forged = cleanRecord({ ...saved, orcaTo: [{ terminal: "term_x; rm -rf /", verb: "orchestration dispatch", flag: "to" }, { terminal: worker, verb: "evil verb!", flag: "to" }] });
+  assert.equal(forged.orcaTo, undefined);
+  assert.equal(record("PreToolUse", { tool_name: "Read", tool_use_id: "toolu_r", tool_input: { file_path: `/x/orca orchestration dispatch --to ${worker}` } }).orcaTo, undefined);
+  assert.equal(record("PreToolUse", { tool_name: "Bash", tool_use_id: "toolu_e", tool_input: { command: "npm test" } }).orcaTo, undefined);
+});
+
 test("the record index keeps each session's newest identity past the shared record window", () => {
   const index = new ClaudeRecordIndex();
   const first = record("SessionStart", { source: "startup" });

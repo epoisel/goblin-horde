@@ -50,6 +50,7 @@
   "lib/manager.mjs",
   "lib/models.mjs",
   "lib/orca.mjs",
+  "lib/orca-commands.mjs",
   "lib/pairing.mjs",
   "lib/phone.mjs",
   "lib/public-view.mjs",
