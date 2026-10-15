@@ -16,16 +16,18 @@ let counter = 0;
 const record = (event, extra = {}, env = ORCA_ENV) => normalizeHookEvent({ hook_event_name: event, session_id: SESSION, cwd: "/work/billing-api", ...extra },
   { now: NOW + counter, id: (0x7000 + ++counter).toString(16).padStart(12, "0"), env });
 
-test("SessionStart and UserPromptSubmit records keep the Orca terminal, pane, worktree, and workspace the session runs in", () => {
+test("records keep the Orca terminal, pane, worktree, and workspace the session runs in", () => {
   for (const event of ["SessionStart", "UserPromptSubmit"]) {
     const saved = record(event, event === "UserPromptSubmit" ? { prompt: "Ship the invoice export" } : { source: "startup" });
     assert.deepEqual(saved.orca, { terminal: HANDLE, pane: PANE, worktree: "repo-1::C:/work/billing-api-wt", workspace: "worktree:repo-1::C:/work/billing-api-wt" }, event);
     // Read back from disk, the same record keeps it.
     assert.deepEqual(cleanRecord(JSON.parse(JSON.stringify(saved))).orca, saved.orca);
   }
-  // Tool calls and the rest carry no identity: it does not change within one Claude Code process.
-  assert.equal(record("PreToolUse", { tool_name: "Bash", tool_use_id: "toolu_1", tool_input: { command: "npm test" } }).orca, undefined);
-  assert.equal(record("Stop", { last_assistant_message: "Done." }).orca, undefined);
+  // A session already running when the hook was installed is placed at its next step or stop.
+  assert.equal(record("PreToolUse", { tool_name: "Bash", tool_use_id: "toolu_1", tool_input: { command: "npm test" } }).orca.terminal, HANDLE);
+  assert.equal(record("Stop", { last_assistant_message: "Done." }).orca.terminal, HANDLE);
+  // Tool results repeat the call before them and carry none.
+  assert.equal(record("PostToolUse", { tool_name: "Bash", tool_use_id: "toolu_1", tool_input: { command: "npm test" } }).orca, undefined);
   // Outside Orca there is nothing to record.
   assert.equal(record("SessionStart", { source: "startup" }, {}).orca, undefined);
   assert.equal(record("SessionStart", { source: "startup" }, null).orca, undefined);
