@@ -887,6 +887,13 @@ const handler = async (request, response) => {
 
     // The pixel goblins share one sprite file with the desktop widget.
     if (url.pathname === "/goblin_art.json") return await serveFile(response, "goblin_art.json", here);
+    // The task view (public/app): this computer only, like the transcripts it shows.
+    if (url.pathname === "/app" || url.pathname.startsWith("/app/")) {
+      if (!isLocal(request)) return json(response, 404, { error: "Not found" });
+      const appFile = url.pathname === "/app" || url.pathname === "/app/" ? "index.html" : url.pathname.slice(5);
+      if (!/^(index\.html|app\.css|app\.js|adapter\.js|transcript\.js|markdown\.js|diff\.js|demo-data\.js)$/.test(appFile)) return json(response, 404, { error: "Not found" });
+      return await serveFile(response, appFile, join(publicDir, "app"));
+    }
     const file = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
     if (!/^(index\.html|app\.js|styles\.css|mobile\.css|interactive\.css|demo\.js|party\.js|goblins\.js)$/.test(file)) return json(response, 404, { error: "Not found" });
     return await serveFile(response, file);
