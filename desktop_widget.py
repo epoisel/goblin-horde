@@ -54,6 +54,7 @@ SOURCES_MS = 30_000
 OFFLINE_AFTER = 2  # Failed reads in a row before the window says the viewer is not answering.
 DETAIL_CACHE = 40
 QUIT_LABEL = "Quit Goblin Horde"
+CLASSIC_LABEL = "Classic window"
 # True whether the strip shows goblins or only its "all quiet" label: a click anywhere on it opens the window.
 STRIP_HINT = ("Goblin Horde keeps watching from here. Click the strip to open the window again; "
               "Quit is in the ⋯ menu, or right-click the strip.")
@@ -267,7 +268,7 @@ class GoblinWidget:
         if self.surface == "strip":
             self.strip.show()
         else:
-            self.open_window(initial=True)
+            self.open_app(initial=True)
         self.poll_after = self.root.after(50, self.poll)
         self.animate_after = self.root.after(BEAT_MS, self.animate)
         self.tick_after = self.root.after(TICK_MS, self.tick)
@@ -298,8 +299,8 @@ class GoblinWidget:
                 self.show_after = self.root.after(SHOW_CHECK_MS, self.check_show_request)
 
     def come_forward(self) -> None:
-        """`start` (or the Dock icon) asked for Goblin Horde: open the window in front."""
-        self.open_window()
+        """`start` (or the Dock icon) asked for Goblin Horde: open the task view in front."""
+        self.open_app()
 
     def report_callback_error(self, kind, _value, trace) -> None:
         """Tk's handler for a callback that raised. The loops reschedule themselves regardless."""
@@ -350,6 +351,27 @@ class GoblinWidget:
         if not initial:
             self.save_settings()
         self.kick_detail()
+
+    def open_app(self, select: str | None = None, initial: bool = False) -> None:
+        """Open the task view in its own browser window, on this goblin's task, with the strip staying on
+        the desktop. The classic Horde window opens instead in the demo, with a viewer too old to have
+        the task view, or when no window could be started."""
+        def classic() -> None:
+            if initial:
+                self.open_window(select=select, initial=True)
+            else:
+                self.open_window(select=select)
+        if self.demo or not self.api.available("/api/app/open"):
+            classic()
+            return
+        if not self.strip.shown:
+            self.strip.show()
+
+        def done(result, error) -> None:
+            if error is None and isinstance(result, dict) and result.get("opened"):
+                return
+            classic()
+        self.when_done(self.executor.submit(self.api.open_app, select or ""), done)
 
     def collapse_to_strip(self) -> None:
         """The window's X: the goblins stay on the desktop in their strip. The first time, a short note
@@ -1218,6 +1240,9 @@ class GoblinWidget:
 
     def show_menu(self, event=None) -> None:
         menu = tk.Menu(self.root, tearoff=False)
+        if not self.demo:
+            menu.add_command(label="Open the task view", command=self.open_app)
+            menu.add_separator()
         menu.add_command(label="Reconnect Codex", command=self.reconnect_codex)
         if (self.sources.get("claude") or {}).get("canConnect"):
             menu.add_command(label="Connect Claude Code…", command=self.connect_claude)
@@ -1248,7 +1273,9 @@ class GoblinWidget:
 
     def show_strip_menu(self, event) -> None:
         menu = tk.Menu(self.root, tearoff=False)
-        menu.add_command(label="Open Goblin Horde", command=self.open_window)
+        menu.add_command(label="Open Goblin Horde", command=self.open_app)
+        # The Tk Horde window, kept while the task view is new.
+        menu.add_command(label=CLASSIC_LABEL, command=self.open_window)
         self.motion_var = tk.BooleanVar(self.root, self.reduced_motion)
         menu.add_checkbutton(label="Reduced motion", variable=self.motion_var, command=self.toggle_reduced_motion)
         if self.window_visible():

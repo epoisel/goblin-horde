@@ -3,8 +3,9 @@
 A borderless, see-through, always-on-top window, docked above the taskbar at the bottom right until
 it is dragged somewhere else. Goblins stand at 2x grouped by party with small gaps; a bubble over
 each head says ? (needs you), ! (failed), … (working), or ✓ (done, and the goblin is faded). Hover
-for the goblin's name and what it is doing; click one to open the Horde window on it. The pill on
-the left counts who needs you; it, and a click anywhere else on the strip, opens the window too. At most twelve goblins, then "+N".
+for the goblin's name and what it is doing; click one to open the task view on its task (the classic
+Horde window stays in the menu). The pill on the left counts who needs you; it, and a click anywhere
+else on the strip, opens the task view too. At most twelve goblins, then "+N".
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ BUBBLES = {NEEDS: ("?", AMBER, INK), FAILED: ("!", CORAL, INK), DONE: ("✓", PA
 
 
 class GoblinStrip:
-    """The compact surface. ``app`` provides sprite_state, open_window, tooltip, and the menu."""
+    """The compact surface. ``app`` provides sprite_state, open_app, tooltip, and the menu."""
 
     def __init__(self, app, theme: Theme) -> None:
         self.app = app
@@ -219,13 +220,14 @@ class GoblinStrip:
             return
         slot = self.slot_at(event.x)
         if slot is None:
-            self.app.open_window(select=None)  # Between the goblins, or past them: the strip opens the window too.
+            self.app.open_app(select=None)  # Between the goblins, or past them: the strip opens the task view too.
             return
         _left, _right, kind, ident = slot
         if kind == "pill" and self.needs:
             # "2 need you": open on the first of them.
             ident = next((actor_id(item.actor) for item in self.items if item.klass == NEEDS), "")
-        self.app.open_window(select=ident or None)
+        # The task view opens on this goblin's task (the classic window when it cannot).
+        self.app.open_app(select=ident or None)
 
     def on_motion(self, event) -> None:
         slot = self.slot_at(event.x)
@@ -238,8 +240,8 @@ class GoblinStrip:
             item = next((item for item in self.items if actor_id(item.actor) == ident), None)
             text = strip_tooltip(item.actor, self.app.aliases) if item else ""
         elif kind == "more":
-            text = f"{self.hidden} more goblins. Click to open the Horde window."
+            text = f"{self.hidden} more goblins. Click to open the task view."
         else:
-            text = "Open the Horde window." if not self.needs else \
+            text = "Open the task view." if not self.needs else \
                 f"{self.needs} {'goblin needs' if self.needs == 1 else 'goblins need'} you. Click to see their questions."
         self.app.tooltip.schedule(text, event.x_root, event.y_root, delay=250)

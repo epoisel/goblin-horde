@@ -151,11 +151,11 @@ class ErrorReportTests(unittest.TestCase):
 
 
 class ComeForwardTests(unittest.TestCase):
-    def test_start_opens_the_window(self):
+    def test_start_opens_the_task_view(self):
         widget = GoblinWidget.__new__(GoblinWidget)
-        widget.open_window = Mock()
+        widget.open_app = Mock()
         widget.come_forward()
-        widget.open_window.assert_called_once_with()
+        widget.open_app.assert_called_once_with()
 
     def test_the_request_file_is_used_once(self):
         with tempfile.TemporaryDirectory(prefix="goblin-show-test-") as folder, \
@@ -170,6 +170,58 @@ class ComeForwardTests(unittest.TestCase):
             widget.come_forward.assert_called_once_with()
             self.assertFalse(request.exists())
             self.assertEqual(widget.root.after.call_count, 2, "it keeps checking")
+
+
+class TaskViewTests(unittest.TestCase):
+    """The strip opens the task view in its own window; the Tk Horde window stays as the classic one."""
+
+    def app_widget(self, available=True):
+        widget = loop_widget()
+        widget.demo = False
+        widget.api = Mock()
+        widget.api.available.return_value = available
+        widget.api.open_app.return_value = {"opened": True, "browser": "edge"}
+        widget.strip = Mock(shown=True)
+        widget.open_window = Mock()
+        widget.executor = Mock()
+        widget.executor.submit.side_effect = lambda fn, *args: SimpleNamespace(done=lambda: True, result=lambda: fn(*args))
+        widget.when_done = lambda future, done: done(future.result(), None)
+        return widget
+
+    def test_a_goblin_opens_its_task_in_the_app_window(self):
+        widget = self.app_widget()
+        widget.open_app(select="claude-agent:worker-1")
+        widget.api.available.assert_called_with("/api/app/open")
+        widget.api.open_app.assert_called_once_with("claude-agent:worker-1")
+        widget.open_window.assert_not_called()
+
+    def test_the_classic_window_opens_when_the_task_view_cannot(self):
+        widget = self.app_widget(available=False)  # A viewer from before the task view.
+        widget.open_app(select="chat-0001")
+        widget.api.open_app.assert_not_called()
+        widget.open_window.assert_called_once_with(select="chat-0001")
+        widget = self.app_widget()
+        widget.api.open_app.return_value = {"opened": False}
+        widget.open_app(select="chat-0002")
+        widget.open_window.assert_called_once_with(select="chat-0002")
+        widget = self.app_widget()
+        widget.when_done = lambda future, done: done(None, RuntimeError("no browser"))
+        widget.open_app()
+        widget.open_window.assert_called_once_with(select=None)
+
+    def test_the_strip_click_and_its_menu(self):
+        from goblin_strip import GoblinStrip
+        strip = GoblinStrip.__new__(GoblinStrip)
+        strip.app = Mock()
+        strip.drag = None
+        strip.dragged = False
+        strip.needs = 0
+        strip.items = []
+        strip.slots = [(10, 60, "pill", ""), (70, 110, "goblin", "orca-agent:tab-1:leaf-1")]
+        strip.on_release(SimpleNamespace(x=90, y=10))
+        strip.app.open_app.assert_called_once_with(select="orca-agent:tab-1:leaf-1")
+        strip.app.open_window.assert_not_called()
+        self.assertEqual(desktop_widget.CLASSIC_LABEL, "Classic window")
 
 
 class RestartTests(unittest.TestCase):
