@@ -293,6 +293,10 @@ test("Codex pages newest first through thread/items/list: older pages to the sta
   assert.deepEqual(none.entries, []);
   // A cursor Codex no longer knows starts over.
   assert.equal((await reader.page("chat-main-01", { after: encodeCursor({ k: "ca", id: "gone" }) })).reset, true);
+  // A chat that had nothing yet: its first items all come as new.
+  const fresh = await reader.page("chat-main-01", { after: encodeCursor({ k: "ca", id: "", at: 0, r: [] }), limit: 5 });
+  assert.equal(fresh.reset, undefined);
+  assert.equal(fresh.entries.at(-1).id, "after-1");
   assert.ok(calls.includes("thread/items/list"));
 });
 
