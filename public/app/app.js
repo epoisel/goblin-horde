@@ -1054,11 +1054,8 @@ class ColumnView {
       } else this.relation.append(words(`${children.length} ${spawned ? (children.length === 1 ? "subagent" : "subagents") : children.length === 1 ? "agent" : "agents"}`));
       plain.push(verb + children.map((child) => child.name).join(", "));
     }
-    if (children.length && parent) {
-      const more = `${children.length} ${children.every((child) => child.role === "subagent") ? "subagents" : "workers"}`;
-      this.relation.append(words(` · leads ${more}`));
-      plain.push(`leads ${children.map((child) => child.name).join(", ")}`);
-    }
+    // An agent with a parent and helpers of its own: the line names the parent; the tooltip and the crew strip name the helpers.
+    if (children.length && parent) plain.push(`leads ${children.map((child) => child.name).join(", ")}`);
     this.relation.title = plain.join(" · ");
     this.relation.hidden = !this.relation.childNodes.length;
   }
