@@ -11,7 +11,7 @@
  * Address: /app#task=<id>&focus=<agent>&view=timeline ; /app#demo loads the synthetic demo-data.js.
  */
 import { createGoblin, loadArt, modelBadge, setGoblinAction, tribeFor } from "/goblins.js";
-import { agentAction, agentTone, createClient, isFinishedSubagent, shortName, shownSourceState, tellApart, wordStart } from "./adapter.js";
+import { agentAction, agentTone, createClient, foldsByDefault, shortName, shownSourceState, tellApart, wordStart } from "./adapter.js";
 import { TranscriptStore, clockTime, effectiveTimes, insertionIndex, renderEntry, updateEntry } from "./transcript.js";
 
 const TASK_POLL_MS = 3000;
@@ -171,11 +171,11 @@ const openRows = new Map(); // entry id → opened by the person; kept across re
 const dismissedAsks = new Set(); // agent id + ask key dismissed here, until the next poll agrees.
 let taskView = null;
 
-/** Whether a column starts folded: the person's own choice for it, else folded for a finished subagent. */
+/** Whether a column starts folded: the person's own choice for it, else folded for a finished subagent or a stale agent. */
 function startsCollapsed(agent) {
   if (prefs.collapsed[agent.id]) return true;
   if (prefs.expanded[agent.id]) return false;
-  return isFinishedSubagent(agent);
+  return foldsByDefault(agent);
 }
 
 function storeFor(id) {
@@ -1036,7 +1036,7 @@ class ColumnView {
       const id = this.agent.id;
       delete prefs.collapsed[id];
       delete prefs.expanded[id];
-      if (collapsed !== isFinishedSubagent(this.agent)) (collapsed ? prefs.collapsed : prefs.expanded)[id] = true;
+      if (collapsed !== foldsByDefault(this.agent)) (collapsed ? prefs.collapsed : prefs.expanded)[id] = true;
       savePrefs();
     }
     if (!collapsed) {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ENDPOINTS, PARTIAL_GRACE_MS, agentAction, agentTone, asText, createClient, cutText, cutTextEnd, isFinishedSubagent, isStale, normalizeEntry, normalizeSource,
+import { ENDPOINTS, PARTIAL_GRACE_MS, agentAction, agentTone, asText, createClient, cutText, cutTextEnd, foldsByDefault, isFinishedSubagent, isStale, normalizeEntry, normalizeSource,
   normalizeTasks, normalizeTranscript, orderAgents, shortName, shownSourceState, stripAnsi, tellApart, toMs, toolKindOf } from "../public/app/adapter.js";
 import { createDemo } from "../public/app/demo-data.js";
 import { scanFile } from "../scripts/package.mjs";
@@ -98,7 +98,10 @@ test("columns read lead, coordinator, workers at work first, subagents running f
   assert.deepEqual(task.agents.map((item) => item.id), ["lead", "coord", "w-busy", "w-quiet-now", "w-done", "sub-run", "sub-recent", "sub-old", "sub-flagged"]);
   assert.deepEqual(task.agents.filter((item) => item.stale).map((item) => item.id), ["sub-old", "sub-flagged"], "the server's flag, or done over an hour ago");
   assert.deepEqual(task.agents.filter((item) => isFinishedSubagent(item, now)).map((item) => item.id), ["sub-recent", "sub-old", "sub-flagged"], "these start folded");
-  assert.equal(isStale({ role: "worker", tone: "done", updatedAt: 1 }, now), false, "only subagents go stale");
+  assert.equal(isStale({ role: "worker", tone: "done", updatedAt: 1 }, now), false, "the hour-quiet guess is for subagents only");
+  assert.equal(isStale({ role: "worker", tone: "done", updatedAt: 1, stale: true }, now), true, "the server's word holds for any role");
+  assert.equal(foldsByDefault({ role: "worker", tone: "done", stale: true }, now), true, "a stale worker starts folded");
+  assert.equal(foldsByDefault({ role: "worker", tone: "working" }, now), false);
 });
 
 test("names are fitted and told apart the way the goblin strip does it", () => {

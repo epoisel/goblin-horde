@@ -317,16 +317,24 @@ export const STALE_MS = 60 * 60_000;
 // turns does not jump to the back and forth on every poll.
 const ACTIVE_MS = 2 * 60_000;
 
-/** A subagent that finished: the server says so (`stale`), or it is done or idle and quiet for an hour. */
+/**
+ * An agent whose part ended a while ago: the server says so (`stale`: a worker, coordinator, or subagent
+ * quiet for an hour), or, for a subagent, it is done or idle and quiet for an hour.
+ */
 export function isStale(agent, now = Date.now()) {
-  if (agent.role !== "subagent") return false;
   if (agent.stale) return true;
+  if (agent.role !== "subagent") return false;
   return (agent.tone === "done" || agent.tone === "idle") && Boolean(agent.updatedAt) && now - agent.updatedAt > STALE_MS;
 }
 
 /** A subagent whose work is over: its column starts folded to the goblin rail (the person can open it). */
 export function isFinishedSubagent(agent, now = Date.now()) {
   return agent.role === "subagent" && (isStale(agent, now) || agent.tone === "done" || agent.tone === "idle");
+}
+
+/** Whether a column starts folded unless the person chose otherwise: a finished subagent, or any agent gone stale. */
+export function foldsByDefault(agent, now = Date.now()) {
+  return isFinishedSubagent(agent, now) || isStale(agent, now);
 }
 
 /**
