@@ -657,6 +657,8 @@ const taskService = new TaskService({
     actors: () => new Map([...reader.threadReads].map(([id, record]) => [id, { ...record.thread, attention: record.attention }])),
     requests: (id) => reader.listRequests(id),
     meta: (id) => reader.meta(id),
+    // Item pages, for reading the Orca commands chats ran (and their outputs) in the background.
+    request: async (method, params) => { await reader.ready; return reader.request(method, params); },
     health: () => codexSource(),
     listComplete: () => reader.threadListComplete,
   },
