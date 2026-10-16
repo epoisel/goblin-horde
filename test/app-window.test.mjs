@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
-import { APP_WINDOW_SIZE, appUrl, appWindowCommand, findAppBrowser, openAppWindow } from "../lib/app-window.mjs";
+import { APP_CACHE_BYTES, APP_WINDOW_SIZE, appUrl, appWindowCommand, findAppBrowser, openAppWindow } from "../lib/app-window.mjs";
 import { main } from "../goblin.mjs";
 import { makeContext } from "../lib/manager.mjs";
 
@@ -38,7 +38,7 @@ test("Windows opens Edge as an app window with Goblin Horde's own profile, looki
   assert.deepEqual(result, { opened: true, browser: "edge", url: "http://127.0.0.1:44902/app#task=chat-0001-lead" });
   assert.equal(calls[0].command, EDGE_X86);
   assert.deepEqual(calls[0].args, ["--app=http://127.0.0.1:44902/app#task=chat-0001-lead", "--user-data-dir=C:\\Users\\you\\AppData\\Local\\GoblinHorde\\app-window",
-    "--no-first-run", "--no-default-browser-check", "--disable-sync", `--window-size=${APP_WINDOW_SIZE}`]);
+    "--no-first-run", "--no-default-browser-check", "--disable-sync", `--disk-cache-size=${APP_CACHE_BYTES}`, `--window-size=${APP_WINDOW_SIZE}`]);
   assert.equal(calls[0].options.shell, undefined, "never through a shell");
   assert.equal(calls[0].options.detached, true);
   const registered = "D:\\Apps\\Edge\\msedge.exe";

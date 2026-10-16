@@ -50,6 +50,29 @@ test("the task routes answer this computer only, and opening the app window take
   assert.equal((await call(failing, { method: "POST", path: "/api/app/open", headers: json, body: {} })).status, 500);
 });
 
+test("with a window already open, the strip's click switches that window's task instead of opening another", async () => {
+  let now = 1_000_000;
+  const opened = [];
+  const service = {
+    tasks: async () => ({ tasks: [], window: { hours: 24 } }),
+    place: async (agentId) => (agentId === "claude-agent:work-1:sub-1" ? { taskId: "chat-lead-0001", agentId } : null),
+  };
+  const route = taskRoutes(service, { open: async (target) => { opened.push(target); return { opened: true }; }, clock: () => now });
+  const json = { "content-type": "application/json", origin: ORIGIN };
+  assert.equal((await call(route, { path: "/api/tasks" })).body.focus, undefined, "nothing asked yet");
+  const reused = await call(route, { method: "POST", path: "/api/app/open", headers: json, body: { agentId: "claude-agent:work-1:sub-1", reuse: true } });
+  assert.equal(reused.status, 200);
+  assert.equal(reused.body.reused, true);
+  assert.deepEqual(opened, [], "no new window");
+  const asked = (await call(route, { path: "/api/tasks" })).body.focus;
+  assert.deepEqual([asked.seq, asked.taskId, asked.agentId], [1, "chat-lead-0001", "claude-agent:work-1:sub-1"]);
+  await call(route, { method: "POST", path: "/api/app/open", headers: json, body: { taskId: "chat-lead-0002", reuse: true } });
+  assert.equal((await call(route, { path: "/api/tasks" })).body.focus.seq, 2, "each click is a new request");
+  now += 61_000;
+  assert.equal((await call(route, { path: "/api/tasks" })).body.focus, undefined, "an old request is not replayed a minute later");
+  assert.equal((await call(route, { method: "POST", path: "/api/app/open", local: false, headers: json, body: { reuse: true } })).status, 403, "only this computer");
+});
+
 test("each source says plainly what is wrong and what to do", () => {
   assert.deepEqual(orcaSource({ workspaces: [], warning: "Orca feed is unavailable: Orca is not running.", failure: "not-running" }, true),
     { state: "unavailable", reason: "unreachable", say: "Orca is running, but its command line can't reach it — restart Orca. Until then its workers are grouped from their Claude Code records." });

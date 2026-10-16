@@ -275,7 +275,7 @@ async function readTasks() {
   if (document.hidden && state.loaded) return;
   try {
     const result = await api.tasks(state.windowHours);
-    Object.assign(state, { tasks: result.tasks, sources: result.sources, checkedAt: result.checkedAt, truncated: result.truncated, aliases: result.aliases || {},
+    Object.assign(state, { tasks: result.tasks, sources: result.sources, checkedAt: result.checkedAt, truncated: result.truncated, aliases: result.aliases || {}, focusRequest: result.focus || null,
       loaded: true, error: "", lastGood: Date.now() });
     for (const task of state.tasks) for (const agent of task.agents) {
       // An ask dismissed here stays dismissed until the server's next answer catches up.
@@ -285,10 +285,24 @@ async function readTasks() {
     state.error = error.status === 404 ? "This copy of Goblin Horde has no task list yet. Update it, or open /app#demo to see the demo."
       : error instanceof TypeError ? "Goblin Horde is not running on this computer." : error.message || "The viewer did not answer.";
   }
+  takeFocusRequest();
   resolveSelection();
   if (!state.taskId && state.tasks.length) { state.taskId = sidebarOrder()[0]?.id || ""; writeHash(); }
   renderSidebar();
   renderMain();
+}
+
+/** A click on the goblin strip brought this window forward: show the task it asked for, once. */
+function takeFocusRequest() {
+  const focus = state.focusRequest;
+  if (!focus || !(focus.taskId || focus.agentId)) return;
+  let seen = 0;
+  try { seen = Number(sessionStorage.getItem("goblin-horde-focus-seq")) || 0; } catch { /* Storage may be off. */ }
+  if (focus.seq <= seen) return;
+  try { sessionStorage.setItem("goblin-horde-focus-seq", String(focus.seq)); } catch { /* Shown once anyway this session. */ }
+  state.taskId = focus.taskId || focus.agentId;
+  state.focusId = focus.agentId && focus.agentId !== state.taskId ? focus.agentId : "";
+  writeHash();
 }
 
 /**

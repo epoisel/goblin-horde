@@ -119,13 +119,16 @@ class HordeApi:
         """Open the agent in its own app (Codex, Orca, Claude)."""
         return self.post("/api/open", {"id": actor_id})
 
-    def open_app(self, agent_id: str = "", task_id: str = "") -> dict:
-        """Open the task view in its own window, on this agent's task (the viewer finds it), or a task."""
-        data = {}
+    def open_app(self, agent_id: str = "", task_id: str = "", reuse: bool = False) -> dict:
+        """Open the task view in its own window, on this agent's task (the viewer finds it), or a task.
+        With ``reuse`` the window is already open: the viewer only tells it which task to show."""
+        data: dict = {}
         if agent_id:
             data["agentId"] = agent_id
         if task_id:
             data["taskId"] = task_id
+        if reuse:
+            data["reuse"] = True
         return self.post("/api/app/open", data)
 
     def message(self, actor_id: str, text: str) -> dict:

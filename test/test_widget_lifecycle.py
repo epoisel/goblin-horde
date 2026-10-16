@@ -175,7 +175,14 @@ class ComeForwardTests(unittest.TestCase):
 class TaskViewTests(unittest.TestCase):
     """The strip opens the task view in its own window; the Tk Horde window stays as the classic one."""
 
-    def app_widget(self, available=True):
+    def app_widget(self, available=True, open_window=None):
+        # Never find (or bring forward) a real task view window on the computer running the tests.
+        finder = patch.object(desktop_widget.desktop_platform, "find_app_window", return_value=open_window)
+        front = patch.object(desktop_widget.desktop_platform, "bring_to_front", return_value=True)
+        self.find_app_window = finder.start()
+        self.bring_to_front = front.start()
+        self.addCleanup(finder.stop)
+        self.addCleanup(front.stop)
         widget = loop_widget()
         widget.demo = False
         widget.api = Mock()
@@ -194,6 +201,24 @@ class TaskViewTests(unittest.TestCase):
         widget.api.available.assert_called_with("/api/app/open")
         widget.api.open_app.assert_called_once_with("claude-agent:worker-1")
         widget.open_window.assert_not_called()
+
+    def test_an_open_task_view_window_comes_forward_instead_of_another_opening(self):
+        widget = self.app_widget(open_window=4242)
+        widget.open_app(select="claude-agent:worker-1")
+        self.bring_to_front.assert_called_once_with(4242)
+        widget.api.open_app.assert_called_once_with("claude-agent:worker-1", "", True)
+        widget.open_window.assert_not_called()
+        # Every further click reuses the same window.
+        widget.open_app(select="chat-0002")
+        self.assertEqual(self.bring_to_front.call_count, 2)
+        self.assertEqual(widget.api.open_app.call_args.args, ("chat-0002", "", True))
+
+    def test_only_the_app_window_title_matches_never_a_browser_tab(self):
+        from desktop_platform import is_app_window_title
+        self.assertTrue(is_app_window_title("Ship CSV export · Goblin Horde", "Chrome_WidgetWin_1"))
+        self.assertTrue(is_app_window_title("Goblin Horde", "Chrome_WidgetWin_1"))
+        self.assertFalse(is_app_window_title("Ship CSV export · Goblin Horde - Personal - Microsoft Edge", "Chrome_WidgetWin_1"))
+        self.assertFalse(is_app_window_title("Goblin Horde", "TkTopLevel"), "the Tk windows are not the task view")
 
     def test_the_classic_window_opens_when_the_task_view_cannot(self):
         widget = self.app_widget(available=False)  # A viewer from before the task view.

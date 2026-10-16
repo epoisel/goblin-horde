@@ -276,3 +276,57 @@ def announce_ready() -> None:
         print(READY_LINE, flush=True)
     except (OSError, ValueError, AttributeError):
         pass  # pythonw started by anything but the manager has no stdout.
+
+
+# The task view's own window: a Chromium "--app" window whose title is the page's title, which always
+# ends in "Goblin Horde" ("<task> · Goblin Horde"). A normal browser tab's window adds the browser's name
+# ("… - Microsoft Edge"), so it never matches.
+APP_WINDOW_SUFFIX = "Goblin Horde"
+APP_WINDOW_CLASS = "Chrome_WidgetWin_1"
+
+
+def is_app_window_title(title: str, window_class: str) -> bool:
+    """Whether a top-level window is the task view's app window, from its title and class alone."""
+    return window_class == APP_WINDOW_CLASS and title.strip().endswith(APP_WINDOW_SUFFIX)
+
+
+def find_app_window() -> int | None:
+    """The task view's app window when one is open (minimized counts), so a click can bring it back
+    instead of opening another; None elsewhere than Windows or when there is none."""
+    if system() != "win32":
+        return None
+    found: list[int] = []
+    try:
+        user32 = ctypes.windll.user32
+        callback_type = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+
+        def visit(hwnd, _param):
+            if not user32.IsWindowVisible(hwnd):
+                return 1
+            title = ctypes.create_unicode_buffer(512)
+            user32.GetWindowTextW(hwnd, title, 512)
+            klass = ctypes.create_unicode_buffer(128)
+            user32.GetClassNameW(hwnd, klass, 128)
+            if is_app_window_title(title.value, klass.value):
+                found.append(hwnd)
+                return 0
+            return 1
+
+        user32.EnumWindows(callback_type(visit), 0)
+    except (AttributeError, OSError, ValueError):
+        return None
+    return found[0] if found else None
+
+
+def bring_to_front(hwnd: int) -> bool:
+    """Restore a window if it is minimized and give it the foreground. Windows allows this right after
+    the person clicked the goblin strip, since this process then owns the foreground."""
+    if system() != "win32" or not hwnd:
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+        return bool(user32.SetForegroundWindow(hwnd))
+    except (AttributeError, OSError, ValueError):
+        return False

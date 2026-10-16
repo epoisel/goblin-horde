@@ -366,6 +366,13 @@ class GoblinWidget:
             return
         if not self.strip.shown:
             self.strip.show()
+        # One task view window: an open one comes forward (and is told which task to show) instead of
+        # another window opening on every click.
+        window = desktop_platform.find_app_window()
+        if window:
+            desktop_platform.bring_to_front(window)
+            self.when_done(self.executor.submit(self.api.open_app, select or "", "", True), lambda _result, _error: None)
+            return
 
         def done(result, error) -> None:
             if error is None and isinstance(result, dict) and result.get("opened"):
