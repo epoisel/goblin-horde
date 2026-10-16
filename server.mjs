@@ -26,7 +26,7 @@ import { publicRequests, publicView } from "./lib/public-view.mjs";
 import { AgentDetailService, ClaudeDesktopIndex, agentRoutes } from "./lib/agent-detail.mjs";
 import { ClaudeDetailReader, ClaudeSessionIndex, ClaudeTitleReader } from "./lib/claude-detail.mjs";
 import { CodexPlanReader } from "./lib/codex-detail.mjs";
-import { TaskService, taskRoutes } from "./lib/task-service.mjs";
+import { TaskService, appVersion, taskRoutes } from "./lib/task-service.mjs";
 import { TaskMemory } from "./lib/tasks.mjs";
 import { ClaudeTranscripts, CodexTranscripts } from "./lib/transcript.mjs";
 import { openAppWindow } from "./lib/app-window.mjs";
@@ -675,7 +675,7 @@ const taskService = new TaskService({
   hooks: () => claudeHookReport(claudeSettingsPath(claudeConfigDir())),
   projectsExist: () => existsSync(join(claudeConfigDir(), "projects")),
 });
-const taskRoute = taskRoutes(taskService, { open: ({ taskId, agentId }) => openAppWindow({ port, taskId, agentId, stateDir }) });
+const taskRoute = taskRoutes(taskService, { open: ({ taskId, agentId }) => openAppWindow({ port, taskId, agentId, stateDir }), version: appVersion(publicDir) });
 
 // The task view's own files (public/app), the only ones served under /app/.
 const APP_FILES = /^(index\.html|app\.css|app\.js|adapter\.js|transcript\.js|markdown\.js|diff\.js|demo-data\.js|manifest\.json|icon\.svg)$/;

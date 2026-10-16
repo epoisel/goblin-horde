@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendClaudeRecord, normalizeHookEvent } from "../lib/claude.mjs";
 import { encodeProjectDir } from "../lib/claude-detail.mjs";
-import { TaskService, claudeSource, codexSource, taskRoutes } from "../lib/task-service.mjs";
+import { TaskService, appVersion, claudeSource, codexSource, taskRoutes } from "../lib/task-service.mjs";
 import { orcaSource } from "../lib/orca.mjs";
 
 const ORIGIN = "http://127.0.0.1:44905";
@@ -230,4 +230,20 @@ test("an isolated viewer serves tasks, transcripts, and the app window from synt
     await exited;
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("the task list names the task view files it serves, so an open window reloads after an update", async () => {
+  const root = mkdtempSync(join(tmpdir(), "goblin-app-version-"));
+  try {
+    mkdirSync(join(root, "app"));
+    writeFileSync(join(root, "app", "app.js"), "export const one = 1;\n");
+    writeFileSync(join(root, "goblins.js"), "export {};\n");
+    const first = appVersion(root);
+    assert.match(first, /^[0-9a-f]{16}$/);
+    assert.equal(appVersion(root), first, "the same files, the same version");
+    writeFileSync(join(root, "app", "app.js"), "export const one = 2;\n");
+    assert.notEqual(appVersion(root), first, "a changed page file is a new version");
+    const route = taskRoutes({ tasks: async () => ({ tasks: [] }) }, { open: async () => ({ opened: true }), version: "abc123" });
+    assert.equal((await call(route, { path: "/api/tasks" })).body.app, "abc123");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

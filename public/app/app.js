@@ -285,6 +285,7 @@ async function readTasks() {
     state.error = error.status === 404 ? "This copy of Goblin Horde has no task list yet. Update it, or open /app#demo to see the demo."
       : error instanceof TypeError ? "Goblin Horde is not running on this computer." : error.message || "The viewer did not answer.";
   }
+  if (reloadIfUpdated(result.app)) return;
   takeFocusRequest();
   resolveSelection();
   if (!state.taskId && state.tasks.length) { state.taskId = sidebarOrder()[0]?.id || ""; writeHash(); }
@@ -293,6 +294,19 @@ async function readTasks() {
 }
 
 let appliedFocus = "";
+let loadedApp = "";
+
+/**
+ * After Goblin Horde is updated, an open window still runs the page it loaded: reload it (the address,
+ * so the task shown, is kept) as soon as the viewer serves different task view files.
+ */
+function reloadIfUpdated(version) {
+  if (!version || api.demo) return false;
+  if (!loadedApp) { loadedApp = version; return false; }
+  if (version === loadedApp) return false;
+  location.reload();
+  return true;
+}
 
 /** A click on the goblin strip brought this window forward: show the task it asked for, once. */
 function takeFocusRequest() {

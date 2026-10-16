@@ -495,7 +495,9 @@ export function normalizeTasks(json, { now = Date.now() } = {}) {
     checkedAt: toMs(value.checkedAt) || now,
     truncated: number(value.truncated) || 0,
     aliases,
-    // The goblin strip asked this open window to show a task (once per `seq`).
+    // The task view files the viewer serves now; an open window running other ones reloads.
+    app: text(value.app),
+    // The goblin strip asked this open window to show a task (once per request id).
     focus: object(value.focus) && (text(value.focus.id) || number(value.focus.seq))
       ? { id: text(value.focus.id) || String(number(value.focus.seq)), taskId: text(value.focus.taskId), agentId: text(value.focus.agentId) } : null,
   };
