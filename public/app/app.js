@@ -292,14 +292,18 @@ async function readTasks() {
   renderMain();
 }
 
+let appliedFocus = "";
+
 /** A click on the goblin strip brought this window forward: show the task it asked for, once. */
 function takeFocusRequest() {
   const focus = state.focusRequest;
   if (!focus || !(focus.taskId || focus.agentId)) return;
-  let seen = 0;
-  try { seen = Number(sessionStorage.getItem("goblin-horde-focus-seq")) || 0; } catch { /* Storage may be off. */ }
-  if (focus.seq <= seen) return;
-  try { sessionStorage.setItem("goblin-horde-focus-seq", String(focus.seq)); } catch { /* Shown once anyway this session. */ }
+  // Each request has its own id (it survives a viewer restart): show it once, never an old one again.
+  let seen = appliedFocus;
+  try { seen = sessionStorage.getItem("goblin-horde-focus") || appliedFocus; } catch { /* Storage may be off. */ }
+  if (!focus.id || focus.id === seen) return;
+  appliedFocus = focus.id;
+  try { sessionStorage.setItem("goblin-horde-focus", focus.id); } catch { /* Kept in memory instead. */ }
   state.taskId = focus.taskId || focus.agentId;
   state.focusId = focus.agentId && focus.agentId !== state.taskId ? focus.agentId : "";
   writeHash();

@@ -68,6 +68,14 @@ test("with a window already open, the strip's click switches that window's task 
   assert.deepEqual([asked.seq, asked.taskId, asked.agentId], [1, "chat-lead-0001", "claude-agent:work-1:sub-1"]);
   await call(route, { method: "POST", path: "/api/app/open", headers: json, body: { taskId: "chat-lead-0002", reuse: true } });
   assert.equal((await call(route, { path: "/api/tasks" })).body.focus.seq, 2, "each click is a new request");
+  const second = (await call(route, { path: "/api/tasks" })).body.focus;
+  assert.notEqual(second.id, asked.id);
+  // A restarted viewer counts from 1 again, but its ids never repeat an earlier viewer's.
+  const restarted = taskRoutes(service, { open: async () => ({ opened: true }), clock: () => now + 5 });
+  await call(restarted, { method: "POST", path: "/api/app/open", headers: json, body: { taskId: "chat-lead-0002", reuse: true } });
+  const fresh = (await call(restarted, { path: "/api/tasks" })).body.focus;
+  assert.equal(fresh.seq, 1);
+  assert.ok(fresh.id !== asked.id && fresh.id !== second.id, "a page that saw the old viewer still takes the new request");
   now += 61_000;
   assert.equal((await call(route, { path: "/api/tasks" })).body.focus, undefined, "an old request is not replayed a minute later");
   assert.equal((await call(route, { method: "POST", path: "/api/app/open", local: false, headers: json, body: { reuse: true } })).status, 403, "only this computer");
