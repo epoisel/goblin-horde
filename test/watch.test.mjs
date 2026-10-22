@@ -11,12 +11,12 @@ test("watching is saved, newest first, and survives a restart", () => {
   const dir = folder();
   try {
     const list = new WatchList({ dir });
-    list.set("01a122b0-4686-7581-b26a-bf902a140967", true);
-    list.set("claude:a30d23e1-669b-4365-ab56-7fcd2e55c6cd", true);
-    list.set("01a122b0-4686-7581-b26a-bf902a140967", true);
-    assert.deepEqual(new WatchList({ dir }).ids, ["01a122b0-4686-7581-b26a-bf902a140967", "claude:a30d23e1-669b-4365-ab56-7fcd2e55c6cd"]);
-    list.set("01a122b0-4686-7581-b26a-bf902a140967", false);
-    assert.deepEqual(new WatchList({ dir }).ids, ["claude:a30d23e1-669b-4365-ab56-7fcd2e55c6cd"]);
+    list.set("0199c0de-0000-7000-8000-000000000001", true);
+    list.set("claude:c1a0de00-0000-4000-8000-000000000002", true);
+    list.set("0199c0de-0000-7000-8000-000000000001", true);
+    assert.deepEqual(new WatchList({ dir }).ids, ["0199c0de-0000-7000-8000-000000000001", "claude:c1a0de00-0000-4000-8000-000000000002"]);
+    list.set("0199c0de-0000-7000-8000-000000000001", false);
+    assert.deepEqual(new WatchList({ dir }).ids, ["claude:c1a0de00-0000-4000-8000-000000000002"]);
     assert.deepEqual(readdirSync(dir), ["watched.json"], "no temporary file is left behind");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
