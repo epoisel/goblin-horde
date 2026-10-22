@@ -1,0 +1,11 @@
+{
+  "name": "Goblin Horde",
+  "short_name": "Goblin Horde",
+  "description": "Every task your agents are on, side by side.",
+  "start_url": "/app/",
+  "scope": "/app/",
+  "display": "standalone",
+  "background_color": "#16231c",
+  "theme_color": "#16231c",
+  "icons": [{ "src": "/app/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

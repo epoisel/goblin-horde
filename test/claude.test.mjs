@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   appendClaudeRecord, buildClaudeFeed, buildClaudeSessions, claudeActivityDir, ClaudeReader, CLAUDE_LIMITS, cleanRecord,
-  goblinStateDir, normalizeHookEvent, parseClaudeLines, readFileTail, redactSecrets,
+  goblinStateDir, normalizeHookEvent, parseClaudeLines, promptTitle, readFileTail, redactSecrets,
 } from "../lib/claude.mjs";
 import { validateExtensionRecord } from "../lib/extension.mjs";
 import { composeAllScene } from "../lib/feed.mjs";
@@ -29,25 +29,34 @@ function records(...inputs) {
   }).filter(Boolean);
 }
 
-test("hook records keep public activity and drop prompts, tool input, output, errors, and transcripts", () => {
-  const secretPrompt = "please deploy with password hunter2-PRIVATE";
-  const inputs = [
-    hook("UserPromptSubmit", { prompt: secretPrompt, prompt_text: secretPrompt }),
-    hook("PreToolUse", { tool_name: "Bash", tool_use_id: "toolu_01", tool_input: { command: "curl -H 'Authorization: Bearer abcdefSECRETTOKEN123456' https://internal.example", description: "call private endpoint" } }),
+test("hook records keep what each call works on, filtered, and never output, errors, or notification titles", () => {
+  const PASSWORD = ["Hunter2", "Secret!"].join("");
+  const [prompt, pre, post, failed, notice, crash] = records(
+    hook("UserPromptSubmit", { prompt: `Ship the CSV export for billing-api. The password is ${PASSWORD} for staging.` }),
+    hook("PreToolUse", { tool_name: "Bash", tool_use_id: "toolu_01", tool_input: { command: "curl -H 'Authorization: Bearer abcdefSECRETTOKEN123456' https://api.example.test/v1", description: "call the endpoint" } }),
     hook("PostToolUse", { tool_name: "Bash", tool_use_id: "toolu_01", tool_input: { command: "cat ~/.ssh/config" }, tool_output: "Host private-box\n  HostName 10.0.0.5", tool_response: { stdout: "PRIVATE-OUTPUT" } }),
-    hook("PostToolUseFailure", { tool_name: "Read", tool_use_id: "toolu_02", tool_input: { file_path: "C:\\Users\\someone\\private\\notes.md" }, error: "EACCES PRIVATE-ERROR" }),
+    hook("PostToolUseFailure", { tool_name: "Read", tool_use_id: "toolu_02", tool_input: { file_path: "C:\\work\\billing-api\\notes.md" }, error: "EACCES PRIVATE-ERROR" }),
     hook("Notification", { notification_type: "permission_prompt", message: "Claude needs permission to run rm -rf PRIVATE-DIR", title: "Permission" }),
     hook("StopFailure", { error_type: "server_error", error_message: "upstream PRIVATE-ERROR-DETAIL" }),
-  ];
-  const stored = JSON.stringify(records(...inputs));
-  for (const fragment of ["hunter2", "Bearer", "SECRETTOKEN", "internal.example", "private endpoint", "ssh", "10.0.0.5", "PRIVATE-OUTPUT",
-    "PRIVATE-ERROR", "PRIVATE-DIR", "transcript", "someone\\\\private", "Permission\""]) {
+  );
+  // The prompt excerpt and the command are kept for this computer, with the credentials removed.
+  assert.match(prompt.prompt, /^Ship the CSV export for billing-api\. The password is \[secret removed\]/);
+  assert.equal(prompt.transcript, "/home/someone/.claude/projects/x/transcript.jsonl");
+  assert.match(pre.detail, /^curl -H 'Authorization: Bearer \[secret removed\]' https:\/\/api\.example\.test\/v1$/);
+  assert.equal(pre.transcript, undefined, "only the session's own events say where its transcript is");
+  // A result, a failure, and a crash carry no text of their own; a needs-you notice keeps what it tells the person, filtered.
+  assert.equal(post.detail, undefined);
+  assert.equal(failed.target, "notes.md");
+  assert.equal(notice.message, "Claude needs permission to run rm -rf PRIVATE-DIR");
+  const stored = JSON.stringify([prompt, pre, post, failed, { ...notice, message: "" }, crash]);
+  for (const fragment of [PASSWORD, "SECRETTOKEN", "ssh", "10.0.0.5", "PRIVATE-OUTPUT", "PRIVATE-ERROR", "PRIVATE-DIR", "Permission\"", "call the endpoint"]) {
     assert.ok(!stored.includes(fragment), `stored records leaked ${fragment}`);
   }
-  const read = records(hook("PreToolUse", { tool_name: "Read", tool_use_id: "toolu_03", tool_input: { file_path: "/home/someone/secret-project/src/app.js" } }))[0];
+  // Read keeps the full path as its detail and the base name as its target.
+  const read = records(hook("PreToolUse", { tool_name: "Read", tool_use_id: "toolu_03", tool_input: { file_path: "/work/billing-api/src/app.js" } }))[0];
   assert.equal(read.target, "app.js");
-  assert.ok(!JSON.stringify(read).includes("secret-project"));
-  // A file name that suggests a credential is not named at all.
+  assert.equal(read.detail, "/work/billing-api/src/app.js");
+  // A file name that suggests a credential is not named in titles.
   assert.equal(records(hook("PreToolUse", { tool_name: "Read", tool_input: { file_path: "/work/.env.local" } }))[0].target, "a private file");
   // Non-file tools never carry a target, even when their input has a path.
   assert.equal(records(hook("PreToolUse", { tool_name: "Bash", tool_input: { file_path: "/work/app.js", command: "x" } }))[0].target, undefined);
@@ -65,7 +74,8 @@ test("the final reply is a bounded, redacted excerpt and a closing question is n
   const long = `${"Done with the refactor. ".repeat(80)}\nKey: ${FAKE_ANTHROPIC_KEY} and ${FAKE_GITHUB_TOKEN}\nShould I also update the docs?`;
   const [record] = records(hook("Stop", { last_assistant_message: long, stop_hook_active: false }));
   assert.ok(record.message.length <= CLAUDE_LIMITS.excerptChars);
-  assert.equal(record.question, "Should I also update the docs?");
+  // The question keeps the sentence before it for context, filtered like the rest.
+  assert.match(record.question, /\[secret removed\] Should I also update the docs\?$/);
   const redacted = redactSecrets(`token=abc123 Bearer abcdefghijklmnopqrstu ${FAKE_SK_LIVE_KEY} ${FAKE_AWS_KEY_ID}`);
   assert.ok(!["abc123", "abcdefghijklmnopqrstu", "ABCDEFGHIJKLMNOPQRST", FAKE_AWS_KEY_ID].some((part) => redacted.includes(part)), redacted);
   assert.ok(!JSON.stringify(record).includes(FAKE_ANTHROPIC_PREFIX));
@@ -248,6 +258,54 @@ test("a session becomes one party with a stable main goblin and distinct subagen
   assert.ok(later.agents.some((agent) => agent.id === explore.id));
 });
 
+test("a session is named for the first thing it was asked to do; its subagents for their tasks", () => {
+  const list = records(
+    hook("SessionStart", { source: "startup" }, NOW),
+    hook("UserPromptSubmit", { prompt: "## Add a CSV export for invoices, with tests.\nUse the streaming writer." }, NOW + 1),
+    hook("PreToolUse", { tool_name: "Task", tool_use_id: "t1", tool_input: { description: "Find invoice fixtures", subagent_type: "Explore", prompt: "Find them." } }, NOW + 2),
+    hook("PreToolUse", { tool_name: "Task", tool_use_id: "t2", tool_input: { description: "Review the CSV writer", subagent_type: "code-reviewer", prompt: "Review." } }, NOW + 3),
+    hook("SubagentStart", { agent_id: "agent-review", agent_type: "code-reviewer" }, NOW + 4),
+    hook("SubagentStart", { agent_id: "agent-explore", agent_type: "Explore" }, NOW + 5),
+    hook("SubagentStart", { agent_id: "agent-extra", agent_type: "Explore" }, NOW + 6),
+  );
+  const [session] = buildClaudeSessions(list, { now: NOW + 10_000 });
+  const byId = Object.fromEntries(session.agents.map((agent) => [agent.id, agent]));
+  const main = byId[`claude-agent:${SESSION}`];
+  assert.equal(main.name, "Add a CSV export for invoices, with tests");
+  assert.equal(session.name, main.name, "the party and its session share the name");
+  assert.equal(main.cwd, "/work/goblin-horde", "the folder is still there to show beside it");
+  assert.equal(byId[`claude-agent:${SESSION}:agent-explore`].nickname, "Explore: Find invoice fixtures");
+  assert.equal(byId[`claude-agent:${SESSION}:agent-review`].name, "Code-reviewer: Review the CSV writer", "matched by type, not order");
+  assert.equal(byId[`claude-agent:${SESSION}:agent-extra`].nickname, "Explore subagent", "no task left: the plain name");
+  // The session keeps the name of its first real prompt: no follow-up, nudge, or slash command renames it.
+  const more = [...list, ...records(hook("UserPromptSubmit", { prompt: "yes, please continue" }, NOW + 7), hook("UserPromptSubmit", { prompt: "/compact" }, NOW + 8))];
+  assert.equal(buildClaudeSessions(more, { now: NOW + 10_000 })[0].name, "Add a CSV export for invoices, with tests");
+  const followUps = ["No, only delete dist/old", "Option 2", "looks good, commit it", "What about the second one?", "Now make the export button stream rows"];
+  const later = [...more, ...records(...followUps.map((prompt, index) => hook("UserPromptSubmit", { prompt }, NOW + 9 + index)))];
+  assert.equal(buildClaudeSessions(later, { now: NOW + 10_000 })[0].name, "Add a CSV export for invoices, with tests");
+  // A session whose first prompts were only nudges is named for the first one that says what it is for.
+  const nudged = records(hook("UserPromptSubmit", { prompt: "continue" }, NOW), hook("UserPromptSubmit", { prompt: "Option 2" }, NOW + 1),
+    hook("UserPromptSubmit", { prompt: "Fix the CSV export headers" }, NOW + 2), hook("UserPromptSubmit", { prompt: "Then add a test" }, NOW + 3));
+  assert.equal(buildClaudeSessions(nudged, { now: NOW + 10_000 })[0].name, "Fix the CSV export headers");
+  // Without a prompt worth a name, the folder and a short id still tell sessions apart.
+  assert.match(buildClaudeSessions(records(hook("SessionStart", {}, NOW)), { now: NOW + 1000 })[0].name, /^Claude · goblin-horde · [0-9a-f]{4}$/);
+});
+
+test("prompt titles are one plain line, cut at a word, with nudges and commands left out", () => {
+  assert.equal(promptTitle("Fix the flaky login test."), "Fix the flaky login test");
+  assert.equal(promptTitle("> **Why** is `npm test` slow?\nmore"), "Why is npm test slow?");
+  assert.equal(promptTitle("Reconcile every ledger for the third quarter and write the full report with every discrepancy"),
+    "Reconcile every ledger for the third quarter and write the…");
+  assert.ok(promptTitle("x".repeat(200)).length <= 60);
+  for (const nudge of ["yes", "Continue.", "go ahead!", "ok", "/clear", "<command-name>/model</command-name>", "  ", "42", "[secret removed]"])
+    assert.equal(promptTitle(nudge), "", nudge);
+  // Replies to the agent's own question name nothing either.
+  for (const reply of ["No, only delete dist/old", "Option 2", "option B", "looks good, commit it", "What about the second one?", "How about the other layout?",
+    "Yes, but keep the old flag", "LGTM, ship it", "Actually, use tabs", "the second one", "2"])
+    assert.equal(promptTitle(reply), "", reply);
+  assert.equal(promptTitle("Why is the nightly build slow?"), "Why is the nightly build slow?", "a real question is still a name");
+});
+
 test("hooks map cleanly to needs-you, failure, finish, and end states", () => {
   const base = [hook("UserPromptSubmit", {}, NOW), hook("PreToolUse", { tool_name: "Bash", tool_use_id: "b1", tool_input: { command: "x" } }, NOW + 1)];
   const asking = buildClaudeSessions(records(...base, hook("Notification", { notification_type: "permission_prompt", message: "m" }, NOW + 2)), { now: NOW + 5000 })[0].agents[0];
@@ -289,9 +347,15 @@ test("hooks map cleanly to needs-you, failure, finish, and end states", () => {
   assert.equal(ended.status, "ended");
   assert.equal(ended.turnStates.at(-1).status, "interrupted");
 
+  // An open shell command heard nothing from for longer than the shell tool can run: idle.
   const silent = buildClaudeSessions(records(...base), { now: NOW + CLAUDE_LIMITS.staleMs + 10_000 })[0].agents[0];
-  assert.equal(silent.status, "stale");
+  assert.equal(silent.status, "idle");
   assert.equal(silent.attention, "quiet");
+  // Any other open call (a subagent at work) is stale only after two hours.
+  const agentCall = [hook("UserPromptSubmit", {}, NOW), hook("PreToolUse", { tool_name: "Agent", tool_use_id: "g1", tool_input: { description: "Audit" } }, NOW + 1)];
+  const lost = buildClaudeSessions(records(...agentCall), { now: NOW + CLAUDE_LIMITS.staleMs + 10_000 })[0].agents[0];
+  assert.equal(lost.status, "stale");
+  assert.equal(lost.attention, "quiet");
 });
 
 test("a permission request stays open until its own tool resolves, not when another tool finishes", () => {
@@ -300,16 +364,16 @@ test("a permission request stays open until its own tool resolves, not when anot
     hook("PreToolUse", { tool_name: "Bash", tool_use_id: "toolA", tool_input: { command: "x" } }, NOW + 1),
     hook("PreToolUse", { tool_name: "Read", tool_use_id: "toolB", tool_input: { file_path: "/w/b.js" } }, NOW + 2),
     hook("PermissionRequest", { tool_name: "Bash", tool_use_id: "toolA" }, NOW + 3),
-    hook("Notification", { notification_type: "permission_prompt" }, NOW + 4),
-    hook("PostToolUse", { tool_name: "Read", tool_use_id: "toolB" }, NOW + 5),
+    hook("PreToolUse", { tool_name: "Grep", tool_use_id: "toolC" }, NOW + 4),
+    hook("Notification", { notification_type: "permission_prompt" }, NOW + 5),
+    hook("PostToolUse", { tool_name: "Read", tool_use_id: "toolB" }, NOW + 6),
   );
-  const main = (list) => buildClaudeSessions(list, { now: NOW + 5000 })[0].agents[0];
+  const main = (list) => buildClaudeSessions(list, { now: NOW + 60_000 })[0].agents[0];
   assert.equal(main(asked).needsInput, true, "tool B finishing does not answer tool A's request");
   assert.equal(main(asked).attention, "needs");
   assert.equal(main(asked).status, "waiting");
-  // A tool that starts and finishes later does not answer it either.
-  const later = [...asked, ...records(hook("PreToolUse", { tool_name: "Grep", tool_use_id: "toolC" }, NOW + 6),
-    hook("PostToolUseFailure", { tool_name: "Grep", tool_use_id: "toolC" }, NOW + 7))];
+  // A parallel tool that started before the notice and finishes later does not answer it either.
+  const later = [...asked, ...records(hook("PostToolUseFailure", { tool_name: "Grep", tool_use_id: "toolC" }, NOW + 7))];
   assert.equal(main(later).needsInput, true);
   // Its own tool finishing does.
   const answered = main([...later, ...records(hook("PostToolUse", { tool_name: "Bash", tool_use_id: "toolA" }, NOW + 8))]);
@@ -522,7 +586,8 @@ test("an interrupted turn or a denied permission is over once Claude Code is bac
   assert.ok(interrupted.activities.every((item) => item.status !== "inProgress"));
   assert.notEqual(interrupted.status, "failed");
   // A denied permission never gets its PostToolUse; without the idle notice it needs you for six hours.
-  const denied = [...base, hook("PermissionRequest", { tool_name: "Bash", tool_use_id: "b1" }, NOW + 2)];
+  const denied = [...base, hook("PermissionRequest", { tool_name: "Bash", tool_use_id: "b1" }, NOW + 2),
+    hook("Notification", { notification_type: "permission_prompt" }, NOW + 6000)];
   assert.equal(main(denied).attention, "needs");
   const settled = main([...denied, idle(NOW + 62_000)]);
   assert.equal(settled.attention, "quiet");

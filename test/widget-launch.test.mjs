@@ -164,6 +164,18 @@ test("Windows start waits for the widget's ready line and keeps its output in wi
   } finally { box.cleanup(); }
 });
 
+test("the widget opens its window unless the sign-in start asks for the strip", async () => {
+  const box = folders();
+  try {
+    const plain = fakeSpawn({ output: `${WIDGET_READY}\n` });
+    await launchWidget(makeContext({ platform: "win32", env: {}, spawn: plain.spawn }), box.loc, "C:\\Python\\pythonw.exe", "i", { waitMs: 2000 });
+    assert.deepEqual(plain.calls[0].args.slice(1), ["--port", "43999"], "no saved surface is passed: the window opens");
+    const signIn = fakeSpawn({ output: `${WIDGET_READY}\n` });
+    await launchWidget(makeContext({ platform: "win32", env: {}, spawn: signIn.spawn }), box.loc, "C:\\Python\\pythonw.exe", "i", { waitMs: 2000, surface: "strip" });
+    assert.deepEqual(signIn.calls[0].args.slice(1), ["--port", "43999", "--surface", "strip"]);
+  } finally { box.cleanup(); }
+});
+
 test("Windows start falls back to the browser, saying why, when the widget exits or crashes", async () => {
   const box = folders();
   try {
@@ -412,7 +424,25 @@ test("macOS start adopts a widget an older manager started from a Python with sp
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("the platform layer ships with the widget", () => {
+test("every Python module the widget imports ships with it", () => {
   const files = readManifest(sourceDir);
-  for (const file of ["desktop_widget.py", "desktop_platform.py", "stream_windows.py"]) assert.ok(files.includes(file), file);
+  const shipped = new Set(files.filter((file) => file.endsWith(".py")));
+  for (const file of ["desktop_widget.py", "desktop_platform.py", "horde_window.py", "goblin_strip.py", "goblin_sprite.py"])
+    assert.ok(shipped.has(file), file);
+  // Follow the imports from the entry point: a local module that is not listed would fail at start.
+  const pending = ["desktop_widget.py"];
+  const seen = new Set();
+  while (pending.length) {
+    const file = pending.pop();
+    if (seen.has(file)) continue;
+    seen.add(file);
+    assert.ok(shipped.has(file), `${file} is imported by the widget but not in package-files.json`);
+    const text = readFileSync(join(sourceDir, file), "utf8");
+    // UTF-8 read back as Windows-1252 turns "…" into "â€¦" and "·" into "Â·" on screen.
+    assert.doesNotMatch(text, /â€|Â·|â‹/, `${file} has mis-encoded characters`);
+    for (const [, name] of text.matchAll(/^\s*(?:from|import)\s+([A-Za-z_][A-Za-z0-9_]*)/gm))
+      if (existsSync(join(sourceDir, `${name}.py`))) pending.push(`${name}.py`);
+  }
+  assert.ok(seen.size >= 10, "the widget's own modules were followed");
+  for (const gone of ["stream_windows.py", "goblin_parting.py", "party_layout.py"]) assert.ok(!shipped.has(gone), gone);
 });

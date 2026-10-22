@@ -2,9 +2,12 @@
 /**
  * Claude Code hook receiver for Goblin Horde.
  *
- * Reads one hook payload from stdin and appends a short public record to Goblin Horde's own
- * state folder. It needs no network and no running viewer, prints nothing (some hook events add
- * stdout to Claude's context), and always exits 0 so Claude Code is never blocked or slowed.
+ * Reads one hook payload from stdin and appends one short record to Goblin Horde's own state folder:
+ * what the call works on, what Claude asks, what its needs-you notices say, its todo list, prompt
+ * and reply excerpts, and (inside Orca) the ids of the Orca terminal it runs in, each clipped
+ * and passed through the credential filter first (see normalizeHookEvent). It needs no network and no
+ * running viewer, prints nothing (some hook events add stdout to Claude's context), and always exits 0
+ * so Claude Code is never blocked or slowed.
  */
 const MAX_INPUT = 32 * 1024 * 1024; // Tool output can be large; anything bigger is skipped, not parsed.
 const WAIT_MS = 5000;
@@ -26,7 +29,8 @@ async function finish() {
       const { appendClaudeRecord, claudeActivityDir, normalizeHookEvent, transcriptModel } = await import("./lib/claude.mjs");
       const { isAbsolute, join } = await import("node:path");
       const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      const record = normalizeHookEvent(input);
+      // The environment names the Orca terminal this session runs in, when it runs in one.
+      const record = normalizeHookEvent(input, { env: process.env });
       // Only the model id is read from the transcript, so the goblin can name its model.
       if (record && !record.model) {
         const model = transcriptModel(input);

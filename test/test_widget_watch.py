@@ -1,35 +1,10 @@
-"""Watched parties get their own launchpad rows, and the toggle shows at once but follows the server."""
+"""Watching a chat shows at once but follows the server; joining and separating parties go to the server."""
 
 import unittest
 from concurrent.futures import Future
 from unittest.mock import Mock
 
 from desktop_widget import GoblinWidget
-from party_layout import launchpad_board, watched_cards
-
-NOW = 1_800_000_000_000
-catalog = [
-    {"id": "chat-new", "name": "New chat", "updatedAt": NOW - 60_000},
-    {"id": "chat-old", "name": "Old chat", "updatedAt": NOW - 30 * 86_400_000},
-    {"id": "chat-busy", "name": "Busy chat", "updatedAt": NOW - 1000},
-]
-busy = {"id": "chat-busy", "status": "active", "attention": "working",
-        "activities": [{"kind": "command", "title": "Ran checks", "status": "inProgress"}]}
-
-
-class WatchedRowsTests(unittest.TestCase):
-    def test_watched_parties_leave_recent_and_search_and_get_their_own_rows(self):
-        active, recent, older = launchpad_board([busy], catalog, now_ms=NOW, watched=["chat-old", "chat-busy"])
-        self.assertEqual([card.id for card in active], ["chat-busy"])
-        self.assertEqual([card.id for card in recent], ["chat-new"])
-        self.assertEqual(older, 0)
-        # A watched party that is working stays in the working rows; the rest are listed in watch order.
-        rows = watched_cards([busy], catalog, ["chat-old", "chat-busy"], {card.id for card in active})
-        self.assertEqual([card.id for card in rows], ["chat-old"])
-        self.assertEqual(rows[0].name, "Old chat")
-
-    def test_a_watched_party_no_longer_listed_anywhere_has_no_row(self):
-        self.assertEqual(watched_cards([], catalog, ["gone-chat-id"]), [])
 
 
 def watching_widget():
@@ -38,9 +13,10 @@ def watching_widget():
     widget.closing = False
     widget.watched_ids = ["chat-a"]
     widget.watch_pending = None
-    widget.launchpad = Mock()
-    widget.kick_board = Mock()
+    widget.refresh = Mock()
+    widget.fetch_now = Mock()
     widget.root = Mock()
+    widget.api = Mock()
     widget.executor = Mock()
     return widget
 
@@ -56,7 +32,9 @@ class WatchToggleTests(unittest.TestCase):
         future = Future()
         widget.executor.submit.return_value = future
         widget.set_watched("chat-b", True)
+        widget.executor.submit.assert_called_once_with(widget.api.watch, "chat-b", True)
         self.assertEqual(widget.watched_ids, ["chat-b", "chat-a"])
+        widget.refresh.assert_called_once_with()
         # A poll that lands before the server answers does not undo the change on screen.
         widget.take_watched(["chat-a"])
         self.assertEqual(widget.watched_ids, ["chat-b", "chat-a"])
@@ -64,7 +42,7 @@ class WatchToggleTests(unittest.TestCase):
         self.settle(widget)
         self.assertEqual(widget.watched_ids, ["chat-b", "chat-a"])
         self.assertIsNone(widget.watch_pending)
-        widget.kick_board.assert_called_once_with()
+        widget.fetch_now.assert_called_once_with()
 
     def test_an_older_answer_never_overrides_a_newer_change(self):
         widget = watching_widget()
@@ -90,45 +68,40 @@ class WatchToggleTests(unittest.TestCase):
         self.settle(widget)
         self.assertEqual(widget.watched_ids, ["chat-a"])
 
-    def test_the_all_parties_entry_and_the_demo_cannot_be_watched(self):
+    def test_the_all_parties_entry_cannot_be_watched(self):
         widget = watching_widget()
         widget.set_watched("all", True)
-        widget.demo = True
-        widget.set_watched("chat-b", True)
+        widget.set_watched("", True)
         widget.executor.submit.assert_not_called()
         self.assertEqual(widget.watched_ids, ["chat-a"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class JoinedPartyTests(unittest.TestCase):
-    def test_a_party_joined_to_a_chat_is_not_listed_again_under_recently_used(self):
-        orca_party = {"id": "orca:wt1", "name": "Orca · INT-122", "updatedAt": NOW - 120_000, "joinedTo": "chat-new"}
-        _active, recent, _older = launchpad_board([], catalog + [orca_party], now_ms=NOW)
-        self.assertNotIn("orca:wt1", [card.id for card in recent])
-
-    def test_a_joined_goblin_says_why_it_is_in_the_party(self):
-        from party_layout import join_reason
-        self.assertEqual(join_reason({"joined": {"reason": "drives", "verb": "orchestration worker-start"}}),
-                         "This chat drives it (orca orchestration worker-start).")
-        self.assertEqual(join_reason({"joined": {"reason": "worker"}}), "A worker started by this chat's Orca coordinator.")
-        self.assertEqual(join_reason({}), "")
-
-    def test_join_choices_go_to_the_server_and_refresh_the_board(self):
+    def test_join_choices_go_to_the_server_and_refresh_the_roster(self):
         widget = GoblinWidget.__new__(GoblinWidget)
         widget.closing = False
-        widget.thread_id = "all"
         widget.root = Mock()
-        widget.kick_board = Mock()
+        widget.fetch_now = Mock()
         widget.manual_links = {}
         future = Future()
+        widget.api = Mock()
         widget.executor = Mock(submit=Mock(return_value=future))
-        widget.post_local = Mock()
         widget.set_join("orca:wt1", "")
-        widget.executor.submit.assert_called_once_with(widget.post_local, "/api/join", {"party": "orca:wt1", "chat": ""})
+        widget.executor.submit.assert_called_once_with(widget.api.join, "orca:wt1", "")
         future.set_result({"manualLinks": {"orca:wt1": ""}})
         widget.root.after.call_args.args[1]()
         self.assertEqual(widget.manual_links, {"orca:wt1": ""})
-        widget.kick_board.assert_called_once_with()
+        widget.fetch_now.assert_called_once_with()
+
+    def test_the_newest_codex_chats_are_offered_to_join(self):
+        widget = GoblinWidget.__new__(GoblinWidget)
+        widget.source_catalog = [{"id": "orca:ws", "source": "orca", "updatedAt": 9},
+                                 {"id": "chat-old", "source": "codex", "updatedAt": 1, "name": "Old"},
+                                 {"id": "chat-new", "source": "codex", "updatedAt": 5, "name": "New"}]
+        self.assertEqual([chat["id"] for chat in widget.recent_chats(5)], ["chat-new", "chat-old"])
+        self.assertEqual(widget.source_label_for("chat-new"), "New")
+        self.assertEqual(widget.source_label_for("gone"), "gone")
+
+
+if __name__ == "__main__":
+    unittest.main()

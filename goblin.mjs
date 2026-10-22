@@ -4,7 +4,7 @@
  *
  *   node goblin.mjs doctor                  Check what this computer has; changes nothing.
  *   node goblin.mjs install [--claude-hooks | --no-claude-hooks]
- *   node goblin.mjs start | stop | status | open [--compact]
+ *   node goblin.mjs start | stop | status | open [--compact] | app [--task ID] [--agent ID]
  *   node goblin.mjs uninstall [--remove-settings]
  *   node goblin.mjs hooks install | remove | status
  *   node goblin.mjs emit --feed NAME [--check] [--record '{...}']   (or NDJSON on stdin)
@@ -21,12 +21,12 @@ if (major < 20) {
   process.exit(2);
 }
 
-const { ManagerError, autostart, doctor, getLocalJson, hooksInstall, hooksRemove, hooksStatus, install, locate, makeContext, start, status, stop, uninstall } = await import("./lib/manager.mjs");
+const { ManagerError, autostart, doctor, getLocalJson, hooksInstall, hooksRemove, hooksStatus, install, locate, makeContext, managerCommand, start, status, stop, uninstall } = await import("./lib/manager.mjs");
 const { claudeSettingsPath } = await import("./lib/claude-hooks.mjs");
 const { appendExtensionRecord, extensionFeedDir, validateExtensionRecord } = await import("./lib/extension.mjs");
 
 const BOOLEAN = new Set(["json", "no-start", "skip-skill", "remove-settings", "claude-hooks", "no-claude-hooks", "check", "no-browser", "compact", "help", "report", "yes"]);
-const VALUE = new Set(["install-dir", "state-dir", "claude-config-dir", "codex-home", "codex-skill-dir", "port", "ui", "feed", "record"]);
+const VALUE = new Set(["install-dir", "state-dir", "claude-config-dir", "codex-home", "codex-skill-dir", "port", "ui", "surface", "feed", "record", "task", "agent"]);
 
 export function parseArgs(argv) {
   const positional = [];
@@ -47,7 +47,7 @@ export function parseArgs(argv) {
 function managerFlags(flags) {
   return {
     installDir: flags["install-dir"], stateDir: flags["state-dir"], claudeConfigDir: flags["claude-config-dir"], codexHome: flags["codex-home"],
-    codexSkillDir: flags["codex-skill-dir"], port: flags.port, ui: flags.ui,
+    codexSkillDir: flags["codex-skill-dir"], port: flags.port, ui: flags.ui, surface: flags.surface,
     noStart: Boolean(flags["no-start"]), skipSkill: Boolean(flags["skip-skill"]), removeSettings: Boolean(flags["remove-settings"]),
     claudeHooks: flags["claude-hooks"] ? true : flags["no-claude-hooks"] ? false : undefined,
     openBrowser: !flags["no-browser"],
@@ -67,7 +67,9 @@ const HELP = `Goblin Horde manager
       --no-start                    Install without starting.
   node goblin.mjs start             Start the viewer (and desktop goblins on Windows and macOS).
       --ui auto|widget|browser|none --no-browser
+      --surface strip               Start with only the goblin strip (what signing in to Windows does).
   node goblin.mjs open [--compact]  Open the viewer in your browser.
+  node goblin.mjs app [--task ID]   Open the task view in its own window (Edge or Chrome, else your browser).
   node goblin.mjs stop              Stop only this installation's own processes.
   node goblin.mjs status            Show what is installed and running.
   node goblin.mjs uninstall         Remove the app, its skills, and its Claude Code hooks.
@@ -133,11 +135,28 @@ async function emit(ctx, flags) {
   return { accepted: results.filter((item) => item.ok).length, rejected: results.filter((item) => !item.ok).length, results, checkOnly: Boolean(flags.check) };
 }
 
+/**
+ * `app`: the task view in its own window, for the running viewer of this installation (or the --port
+ * given). Nothing is started: a viewer that is not running is reported, with how to start it.
+ * `ctx.openApp` (lib/app-window.mjs openAppWindow) is replaceable in tests.
+ */
+export async function openApp(ctx, options, { taskId = "", agentId = "" } = {}) {
+  const loc = locate(ctx, options);
+  const health = await getLocalJson(loc.port, "/api/health", 3000).catch(() => null);
+  if (health?.product !== "GoblinHorde") throw new ManagerError(`Goblin Horde is not running on port ${loc.port}. Start it with: node goblin.mjs start`);
+  const open = ctx.openApp || (await import("./lib/app-window.mjs")).openAppWindow;
+  let result;
+  try { result = open({ port: loc.port, taskId, agentId, stateDir: loc.stateDir, platform: ctx.platform, env: ctx.env }); }
+  catch (error) { throw new ManagerError(error.message); }
+  if (!result?.opened) throw new ManagerError("The task view could not be opened: no browser could be started.");
+  return result;
+}
+
 /** Where the goblins ended up, for setup's last line. */
-export function finishLine(result) {
+export function finishLine(result, manager = "node goblin.mjs") {
   const again = result.startMenu ? "; find Goblin Horde in the Start menu to open it again." : ".";
   const started = result.started;
-  if (!started) return result.startMenu ? "\nInstalled. Open Goblin Horde from the Start menu." : "\nInstalled. Start it with: node goblin.mjs start";
+  if (!started) return result.startMenu ? "\nInstalled. Open Goblin Horde from the Start menu." : `\nInstalled. Start it with: ${manager} start`;
   if (started.ui === "widget") return `\nAll set. Your goblins are on the desktop${again}`;
   if (started.ui === "browser") return `\nAll set. Goblin Horde opened in your browser instead of on the desktop${started.reason ? `: ${started.reason}` : "."}`
     + (result.startMenu ? "\nFind Goblin Horde in the Start menu to open it again." : "");
@@ -160,6 +179,7 @@ function busyPortAdvice(port) {
  * installer again to update changes neither: sign-in start stays as it is, and a "no" to Claude Code
  * (remembered in the install marker) stays a "no". Without a terminal to answer (or with --yes) it
  * takes those defaults; on a first install that means connect Claude Code and do not start at sign-in.
+ * --claude-hooks and --no-claude-hooks answer the Claude Code question up front, --yes or not.
  */
 async function setup(ctx, options, { assumeYes = false } = {}) {
   const log = ctx.log;
@@ -200,12 +220,13 @@ async function setup(ctx, options, { assumeYes = false } = {}) {
       if (await ask("Open the Python download page?", false)) ctx.openUrl("https://www.python.org/downloads/");
     }
     const loc = locate(ctx, options);
-    let claudeHooks;
-    if (check("claude").present && check("claude-hooks").state !== "ok") {
+    // --claude-hooks or --no-claude-hooks is the answer already: never asked again, never overridden by a default.
+    let claudeHooks = options.claudeHooks;
+    if (claudeHooks === undefined && check("claude").present && check("claude-hooks").state !== "ok") {
       const declined = Boolean(loc.marker?.claudeHooks?.declined);
       log("Claude Code is on this computer. To show its sessions, Goblin Horde adds a few entries to Claude Code's");
-      log(`settings in ${claudeSettingsPath(loc.claudeDir)} (a backup is kept; undo any time with: node goblin.mjs hooks remove).`);
-      if (declined) log("You chose not to connect it before. Connect later from the widget menu (Connect Claude Code…) or with: node goblin.mjs hooks install");
+      log(`settings in ${claudeSettingsPath(loc.claudeDir)} (a backup is kept; undo any time with: ${managerCommand(ctx, loc.installDir)} hooks remove).`);
+      if (declined) log(`You chose not to connect it before. Connect later from the widget menu (Connect Claude Code…) or with: ${managerCommand(ctx, loc.installDir)} hooks install`);
       const yes = await ask("Show Claude Code sessions too?", !declined);
       // Kept as it is (not removed again) when the remembered "no" is simply confirmed.
       claudeHooks = yes ? true : declined ? undefined : false;
@@ -219,7 +240,7 @@ async function setup(ctx, options, { assumeYes = false } = {}) {
     log("");
     const result = await install(ctx, { ...options, claudeHooks, autostart: signIn });
     for (const line of [...result.messages, ...(result.started?.messages || [])]) log(line);
-    log(finishLine(result));
+    log(finishLine(result, managerCommand(ctx, result.installDir)));
     return 0;
   } finally {
     prompt?.close();
@@ -288,6 +309,11 @@ export async function main(argv = process.argv.slice(2), ctx = makeContext({ sou
       const url = `http://127.0.0.1:${loc.port}/${flags.compact ? "?compact=1" : ""}`;
       ctx.openUrl(url, ctx.platform);
       out({ url }, () => log(`Opened ${url}`));
+      return 0;
+    }
+    case "app": {
+      const result = await openApp(ctx, options, { taskId: flags.task || "", agentId: flags.agent || "" });
+      out(result, (data) => log(`Opened the task view (${data.browser === "default" ? "your browser" : data.browser}): ${data.url}`));
       return 0;
     }
     case "stop": {

@@ -1,19 +1,27 @@
-"""The widget keeps running through closed windows and failed callbacks.
+"""The app keeps running through closed windows and failed callbacks.
 
-Alt+F4 hides a window instead of destroying it, `start` brings a running widget forward, every
-polling loop reschedules itself after an error, and errors are counted and logged by type and place.
+The window's X collapses to the goblin strip instead of quitting, `start` brings a running widget
+forward, every polling loop reschedules itself after an error, and errors are counted and logged by
+type and place only.
 """
 
 import io
+import json
 import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import desktop_widget
-from desktop_widget import SHOW_REQUEST, GoblinWidget
+from desktop_widget import BEAT_MS, CATALOG_MS, DETAIL_MS, SCENE_MS, SHOW_REQUEST, SOURCES_MS, GoblinWidget
+
+try:
+    from widget_fixtures import isolate, load, quiet, settle
+except ImportError:
+    from test.widget_fixtures import isolate, load, quiet, settle
 
 
 def loop_widget():
@@ -25,48 +33,48 @@ def loop_widget():
 
 
 class LoopRescheduleTests(unittest.TestCase):
-    """Each loop that reschedules at its end used to stop for good after one exception."""
+    """Each loop that reschedules at its end must not stop for good after one exception."""
 
     def test_animate_keeps_its_beat_after_a_failed_frame(self):
         widget = loop_widget()
         widget.animate_step = Mock(side_effect=RuntimeError("bad frame"))
         with self.assertRaises(RuntimeError):  # Tk reports it; the beat goes on.
             widget.animate()
-        widget.root.after.assert_called_once_with(360, widget.animate)
+        widget.root.after.assert_called_once_with(BEAT_MS, widget.animate)
 
     def test_poll_keeps_polling_after_a_failed_fetch(self):
         widget = loop_widget()
         widget.fetch_now = Mock(side_effect=KeyError("root"))
         with self.assertRaises(KeyError):
             widget.poll()
-        widget.root.after.assert_called_once_with(3000, widget.poll)
+        widget.root.after.assert_called_once_with(SCENE_MS, widget.poll)
 
-    def test_board_keeps_updating_after_a_failed_refresh(self):
+    def test_detail_and_timers_keep_running_after_a_failure(self):
         widget = loop_widget()
-        future = Mock()
-        future.done.return_value = True
-        future.result.return_value = {}
-        widget.board_pending = future
-        widget.board_after = None
-        widget.take_board_scene = Mock()
-        widget.launchpad = Mock()
-        widget.launchpad.refresh.side_effect = ValueError("bad row")
+        widget.detail_target = Mock(side_effect=ValueError("bad row"))
         with self.assertRaises(ValueError):
-            widget.poll_board()
-        widget.root.after.assert_called_once_with(1000, widget.poll_board)
+            widget.poll_detail()
+        widget.root.after.assert_called_once_with(DETAIL_MS, widget.poll_detail)
+        widget = loop_widget()
+        widget.window_visible = Mock(return_value=True)
+        widget.detail_view = Mock()
+        widget.detail_view.tick.side_effect = ValueError("bad timer")
+        with self.assertRaises(ValueError):
+            widget.tick()
+        widget.root.after.assert_called_once_with(desktop_widget.TICK_MS, widget.tick)
 
     def test_sources_and_catalog_keep_reading_after_a_failed_refresh(self):
-        for name, pending, delay in (("poll_sources", "sources_pending", 30_000),
-                                     ("load_catalog", "catalog_pending", 60_000)):
+        for name, pending, delay in (("poll_sources", "sources_pending", SOURCES_MS),
+                                     ("load_catalog", "catalog_pending", CATALOG_MS)):
             with self.subTest(loop=name):
                 widget = loop_widget()
-                widget.demo = False
+                widget.results = None
+                widget.source_catalog = []
                 future = Mock()
                 future.done.return_value = True
                 future.result.return_value = {}
                 setattr(widget, pending, future)
-                widget.launchpad = Mock()
-                widget.launchpad.refresh.side_effect = ValueError("bad row")
+                widget.refresh = Mock(side_effect=ValueError("bad row"))
                 with self.assertRaises(ValueError):
                     getattr(widget, name)()
                 widget.root.after.assert_called_once_with(delay, getattr(widget, name))
@@ -124,31 +132,30 @@ class ErrorReportTests(unittest.TestCase):
 
     def test_the_diagnostic_report_includes_the_error_count(self):
         widget = GoblinWidget.__new__(GoblinWidget)
-        widget.home_view, widget.display_mode, widget.streams = "launchpad", "overview", {}
-        widget.board_connection, widget.board_age, widget.error_count = "LIVE", 2.0, 3
+        widget.surface, widget.actors, widget.connection = "window", [{"id": "a"}], "LIVE"
+        widget.board_age, widget.error_count, widget.detail_route = 2.0, 3, None
         widget.root = Mock()
+        widget.root.state.return_value = "normal"
+        widget.api = Mock()
         widget.executor = Mock()
         widget.when_done = Mock()
         widget.copy_diagnostics()
+        widget.executor.submit.assert_called_once_with(widget.api.diagnostics)
         done = widget.when_done.call_args.args[1]
         with patch.object(desktop_widget.messagebox, "showinfo"):
             done({"text": "viewer: ok"}, None)
         copied = widget.root.clipboard_append.call_args.args[0]
         self.assertIn("errors since start: 3", copied)
+        self.assertIn("1 goblins", copied)
+        self.assertNotIn("PRIVATE", copied)
 
 
 class ComeForwardTests(unittest.TestCase):
-    def test_start_brings_back_the_view_that_was_last_shown(self):
-        for mode, thread, expected in (("hidden", "chat", "restore_hidden_party"), ("compact", "chat", "condense_party"),
-                                       ("expanded", "chat", "expand_party"), ("overview", "all", "show_overview"),
-                                       ("compact", "all", "show_overview")):
-            with self.subTest(mode=mode, thread=thread):
-                widget = GoblinWidget.__new__(GoblinWidget)
-                widget.display_mode, widget.thread_id, widget.demo = mode, thread, False
-                for name in ("restore_hidden_party", "condense_party", "expand_party", "show_overview"):
-                    setattr(widget, name, Mock())
-                widget.come_forward()
-                getattr(widget, expected).assert_called_once_with()
+    def test_start_opens_the_task_view(self):
+        widget = GoblinWidget.__new__(GoblinWidget)
+        widget.open_app = Mock()
+        widget.come_forward()
+        widget.open_app.assert_called_once_with()
 
     def test_the_request_file_is_used_once(self):
         with tempfile.TemporaryDirectory(prefix="goblin-show-test-") as folder, \
@@ -165,88 +172,186 @@ class ComeForwardTests(unittest.TestCase):
             self.assertEqual(widget.root.after.call_count, 2, "it keeps checking")
 
 
-@unittest.skipUnless(sys.platform == "win32", "Desktop widget requires Windows Tk")
+class TaskViewTests(unittest.TestCase):
+    """The strip opens the task view in its own window; the Tk Horde window stays as the classic one."""
+
+    def app_widget(self, available=True, open_window=None):
+        # Never find (or bring forward) a real task view window on the computer running the tests.
+        finder = patch.object(desktop_widget.desktop_platform, "find_app_window", return_value=open_window)
+        front = patch.object(desktop_widget.desktop_platform, "bring_to_front", return_value=True)
+        self.find_app_window = finder.start()
+        self.bring_to_front = front.start()
+        self.addCleanup(finder.stop)
+        self.addCleanup(front.stop)
+        widget = loop_widget()
+        widget.demo = False
+        widget.api = Mock()
+        widget.api.available.return_value = available
+        widget.api.open_app.return_value = {"opened": True, "browser": "edge"}
+        widget.strip = Mock(shown=True)
+        widget.open_window = Mock()
+        widget.executor = Mock()
+        widget.executor.submit.side_effect = lambda fn, *args: SimpleNamespace(done=lambda: True, result=lambda: fn(*args))
+        widget.when_done = lambda future, done: done(future.result(), None)
+        return widget
+
+    def test_a_goblin_opens_its_task_in_the_app_window(self):
+        widget = self.app_widget()
+        widget.open_app(select="claude-agent:worker-1")
+        widget.api.available.assert_called_with("/api/app/open")
+        widget.api.open_app.assert_called_once_with("claude-agent:worker-1")
+        widget.open_window.assert_not_called()
+
+    def test_an_open_task_view_window_comes_forward_instead_of_another_opening(self):
+        widget = self.app_widget(open_window=4242)
+        widget.open_app(select="claude-agent:worker-1")
+        self.bring_to_front.assert_called_once_with(4242)
+        widget.api.open_app.assert_called_once_with("claude-agent:worker-1", "", True)
+        widget.open_window.assert_not_called()
+        # Every further click reuses the same window.
+        widget.open_app(select="chat-0002")
+        self.assertEqual(self.bring_to_front.call_count, 2)
+        self.assertEqual(widget.api.open_app.call_args.args, ("chat-0002", "", True))
+
+    def test_only_the_app_window_title_matches_never_a_browser_tab(self):
+        from desktop_platform import is_app_window_title
+        self.assertTrue(is_app_window_title("Ship CSV export · Goblin Horde", "Chrome_WidgetWin_1"))
+        self.assertTrue(is_app_window_title("Goblin Horde", "Chrome_WidgetWin_1"))
+        self.assertFalse(is_app_window_title("Ship CSV export · Goblin Horde - Personal - Microsoft Edge", "Chrome_WidgetWin_1"))
+        self.assertFalse(is_app_window_title("Goblin Horde", "TkTopLevel"), "the Tk windows are not the task view")
+
+    def test_the_classic_window_opens_when_the_task_view_cannot(self):
+        widget = self.app_widget(available=False)  # A viewer from before the task view.
+        widget.open_app(select="chat-0001")
+        widget.api.open_app.assert_not_called()
+        widget.open_window.assert_called_once_with(select="chat-0001")
+        widget = self.app_widget()
+        widget.api.open_app.return_value = {"opened": False}
+        widget.open_app(select="chat-0002")
+        widget.open_window.assert_called_once_with(select="chat-0002")
+        widget = self.app_widget()
+        widget.when_done = lambda future, done: done(None, RuntimeError("no browser"))
+        widget.open_app()
+        widget.open_window.assert_called_once_with(select=None)
+
+    def test_the_strip_click_and_its_menu(self):
+        from goblin_strip import GoblinStrip
+        strip = GoblinStrip.__new__(GoblinStrip)
+        strip.app = Mock()
+        strip.drag = None
+        strip.dragged = False
+        strip.needs = 0
+        strip.items = []
+        strip.slots = [(10, 60, "pill", ""), (70, 110, "goblin", "orca-agent:tab-1:leaf-1")]
+        strip.on_release(SimpleNamespace(x=90, y=10))
+        strip.app.open_app.assert_called_once_with(select="orca-agent:tab-1:leaf-1")
+        strip.app.open_window.assert_not_called()
+        self.assertEqual(desktop_widget.CLASSIC_LABEL, "Classic window")
+
+
+class RestartTests(unittest.TestCase):
+    def test_only_an_installed_copy_started_by_its_manager_offers_a_restart(self):
+        widget = GoblinWidget.__new__(GoblinWidget)
+        widget.demo = False
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"GOBLIN_HORDE_STATE_DIR": folder}), \
+                patch.object(desktop_widget, "HERE", Path(folder)), patch.object(desktop_widget.shutil, "which",
+                                                                                  return_value="node"):
+            self.assertFalse(widget.restart_possible(), "a source checkout has no install marker")
+            (Path(folder) / "goblin-horde-install.json").write_text("{}")
+            (Path(folder) / "goblin.mjs").write_text("")
+            self.assertTrue(widget.restart_possible())
+            widget.demo = True
+            self.assertFalse(widget.restart_possible())
+        with patch.dict(os.environ, {"GOBLIN_HORDE_STATE_DIR": ""}):
+            widget.demo = False
+            self.assertFalse(widget.restart_possible(), "never against the default (live) state folder")
+
+
+@unittest.skipUnless(sys.platform == "win32", "Builds the real window with Windows Tk")
 class CloseButtonTests(unittest.TestCase):
-    """Alt+F4 (WM_DELETE_WINDOW) on the real windows: nothing is destroyed, and `start` brings it back."""
+    """The window's X (WM_DELETE_WINDOW) on the real window: it collapses, and `start` brings it back."""
 
     def setUp(self):
-        try:
-            from test_party_dock_geometry import quiet, settle
-        except ImportError:
-            from test.test_party_dock_geometry import quiet, settle
-        self.settle = settle
-        self.folder = tempfile.TemporaryDirectory(prefix="goblin-close-test-")
-        self.addCleanup(self.folder.cleanup)
-        env = patch.dict(os.environ, {"LOCALAPPDATA": self.folder.name, "GOBLIN_HORDE_STATE_DIR": self.folder.name})
-        env.start()
-        self.addCleanup(env.stop)
-        self.widget = GoblinWidget("", 43992)  # A port nothing listens on; every network timer is stopped.
+        self.folder = isolate(self)
+        self.widget = GoblinWidget("", 44190, demo=True)
         self.addCleanup(self.widget.close)
         quiet(self.widget)
-        self.widget.open_viewer = lambda *_args, **_kwargs: None
+        load(self.widget)
 
     def close_button(self, window):
-        """What Windows does on Alt+F4: run the window's WM_DELETE_WINDOW handler, or destroy it."""
+        """What Windows does on the X or Alt+F4: run the window's WM_DELETE_WINDOW handler."""
         handler = window.tk.call("wm", "protocol", window._w, "WM_DELETE_WINDOW")
         self.assertTrue(handler, f"{window} has a close handler")
         window.tk.eval(handler)
-        self.settle(self.widget)
+        settle(self.widget)
 
-    def test_alt_f4_collapses_and_hides_instead_of_destroying_and_start_brings_it_back(self):
+    def test_the_x_collapses_to_the_strip_and_start_brings_the_window_back(self):
         widget = self.widget
-        widget.show_launchpad()
-        self.settle(widget)
-        self.assertEqual(widget.launchpad.window.state(), "normal")
-
-        self.close_button(widget.launchpad.window)
-        self.assertTrue(widget.launchpad.window.winfo_exists())
-        self.assertEqual(widget.launchpad.window.state(), "withdrawn")
-        self.assertEqual((widget.display_mode, widget.party_dock.mode), ("hidden", "hidden"))
-        self.assertEqual(widget.party_dock.window.state(), "normal", "the tab is shown")
-
-        self.close_button(widget.party_dock.window)  # Alt+F4 on the tab.
-        self.assertTrue(widget.party_dock.window.winfo_exists())
-        self.assertEqual(widget.party_dock.window.state(), "withdrawn")
-        widget.launchpad.refresh(force=True)  # Callbacks still work on the hidden windows.
-
-        request = Path(self.folder.name) / "run" / SHOW_REQUEST
+        self.assertEqual(widget.root.state(), "normal")
+        self.close_button(widget.root)
+        self.assertTrue(widget.root.winfo_exists())
+        self.assertEqual(widget.root.state(), "withdrawn")
+        self.assertEqual(widget.surface, "strip")
+        self.assertEqual(widget.strip.window.state(), "normal", "the goblins stay on the desktop")
+        self.close_button(widget.strip.window)  # Alt+F4 on the strip leaves it be.
+        self.assertEqual(widget.strip.window.state(), "normal")
+        request = Path(self.folder) / "run" / SHOW_REQUEST
         request.parent.mkdir(parents=True, exist_ok=True)
         request.write_text("now")
         widget.check_show_request()
-        self.settle(widget)
-        self.assertEqual(widget.display_mode, "overview")
-        self.assertEqual(widget.launchpad.window.state(), "normal")
+        quiet(widget)
+        settle(widget)
+        self.assertEqual(widget.root.state(), "normal")
+        self.assertEqual(widget.surface, "window")
+        self.assertEqual(widget.strip.window.state(), "normal", "the strip stays on the desktop beside the window")
+        widget.toggle_strip()  # ⋯ Show goblin strip, turned off
+        settle(widget)
+        self.assertEqual(widget.strip.window.state(), "withdrawn", "turned off, the strip hides while the window is open")
         self.assertFalse(request.exists())
 
-    def test_alt_f4_on_the_goblin_line_the_roster_and_the_notes_hides_them(self):
+    def test_the_first_x_says_where_goblin_horde_went_once(self):
         widget = self.widget
-        widget.set_home_view("line")
-        widget.show_overview()
-        self.settle(widget)
+        self.assertFalse(widget.strip_hinted)
         self.close_button(widget.root)
-        self.assertTrue(widget.root.winfo_exists())
-        self.assertEqual(widget.display_mode, "hidden")
+        self.assertTrue(widget.strip_hinted)
+        widget.show_strip_hint()
+        self.assertEqual(widget.tooltip.label.cget("text"), desktop_widget.STRIP_HINT)
+        self.assertIn("Quit is in the ⋯ menu", desktop_widget.STRIP_HINT)
+        # True whether the strip shows goblins or only its "all quiet" label: a click anywhere on it opens the window.
+        self.assertIn("Click the strip to open the window again", desktop_widget.STRIP_HINT)
+        self.assertNotIn("Click a goblin", desktop_widget.STRIP_HINT)
+        widget.hide_strip_hint()
+        self.assertEqual(widget.tooltip.window.state(), "withdrawn")
+        saved = json.loads((Path(self.folder) / "goblins.json").read_text(encoding="utf-8"))
+        self.assertIs(saved["stripHinted"], True, "remembered, so it is said only the first time")
+        opened = []
+        widget.open_window = lambda select=None: opened.append(select)
+        strip = widget.strip
+        strip.slots = [(10, 60, "pill", "")]
+        strip.on_press(SimpleNamespace(x_root=0, y_root=0))
+        strip.on_release(SimpleNamespace(x=200, y=10))  # Past the pill: nothing there but the strip itself.
+        self.assertEqual(opened, [None])
 
-        widget.thread_id = "chat"
-        widget.condense_party()
-        self.settle(widget)
-        self.assertEqual(widget.party_dock.mode, "compact")
-        self.close_button(widget.party_dock.window)
-        self.assertEqual((widget.display_mode, widget.party_dock.mode), ("hidden", "hidden"))
-
-        widget.show_notes()
-        self.settle(widget)
-        self.close_button(widget.notes_panel.window)
-        self.assertTrue(widget.notes_panel.window.winfo_exists())
-        self.assertFalse(widget.notes_panel.shown)
+    def test_starting_again_after_the_x_opens_the_window_not_the_strip(self):
+        widget = self.widget
+        self.close_button(widget.root)
+        widget.close()
+        saved = json.loads((Path(self.folder) / "goblins.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["surface"], "strip", "closed to the strip")
+        again = GoblinWidget("", 44190, demo=True)
+        self.addCleanup(again.close)
+        quiet(again)
+        settle(again)
+        self.assertEqual(again.root.state(), "normal", "the Start menu or `start` opens the window")
+        self.assertEqual(again.surface, "window")
 
     def test_a_failing_callback_is_counted_and_the_widget_keeps_running(self):
         widget = self.widget
         with patch.object(sys, "stderr", None):
             widget.root.after(0, lambda: 1 / 0)
-            self.settle(widget)
+            settle(widget)
         self.assertEqual(widget.error_count, 1)
-        log = (Path(self.folder.name) / "run" / "widget.log").read_text(encoding="utf-8")
+        log = (Path(self.folder) / "run" / "widget.log").read_text(encoding="utf-8")
         self.assertIn("ZeroDivisionError", log)
         self.assertTrue(widget.root.winfo_exists())
 

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <!-- The app window's title bar takes the page's own dark colour (Edge reads the manifest and this tag). -->
+  <meta name="theme-color" content="#16231c">
+  <title>Goblin Horde</title>
+  <link rel="manifest" href="/app/manifest.json">
+  <link rel="icon" href="/app/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app/app.css">
+  <script type="module" src="/app/app.js"></script>
+</head>
+<body>
+  <div class="app">
+    <aside id="side" class="side" aria-label="Tasks">
+      <div class="side-top">
+        <div class="brand"><span id="brand-goblin" class="brand-goblin" aria-hidden="true"></span><span class="brand-name">Goblin Horde</span><span id="demo-badge" class="demo-badge" hidden>Demo data</span></div>
+        <button id="side-toggle" class="icon-btn" type="button" aria-expanded="true" aria-controls="side-body" aria-label="Collapse the task list">⟨</button>
+      </div>
+      <div id="side-body" class="side-body">
+        <div id="sources" class="sources" aria-label="Sources" hidden></div>
+        <div class="side-tools">
+          <input id="search" class="search" type="search" placeholder="Search  /" aria-label="Search tasks, agents, and projects (press /)" autocomplete="off" spellcheck="false">
+          <div class="seg window" role="group" aria-label="How far back">
+            <button class="seg-btn" type="button" data-window="4" aria-pressed="false">4 h</button>
+            <button class="seg-btn" type="button" data-window="24" aria-pressed="true">24 h</button>
+            <button class="seg-btn" type="button" data-window="168" aria-pressed="false">7 d</button>
+          </div>
+        </div>
+        <nav id="task-list" class="task-list" aria-label="Tasks in the last 24 hours"></nav>
+        <div id="side-foot" class="side-foot"></div>
+      </div>
+    </aside>
+    <main id="main" class="main">
+      <div id="banner" class="banner" role="alert" hidden></div>
+      <div id="view" class="view"></div>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

@@ -67,10 +67,10 @@ make the record invalid.
 - `step`: one observable action. `command` and `test` steps always read "Ran a local command" and
   "Ran checks", whatever else the record says.
 - `message`: a public progress update.
-- `needs`: the agent is waiting for a person; `text` is the question. Any later event clears it.
+- `needs`: the agent is waiting for a person; `text` is the question. A `needs` event without `text` does not alert, because there would be nothing to show. Any later event clears it.
 - `failed`: the turn ended in failure; `text` says why in plain words.
 - `done`: the turn finished; `text` is a short final answer.
-- `ended`: the agent left (its goblin may retire with a parting note).
+- `ended`: the agent left (its goblin moves to **Done today** in the Horde window).
 
 A turn with no events for two hours is shown as stale rather than working.
 

@@ -5,23 +5,31 @@ import { stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
-import { markRunningElsewhere, transformThread } from "./lib/transform.mjs";
+import { carryNowStart, codexAsk, markRunningElsewhere, transformThread, withCodexNow } from "./lib/transform.mjs";
+import { DismissStore, settleActor, settleView } from "./lib/dismiss.mjs";
 import { withApprovalGuess } from "./lib/rollout.mjs";
 import { readDescendants } from "./lib/descendants.mjs";
-import { classifyCodex, composeAllScene, listedThread, noteReadFailure, planCodexReads, pruneCache } from "./lib/feed.mjs";
+import { classifyCodex, composeAllScene, listedThread, noteReadFailure, planCodexReads, pruneCache, uniqueThreads } from "./lib/feed.mjs";
 import { WatchList } from "./lib/watch.mjs";
-import { DiscoveryGate, LinkStore, drivenTerminals, joinParties, joinSubset } from "./lib/links.mjs";
-import { OrcaReader } from "./lib/orca.mjs";
+import { DiscoveryGate, LinkStore, claudePanePairs, drivenTerminals, identityMark, joinParties, joinSubset } from "./lib/links.mjs";
+import { OrcaReader, orcaProcessRunning } from "./lib/orca.mjs";
 import { ClaudeReader, goblinStateDir } from "./lib/claude.mjs";
 import { ExtensionReader, EXTENSION_PARTY, extensionFeedDir } from "./lib/extension.mjs";
-import { claudeHookReport, claudeSettingsPath, installClaudeHooks } from "./lib/claude-hooks.mjs";
+import { claudeHookReport, claudeSettingsPath, installClaudeHooks, markHooksConnected } from "./lib/claude-hooks.mjs";
 import { diagnosticReport } from "./lib/diagnostics.mjs";
-import { ownsShortcut, removeShortcut, shortcutPaths, shortcutSpec, writeShortcut } from "./lib/shortcuts.mjs";
+import { ownsShortcut, setSignInStart, shortcutPaths } from "./lib/shortcuts.mjs";
 import { claudeConfigDir } from "./lib/paths.mjs";
 import { CODEX_NOT_FOUND, codexCommand, codexSourceState } from "./lib/codex-bin.mjs";
 import { Pairing, sessionCookie } from "./lib/pairing.mjs";
-import { PhoneAccess, loadPairingCode, localOnlyRefusal } from "./lib/phone.mjs";
+import { PhoneAccess, errorText, loadPairingCode, localOnlyRefusal, mobileStatus, requestAnswer } from "./lib/phone.mjs";
 import { publicRequests, publicView } from "./lib/public-view.mjs";
+import { AgentDetailService, ClaudeDesktopIndex, agentRoutes } from "./lib/agent-detail.mjs";
+import { ClaudeDetailReader, ClaudeSessionIndex, ClaudeTitleReader } from "./lib/claude-detail.mjs";
+import { CodexPlanReader } from "./lib/codex-detail.mjs";
+import { TaskService, appVersion, taskRoutes } from "./lib/task-service.mjs";
+import { TaskMemory } from "./lib/tasks.mjs";
+import { ClaudeTranscripts, CodexTranscripts } from "./lib/transcript.mjs";
+import { openAppWindow } from "./lib/app-window.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = resolve(here, "public");
@@ -157,7 +165,8 @@ class CodexReader {
     let message;
     try { message = JSON.parse(line); } catch { return; }
     if (message.method && message.id != null) {
-      this.serverRequests.set(String(message.id), { id: message.id, method: message.method, params: message.params || {} });
+      // receivedAt dates the ask, so its key (and any dismissal of it) holds while it stays pending.
+      this.serverRequests.set(String(message.id), { id: message.id, method: message.method, params: message.params || {}, receivedAt: Date.now() });
       return;
     }
     if (message.method === "serverRequest/resolved") {
@@ -226,7 +235,12 @@ class CodexReader {
     links.observe(threadId, drivenTerminals(thread.turns));
     // A turn running in the Codex app may be held on an approval this reader never sees; its session
     // file can tell, however long ago the chat last changed (the timestamp freezes while it waits).
-    return withApprovalGuess(markRunningElsewhere(transformThread(thread)), thread.path);
+    return withCodexNow(withApprovalGuess(markRunningElsewhere(transformThread(thread)), thread.path));
+  }
+
+  /** A Codex member with its current ask: pending requests change between reads of the chat. */
+  withAsk(actor) {
+    return actor?.source === "codex" ? { ...actor, ask: codexAsk(actor, { requests: this.listRequests(actor.id) }) } : actor;
   }
 
   /**
@@ -273,7 +287,8 @@ class CodexReader {
           if (saved) fresh.push(saved);
           return;
         }
-        const actor = entry.value;
+        // A step still running keeps the time it was first seen.
+        const actor = carryNowStart(this.threadReads.get(summary.id)?.thread, entry.value);
         this.threadFailures.delete(summary.id);
         const hasRequest = this.listRequests(actor.id).length > 0 || Boolean(actor.awaitingApproval);
         const record = {
@@ -310,11 +325,46 @@ class CodexReader {
         cursor = result.nextCursor;
       }
       this.threadListComplete = complete;
-      this.threadList = threads;
+      this.threadList = uniqueThreads(threads);
       this.threadListAt = Date.now();
-      return threads;
+      return this.threadList;
     })().finally(() => { this.threadListPending = null; });
     return this.threadListPending;
+  }
+
+  /**
+   * Chats other chats spawned (subagents), updated since `since`, newest first, with their parent: the main
+   * list leaves them out. Paged until the window's start; Codex lists these slowly, so the task view
+   * asks at most every 30 seconds.
+   */
+  async listSpawned(since = 0) {
+    await this.ready;
+    const threads = [];
+    let cursor = null;
+    for (let page = 0; page < 10; page++) {
+      const result = await this.request("thread/list", { limit: 100, sortKey: "updated_at",
+        sourceKinds: ["subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther"], ...(cursor ? { cursor } : {}) });
+      const data = result.data || [];
+      threads.push(...data.filter((item) => item?.id && item.parentThreadId).map((item) => ({ ...listedThread(item), parentThreadId: String(item.parentThreadId),
+        ...(item.agentNickname ? { agentNickname: String(item.agentNickname).slice(0, 80) } : {}), ...(item.agentRole ? { agentRole: String(item.agentRole).slice(0, 80) } : {}) })));
+      if (!result.nextCursor || result.nextCursor === cursor || !data.length || listedThread(data.at(-1)).updatedAt < since) break;
+      cursor = result.nextCursor;
+    }
+    return uniqueThreads(threads);
+  }
+
+  /** A chat's session file, folder, and parent, from a metadata-only read, remembered for a minute. */
+  async meta(threadId) {
+    await this.ready;
+    this.metas ||= new Map();
+    const saved = this.metas.get(threadId);
+    if (saved && Date.now() - saved.at < 60_000) return saved.meta;
+    const thread = (await this.request("thread/read", { threadId, includeTurns: false })).thread || {};
+    const meta = { path: typeof thread.path === "string" ? thread.path : "", cwd: typeof thread.cwd === "string" ? thread.cwd : "",
+      parentThreadId: typeof thread.parentThreadId === "string" ? thread.parentThreadId : "" };
+    this.metas.set(threadId, { at: Date.now(), meta });
+    if (this.metas.size > 200) this.metas.delete(this.metas.keys().next().value);
+    return meta;
   }
 
   async readScene(threadId) {
@@ -394,13 +444,25 @@ class CodexReader {
 
 const reader = new CodexReader();
 const orca = new OrcaReader();
-const claude = new ClaudeReader();
+// One transcript locator (confined to <config>/projects) for the detail view and for naming sessions.
+const claudeTranscripts = new ClaudeDetailReader({ configDir: claudeConfigDir() });
+const claude = new ClaudeReader({ titles: new ClaudeTitleReader({ locator: claudeTranscripts }) });
 const extensions = new ExtensionReader({ dir: extensionFeedDir(stateDir) });
 const watchList = new WatchList({ dir: stateDir });
+// Alerts the person dismissed; applied to every response in `shown` (see lib/dismiss.mjs).
+const dismissals = new DismissStore({ dir: stateDir });
+const settleOptions = () => ({ isDismissed: (id, key) => dismissals.isDismissed(id, key), now: Date.now() });
+const settled = (view) => settleView(view, settleOptions());
 // Which Codex chat drives which Orca terminals, and the person's own join or keep-separate choices.
 const links = new LinkStore({ dir: stateDir });
 // Looking for the chat behind an unlinked Orca pane can take several slow reads; no scene waits on it.
 const discovery = new DiscoveryGate();
+
+// What proves an Orca pane is a Claude Code session: the same recent prompt or reply on both sides.
+const sessionMarks = (agent) => { try { return claude.recentWords(agent.id).map(identityMark).filter(Boolean); } catch { return []; } };
+const proof = { paneMarks: (pane) => orca.marksFor(pane.id), sessionMarks };
+/** The link store's choices, with the Orca panes proven to be Claude Code sessions among `agents`. */
+const linksFor = (agents) => ({ auto: links.auto, manual: links.manual, pairs: claudePanePairs(agents, proof) });
 
 /** Every Orca and Claude Code member, joined to the chats that drive them. */
 async function joinedMembers() {
@@ -408,7 +470,8 @@ async function joinedMembers() {
   const orcaAgents = orcaResult.status === "fulfilled" ? orcaResult.value.workspaces.flatMap((workspace) => workspace.agents) : [];
   let claudeAgents = [];
   try { claudeAgents = claude.snapshot().sessions.flatMap((session) => session.agents); } catch { /* Claude Code feed unavailable. */ }
-  return joinParties([...orcaAgents, ...claudeAgents], links);
+  const members = [...orcaAgents, ...claudeAgents];
+  return joinParties(members, linksFor(members));
 }
 // An installed copy has its manager's marker beside it; a copy run from a download folder does not.
 const installed = existsSync(join(here, "goblin-horde-install.json"));
@@ -468,7 +531,7 @@ async function capabilities() {
         detail: hooks.error || (hooks.disabled ? "Claude Code hooks are turned off in its settings." : hooks.state === "missing"
           ? "Claude Code hooks are not installed. Run: node goblin.mjs hooks install" : hooks.broken
             ? "The Claude Code hook points to a missing Node or receiver. Run: node goblin.mjs hooks install"
-            : hooks.state === "partial" ? `Some Claude Code hooks are missing: ${hooks.missing.join(", ")}.` : "Recording public Claude Code activity."),
+            : hooks.state === "partial" ? `Some Claude Code hooks are missing: ${hooks.missing.join(", ")}.` : "Recording Claude Code activity on this computer."),
         sessions: claudeSnapshot.sessions.length, lastEventAt: lastClaude || 0, replies: false,
         // The widget offers to connect it in one click when this copy is installed (its hook needs a fixed path).
         canConnect: hooks.state !== "installed" && hooks.state !== "unreadable" && installed,
@@ -518,7 +581,8 @@ async function allScene() {
   // scene still finds its party.
   const claudeAgents = claudeResult.status === "fulfilled" ? claudeResult.value.sessions.flatMap((session) => session.agents) : [];
   const codexMembers = (codex.checked?.records || []).map(({ thread }) => ({ ...thread, source: "codex" }));
-  const { agents, joined } = joinSubset(scene.agents, [...codexMembers, ...orcaAgents, ...claudeAgents], links);
+  const members = [...codexMembers, ...orcaAgents, ...claudeAgents];
+  const { agents, joined } = joinSubset(scene.agents, members, linksFor(members));
   // Watched parties are always read and kept on the launchpad, whatever their age.
   return { ...scene, agents, joinedParties: Object.fromEntries(joined), manualLinks: Object.fromEntries(links.manual),
     watched: [...watchList.ids] };
@@ -560,7 +624,63 @@ function recentScene() {
   if (allSceneCached && age < ALL_SCENE_STALE_MS) return Promise.resolve(allSceneCached);
   return allScenePending;
 }
-const mime = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8" };
+// Plans and step times from Codex session files, shared by the agent detail and the task view's transcripts.
+const codexPlans = new CodexPlanReader();
+// One agent in full, and Open / Message for it: this computer only (see lib/agent-detail.mjs).
+const agentRoute = agentRoutes(new AgentDetailService({
+  // Settled like every scene response, so a dismissed alert is dismissed in the detail too.
+  scene: () => recentScene().then((scene) => settled(scene)),
+  codex: {
+    listThreads: () => reader.listThreads(),
+    latestTurns: async (id, limit) => { await reader.ready; return reader.latestTurns(id, limit); },
+    readThread: (id) => reader.readThread(id, { turns: OVERVIEW_TURNS }),
+    canView: (id) => canViewThread(id),
+    sendReply: (id, text) => reader.sendReply(id, text),
+    listRequests: (id) => reader.listRequests(id),
+  },
+  // The shared window of hook records, after each session's newest prompt, plan, and transcript paths from before it.
+  claude: { snapshot: () => claude.snapshot(), records: () => claude.detailRecords(), marks: (id) => sessionMarks({ id }) },
+  orca, extensions,
+  claudeDetail: claudeTranscripts,
+  codexPlans,
+  desktop: new ClaudeDesktopIndex(),
+}));
+
+// The task view: every task in the window, and one agent's whole conversation, for this computer only.
+const taskService = new TaskService({
+  // The scene keeps the Codex chats in use read; the task list reuses those reads.
+  scene: () => recentScene(),
+  codex: {
+    listThreads: () => reader.listThreads(),
+    lastThreads: () => reader.threadList || null,
+    listSpawned: (since) => reader.listSpawned(since),
+    actors: () => new Map([...reader.threadReads].map(([id, record]) => [id, { ...record.thread, attention: record.attention }])),
+    requests: (id) => reader.listRequests(id),
+    meta: (id) => reader.meta(id),
+    // Item pages, for reading the Orca commands chats ran (and their outputs) in the background.
+    request: async (method, params) => { await reader.ready; return reader.request(method, params); },
+    health: () => codexSource(),
+    listComplete: () => reader.threadListComplete,
+  },
+  claude,
+  sessions: new ClaudeSessionIndex({ locator: claudeTranscripts }),
+  claudeTranscripts: new ClaudeTranscripts({ locator: claudeTranscripts }),
+  codexTranscripts: new CodexTranscripts({ request: async (method, params) => { await reader.ready; return reader.request(method, params); },
+    plans: (path) => codexPlans.updates(path) }),
+  orca,
+  orcaRunning: () => orcaProcessRunning(),
+  links,
+  memory: new TaskMemory({ dir: stateDir }),
+  settle: (actor) => settleActor(actor, settleOptions()),
+  hooks: () => claudeHookReport(claudeSettingsPath(claudeConfigDir())),
+  projectsExist: () => existsSync(join(claudeConfigDir(), "projects")),
+});
+const taskRoute = taskRoutes(taskService, { open: ({ taskId, agentId }) => openAppWindow({ port, taskId, agentId, stateDir }), version: appVersion(publicDir) });
+
+// The task view's own files (public/app), the only ones served under /app/.
+const APP_FILES = /^(index\.html|app\.css|app\.js|adapter\.js|transcript\.js|markdown\.js|diff\.js|demo-data\.js|manifest\.json|icon\.svg)$/;
+const mime = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml" };
 const commonHeaders = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer" };
 
 function json(response, status, data) {
@@ -585,7 +705,8 @@ async function serveFile(response, file, folder = publicDir) {
   const info = await stat(path);
   const type = mime[`.${file.split(".").at(-1)}`];
   response.writeHead(200, { ...commonHeaders, "Content-Type": type, "Content-Length": info.size,
-    ...(file.endsWith(".html") ? { "Content-Security-Policy": pageCsp } : {}) });
+    // An SVG opened on its own is a document too: it gets the same policy (no scripts from anywhere).
+    ...(file.endsWith(".html") || file.endsWith(".svg") ? { "Content-Security-Policy": pageCsp } : {}) });
   // Headers are already out, so a read error can only end the connection.
   createReadStream(path).on("error", () => response.destroy()).pipe(response);
 }
@@ -672,20 +793,8 @@ async function handleRequestAnswer(request, response) {
   const requestId = String(data.requestId ?? "");
   const pending = reader.getRequest(threadId, requestId);
   if (!pending) return json(response, 404, { error: "That decision is no longer pending." });
-  let result;
-  if (pending.method === "item/tool/requestUserInput") {
-    const questions = pending.params.questions || [];
-    const answers = {};
-    for (const question of questions) {
-      const answer = String(data.answers?.[question.id] || "").trim();
-      if (!answer || answer.length > 2000) return json(response, 400, { error: "Answer every question before submitting." });
-      answers[question.id] = { answers: [answer] };
-    }
-    result = { answers };
-  } else if (["item/commandExecution/requestApproval", "item/fileChange/requestApproval"].includes(pending.method)) {
-    if (!["accept", "decline"].includes(data.decision)) return json(response, 400, { error: "Choose approve or decline." });
-    result = { decision: data.decision };
-  } else return json(response, 400, { error: "This request type is not supported on the phone yet." });
+  const { result, status, error } = requestAnswer(pending, data, { local: isLocal(request) });
+  if (!result) return json(response, status, { error });
   reader.answerRequest(threadId, requestId, result);
   return json(response, 200, { answered: true });
 }
@@ -702,6 +811,8 @@ const handler = async (request, response) => {
     try { return await handlePair(request, response, origin); }
     catch { return fail(response, 500, "Unable to pair this phone."); }
   }
+  if (await agentRoute(request, response, { url, local: isLocal(request), origin, json, readBody, fail })) return;
+  if (await taskRoute(request, response, { url, local: isLocal(request), origin, json, readBody, fail })) return;
   if (["/api/reconnect", "/api/connect-claude", "/api/autostart", "/api/phone", "/api/phone/reset", "/api/quit"].includes(url.pathname)
     && request.method === "POST") {
     // Only this computer may restart a source, change Claude Code's settings, turn phone access on, or quit; never a paired phone.
@@ -723,10 +834,9 @@ const handler = async (request, response) => {
         const paths = installed ? shortcutPaths() : null;
         if (!paths) return json(response, 409, { error: "Starting at sign-in needs an installed copy on Windows." });
         if (typeof data.enabled !== "boolean") return json(response, 400, { error: "Say whether to start at sign-in." });
-        if (data.enabled) writeShortcut(paths.startup, shortcutSpec({ nodePath: process.execPath, installDir: installRoot }));
-        else if (existsSync(paths.startup) && !ownsShortcut(paths.startup, installRoot))
-          return json(response, 409, { error: "The sign-in shortcut starts another Goblin Horde copy, so it was left alone." });
-        else removeShortcut(paths.startup);
+        // As install does: the goblin strip only, and never another copy's shortcut.
+        const result = setSignInStart({ enable: data.enabled, link: paths.startup, installDir: installRoot, nodePath: process.execPath });
+        if (result.status !== 200) return json(response, result.status, { error: result.error, autostart: autostartState() });
         return json(response, 200, { autostart: autostartState() });
       }
       if (url.pathname === "/api/reconnect") {
@@ -737,6 +847,8 @@ const handler = async (request, response) => {
       if (!installed) return json(response, 409, { error: "Install Goblin Horde first (node goblin.mjs install), then connect Claude Code." });
       const result = installClaudeHooks({ settingsPath: claudeSettingsPath(claudeConfigDir()), nodePath: process.execPath,
         hookPath: join(here, "claude-hook.mjs"), stateDir });
+      // The installer then knows it was connected, as if it had done it (see markHooksConnected).
+      markHooksConnected(join(here, "goblin-horde-install.json"), result.settingsPath);
       return json(response, 200, { changed: result.changed, message: result.changed
         ? "Connected Claude Code. New sessions appear here; restart sessions that were already open. Undo with: node goblin.mjs hooks remove"
         : "Claude Code was already connected." });
@@ -767,6 +879,21 @@ const handler = async (request, response) => {
       return json(response, 200, { watched: ids });
     } catch (error) { return fail(response, error.statusCode || 500, error.message || "Unable to change what is watched."); }
   }
+  if (url.pathname === "/api/dismiss" && request.method === "POST") {
+    // Only this computer dismisses alerts, from the viewer's own page with a JSON body.
+    const refusal = localOnlyRefusal({ local: isLocal(request), origin, headers: request.headers });
+    if (refusal) return json(response, refusal.status, { error: refusal.error });
+    try {
+      const data = await readBody(request);
+      const id = String(data.id || "");
+      const { key, at } = dismissals.dismiss(id, String(data.key || ""));
+      // The cached scene is settled on the way out, so the next poll already shows the dismissal.
+      const cached = allSceneCached?.agents?.find((item) => item.id === id);
+      const actor = cached ? settleActor(cached, settleOptions()) : null;
+      return json(response, 200, { id, key, dismissedAsk: actor?.dismissedAsk || { key, at }, ask: publicView({ ask: actor?.ask ?? null }).ask,
+        ...(actor && "attention" in actor ? { attention: actor.attention } : {}) });
+    } catch (error) { return fail(response, error.statusCode || 500, error.message || "Unable to dismiss that alert."); }
+  }
   if (["/api/reply", "/api/respond"].includes(url.pathname) && request.method === "POST") {
     if (!isLocal(request) && !hasSession(request)) return json(response, 401, { error: "Pair this phone with the viewer first." });
     if (request.headers.origin !== origin || !String(request.headers["content-type"] || "").startsWith("application/json"))
@@ -783,13 +910,7 @@ const handler = async (request, response) => {
       if (url.pathname === "/") return await serveFile(response, "pair.html");
       return json(response, 401, { error: "Pair this phone with the viewer first." });
     }
-    if (url.pathname === "/api/mobile") {
-      const state = phone.state();
-      return json(response, 200, {
-        local: isLocal(request), enabled: state.enabled, available: state.listening, address: state.url, adapter: state.adapter, problem: state.problem,
-        ...(isLocal(request) && state.listening ? { code: pairing.code } : {}),
-      });
-    }
+    if (url.pathname === "/api/mobile") return json(response, 200, mobileStatus({ local: isLocal(request), state: phone.state(), code: pairing.code }));
     if (url.pathname === "/api/config") return json(response, 200, { defaultThreadId, pollMs: 2000 });
     // Local only: the manager uses this to recognise its own server before stopping anything.
     if (url.pathname === "/api/health") {
@@ -797,7 +918,9 @@ const handler = async (request, response) => {
       return json(response, 200, { product: "GoblinHorde", version, pid: process.pid, installDir: here.replace(/[\\/]+$/, ""), instance });
     }
     if (url.pathname === "/api/capabilities") return json(response, 200, await capabilities());
-    if (url.pathname === "/api/requests") return json(response, 200, { requests: publicRequests(reader.listRequests(url.searchParams.get("id") || defaultThreadId)) });
+    if (url.pathname === "/api/requests") {
+      return json(response, 200, { requests: publicRequests(reader.listRequests(url.searchParams.get("id") || defaultThreadId), { phone: !isLocal(request) }) });
+    }
     if (url.pathname === "/api/threads") return json(response, 200, publicView({ ...(await listAllSources()), watched: [...watchList.ids] }, { phone: !isLocal(request) }));
     if (url.pathname === "/api/diagnostics") {
       if (!isLocal(request)) return json(response, 404, { error: "Not found" });
@@ -806,8 +929,8 @@ const handler = async (request, response) => {
         phone: { available: phone.listening, pairedSessions: pairing.sessionCount?.() ?? null } });
       return json(response, 200, report);
     }
-    // Activity leaves only through publicView: filtered for everyone, trimmed further for a phone.
-    const shown = (data) => json(response, 200, publicView(data, { phone: !isLocal(request) }));
+    // Activity leaves only through publicView: asks settled, filtered for everyone, trimmed further for a phone.
+    const shown = (data) => json(response, 200, publicView(settled(data), { phone: !isLocal(request) }));
     if (url.pathname === "/api/scene") {
       const threadId = url.searchParams.get("id") || defaultThreadId;
       // The watch list is always the current one, even on a scene built before the last change.
@@ -829,18 +952,31 @@ const handler = async (request, response) => {
       const scene = await reader.readScene(threadId);
       const { agents: everyone } = await joinedMembers();
       const joinedHere = everyone.filter((agent) => agent.joined && agent.parentThreadId === threadId);
-      return shown({ ...scene, agents: [...(scene.agents || []), ...joinedHere], requests: reader.listRequests(threadId),
-        checkedAt: Date.now() });
+      return shown({ ...scene, root: reader.withAsk(scene.root), agents: [...(scene.agents || []).map((agent) => reader.withAsk(agent)), ...joinedHere],
+        requests: reader.listRequests(threadId), checkedAt: Date.now() });
     }
     if (url.pathname === "/api/thread") {
       const threadId = url.searchParams.get("id") || defaultThreadId;
       if (!/^[a-zA-Z0-9_-]{8,100}$/.test(threadId)) return json(response, 400, { error: "Choose a valid thread" });
       if (!(await canViewThread(threadId))) return json(response, 403, { error: "That chat is not available in this viewer." });
-      return shown({ thread: await reader.readThread(threadId), checkedAt: Date.now() });
+      return shown({ thread: reader.withAsk(await reader.readThread(threadId)), checkedAt: Date.now() });
     }
 
     // The pixel goblins share one sprite file with the desktop widget.
     if (url.pathname === "/goblin_art.json") return await serveFile(response, "goblin_art.json", here);
+    // The task view (public/app), this computer only. "/app" moves to "/app/" (the #task=… part goes along),
+    // so the page's own files load from /app/ and never as the classic viewer's /app.js.
+    if (url.pathname === "/app" || url.pathname.startsWith("/app/")) {
+      if (!isLocal(request)) return json(response, 403, { error: "The task view opens on this computer only." });
+      if (url.pathname === "/app") {
+        response.writeHead(302, { ...commonHeaders, Location: "/app/" });
+        return response.end();
+      }
+      const appFile = url.pathname === "/app/" ? "index.html" : url.pathname.slice(5);
+      if (!APP_FILES.test(appFile)) return json(response, 404, { error: "Not found" });
+      if (!existsSync(join(publicDir, "app", appFile))) return json(response, 404, { error: "The task view is not part of this copy of Goblin Horde." });
+      return await serveFile(response, appFile, join(publicDir, "app"));
+    }
     const file = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
     if (!/^(index\.html|app\.js|styles\.css|mobile\.css|interactive\.css|demo\.js|party\.js|goblins\.js)$/.test(file)) return json(response, 404, { error: "Not found" });
     return await serveFile(response, file);
@@ -849,10 +985,13 @@ const handler = async (request, response) => {
   }
 };
 
-/** An error answer, unless a reply is already under way; then the connection is simply ended. */
+/**
+ * An error answer, unless a reply is already under way; then the connection is simply ended. A phone is
+ * never told this computer's paths or a system error's words (see errorText).
+ */
 function fail(response, status, message) {
   if (response.headersSent) return response.destroy();
-  return json(response, status, { error: message });
+  return json(response, status, { error: errorText({ local: Boolean(response.req && isLocal(response.req)), status, message }) });
 }
 
 // Last line of defence: one bad request must never become an unhandled rejection that ends the server.

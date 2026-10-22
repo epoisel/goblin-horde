@@ -705,7 +705,8 @@ function observeAlerts(agents, requests = []) {
 let lastRequestFingerprint = "";
 
 function renderRequests(requests = [], requestThreadId = scope) {
-  const fingerprint = JSON.stringify([requestThreadId, requests.map((request) => [request.id, request.method, request.params?.questions, request.params?.reason])]);
+  const fingerprint = JSON.stringify([requestThreadId, requests.map((request) => [request.id, request.method, request.params?.questions,
+    request.params?.questionCount, request.params?.reason, request.params?.command])]);
   if (fingerprint === lastRequestFingerprint) return;
   lastRequestFingerprint = fingerprint;
   $("#requests-panel").hidden = requests.length === 0;
@@ -713,7 +714,12 @@ function renderRequests(requests = [], requestThreadId = scope) {
   for (const request of requests) {
     const card = el("article", "request-card");
     const details = request.params || {};
-    if (request.method === "item/tool/requestUserInput") {
+    if (request.method === "item/tool/requestUserInput" && request.summaryOnly) {
+      // A phone is not sent Codex's questions, only how many there are.
+      const count = Number(details.questionCount) || 1;
+      card.append(el("h3", "", count === 1 ? "Codex is asking you a question" : `Codex is asking you ${count} questions`),
+        el("p", "", "Answer on this computer: questions are not sent to phones."));
+    } else if (request.method === "item/tool/requestUserInput") {
       card.append(el("h3", "", "Answer Codex"));
       const form = document.createElement("form");
       for (const question of details.questions || []) {
