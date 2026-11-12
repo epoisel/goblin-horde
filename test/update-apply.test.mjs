@@ -147,6 +147,8 @@ test("update, the menu's update, rollback, a release that fails part way, and an
   assert.match(readFileSync(join(box.dir.app, "README.md"), "utf8"), /Release 0\.6\.1\./);
   assert.deepEqual([kept(box, "installed"), kept(box, "previous")], ["0.6.1", ""], "0.6.0 came by hand, so there is nothing to go back to yet");
   assert.deepEqual(readdirSync(updatePaths(box.dir.state).ready), []);
+  assert.equal(JSON.parse(readFileSync(updatePaths(box.dir.state).state, "utf8")).message, "Goblin Horde 0.6.1 is installed.",
+    "the last check no longer says the release waits for the next start");
   assert.deepEqual(bytesOf(box.dir.state), before, "the saved game, the settings, the shared game's file and the lock are byte for byte as they were");
 
   // A server learns of a release that waits when it starts, and a plain start would put that release in place first, so
