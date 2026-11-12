@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "income": {
+    "floorCoins": 2,
+    "k": 1.6,
+    "outputWeight": 5,
+    "subagentCoins": 4,
+    "xpPerCoin": 0.02
+  },
+  "idle": {
+    "coinsPerMinPer100": 0.1,
+    "maxHours": 4,
+    "catchUpDays": 7
+  },
+  "horde": {
+    "startSize": 3,
+    "startCoins": 25,
+    "recruitBaseCost": 40,
+    "recruitGrowth": 1.01,
+    "powerPerLevel": 0.1,
+    "powerPerGear": 0.15
+  },
+  "levels": {
+    "xpBase": 40,
+    "xpGrowth": 1.3,
+    "coinBase": 15,
+    "coinGrowth": 1.4
+  },
+  "gear": {
+    "maxTier": 10,
+    "scrapBase": 20,
+    "scrapGrowth": 1.8
+  },
+  "upgrades": {
+    "hoard": { "baseCost": 40, "growth": 1.5, "bonus": 0.08, "max": 20 },
+    "training": { "baseCost": 30, "growth": 1.5, "bonus": 0.1, "max": 20 }
+  },
+  "bosses": {
+    "count": 36,
+    "powerBase": 2.5,
+    "powerExponent": 2.05,
+    "variance": 0.2,
+    "firstClear": {
+      "coinsBase": 20,
+      "coinsGrowth": 1.06,
+      "scrapBase": 4,
+      "scrapGrowth": 1.2,
+      "xpBase": 40,
+      "xpGrowth": 1.15
+    },
+    "rerunDecay": [0.25, 0.1, 0.03]
+  }
+}

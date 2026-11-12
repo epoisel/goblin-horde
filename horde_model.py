@@ -1314,6 +1314,7 @@ RETIRED_SETTINGS = frozenset({
     "showStrip",
 })
 WINDOW_MIN = (720, 460)
+SURFACES = ("window", "strip", "pets")  # The Horde window, the goblin strip, and the pet field.
 WINDOW_DEFAULT = (1000, 660)
 
 
@@ -1349,7 +1350,7 @@ def read_settings(saved) -> dict:
     if isinstance(saved.get("reducedMotion"), bool):
         settings["reducedMotion"] = saved["reducedMotion"]
     surface = saved.get("surface")
-    if surface in ("window", "strip"):
+    if surface in SURFACES:
         settings["surface"] = surface
     elif saved.get("displayMode") == "hidden":
         settings["surface"] = "strip"  # The old widget was collapsed to its tab.

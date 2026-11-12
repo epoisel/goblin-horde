@@ -1,0 +1,39 @@
+{
+  "typical": {
+    "turnsToFirstPurchase": { "max": 3 },
+    "firstBossClearActiveDay": { "max": 1 },
+    "medianPurchasesPerActiveDayFirst14": { "min": 2 },
+    "maxStallActiveDaysFirst30": { "max": 2 },
+    "hordeDay7": { "min": 15, "max": 60 },
+    "hordeDay30": { "min": 60, "max": 160 },
+    "daysToHorde200": { "min": 45, "max": 90 },
+    "bossesDay7": { "min": 2, "max": 8 },
+    "bossesDay30": { "min": 6, "max": 16 },
+    "bossesDay60": { "min": 10, "max": 22 },
+    "battleCoinShare": { "max": 0.25 }
+  },
+  "light": {
+    "turnsToFirstPurchase": { "max": 3 },
+    "firstBossClearActiveDay": { "max": 1 },
+    "hordeDay30": { "min": 20, "max": 80 },
+    "maxStallActiveDaysFirst30": { "max": 4 },
+    "battleCoinShare": { "max": 0.35 }
+  },
+  "heavy": {
+    "turnsToFirstPurchase": { "max": 3 },
+    "firstBossClearActiveDay": { "max": 1 },
+    "daysToHorde200": { "min": 10, "max": 35 },
+    "daysToLadderComplete": { "min": 60 }
+  },
+  "fleet": {
+    "turnsToFirstPurchase": { "max": 3 },
+    "firstBossClearActiveDay": { "max": 1 },
+    "daysToLadderComplete": { "min": 45 }
+  },
+  "farmer": {
+    "coinsVsTypicalDay30": { "max": 0.75 },
+    "hordeVsTypicalDay30": { "max": 0.7 },
+    "hordeVsTypicalDay60": { "max": 0.75 },
+    "hordeVsTypicalDay90": { "max": 0.85 }
+  }
+}

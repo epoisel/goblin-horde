@@ -142,6 +142,23 @@ class DisplayTests(unittest.TestCase):
         with on("darwin"):
             self.assertEqual(desktop_platform.monitor_areas(), [])
 
+    def test_the_primary_work_area_comes_from_windows_and_falls_back_to_the_screen(self):
+        window = MagicMock()
+        window.winfo_screenwidth.return_value, window.winfo_screenheight.return_value = 1920, 1080
+
+        def work_area(action, _param, area, _flags):
+            self.assertEqual(action, desktop_platform.SPI_GETWORKAREA)
+            area._obj.left, area._obj.top, area._obj.right, area._obj.bottom = 0, 0, 2560, 1392
+            return 1
+        user32 = SimpleNamespace(SystemParametersInfoW=work_area)
+        with on("win32"), patch.object(desktop_platform.ctypes, "windll", SimpleNamespace(user32=user32), create=True):
+            self.assertEqual(desktop_platform.primary_work_area(window), (0, 0, 2560, 1392), "above the taskbar")
+        refused = SimpleNamespace(SystemParametersInfoW=MagicMock(return_value=0))
+        with on("win32"), patch.object(desktop_platform.ctypes, "windll", SimpleNamespace(user32=refused), create=True):
+            self.assertEqual(desktop_platform.primary_work_area(window), (0, 0, 1920, 1080))
+        with on("darwin"):
+            self.assertEqual(desktop_platform.primary_work_area(window), (0, desktop_platform.MAC_MENU_BAR, 1920, 1080))
+
 
 class MacInputAndTextTests(unittest.TestCase):
     def test_mac_right_click_covers_both_tk_numberings_and_control_click(self):

@@ -110,6 +110,11 @@ class HordeApi:
     def diagnostics(self) -> dict:
         return self.get("/api/diagnostics")
 
+    def pets(self, after: int = 0) -> dict:
+        """The game: coins, horde, prices, and the events numbered above ``after``. ``boot`` names the
+        viewer's run: when it changes, event numbers began again at 1, so ask again from 0."""
+        return self.get(f"/api/pets?after={int(after)}")
+
     # Controls ----------------------------------------------------------------------------------
     def dismiss(self, actor_id: str, key: str) -> dict:
         """Stop alerting about this ask; a new ask (another key) alerts again."""
@@ -178,6 +183,14 @@ class HordeApi:
 
     def quit(self) -> dict:
         return self.post("/api/quit")
+
+    def pets_buy(self, kind: str) -> dict:
+        """Buy one recruit, level, gear tier, or upgrade level; ``ok`` says whether it went through."""
+        return self.post("/api/pets/buy", {"kind": kind})
+
+    def pets_fight(self, boss: int) -> dict:
+        """Send the whole horde against boss number ``boss``; ``won`` says how it went."""
+        return self.post("/api/pets/fight", {"boss": boss})
 
     # Links -------------------------------------------------------------------------------------
     def viewer_url(self, party: str = "") -> str:

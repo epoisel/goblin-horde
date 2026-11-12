@@ -73,10 +73,9 @@ class GoblinStrip:
     def place(self) -> None:
         width, height = self.size
         right, bottom = self.anchor or self.default_anchor()
-        areas = desktop_platform.monitor_areas()
-        if areas and not any(left <= right - 40 and right <= r + 2 * width and top <= bottom - 20 <= b
-                             for left, top, r, b in areas):
-            right, bottom = self.default_anchor()  # Its display is gone: dock it again.
+        if not desktop_platform.rect_is_visible((right - width, bottom - height, right, bottom),
+                                                desktop_platform.monitor_areas()):
+            right, bottom = self.default_anchor()  # No display shows it: dock it again.
         self.window.geometry(f"{width}x{height}{screen_geometry(right - width, bottom - height)}")
 
     # Drawing ----------------------------------------------------------------------------------

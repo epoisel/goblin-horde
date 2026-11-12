@@ -1,9 +1,9 @@
-"""Goblin Horde on the desktop (Windows and macOS): the Horde window and the goblin strip.
+"""Goblin Horde on the desktop (Windows and macOS): the Horde window, the goblin strip, and the pet field.
 
 This module is the app: its lifecycle (the ready line, the error log, coming forward when `start`
 asks, closing and quitting), its settings file, the polling of the local viewer, and the menu
 actions. What the window shows is decided in horde_model, drawn by horde_window / horde_roster /
-horde_detail / goblin_strip, and every request goes through horde_api.
+horde_detail / goblin_strip, and every request goes through horde_api. The pet game is pet_field's.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ import traceback
 import webbrowser
 
 import desktop_platform
+import pet_field
 from desktop_platform import UNAVAILABLE_EXIT, TransparencyUnavailable
 from goblin_cues import ActionClock, system_prefers_reduced_motion
 from goblin_motion import ActionPulse
@@ -31,12 +32,14 @@ from goblin_sprite import KINDS, SpriteImages, style_for
 from goblin_strip import GoblinStrip
 from horde_api import ApiError, HordeApi
 from horde_demo import DemoApi
-from horde_model import (NEEDS, Counts, RosterMemory, actor_id, ask_of, build_roster, clamp_window, coverage_note,
+from horde_model import (NEEDS, SURFACES, Counts, RosterMemory, actor_id, ask_of, build_roster, clamp_window, coverage_note,
                          default_selection, detail_from_actor, display_name, is_agent, merged_agent, motion_view,
                          move_selection, party_scope, read_settings, search_sources, selectable, settings_to_save,
                          source_chips, sources_hint, strip_items, with_public_steps)
 from horde_theme import HEADER, Theme, Tooltip, WheelRouter
 from horde_window import HordeWindow
+from pet_field import PetField
+from pets_text import TASK_VIEW_LABEL
 
 HERE = Path(__file__).resolve().parent
 # The manager's `start` leaves this file in the state folder's run/ when the widget is already
@@ -55,6 +58,7 @@ OFFLINE_AFTER = 2  # Failed reads in a row before the window says the viewer is 
 DETAIL_CACHE = 40
 QUIT_LABEL = "Quit Goblin Horde"
 CLASSIC_LABEL = "Classic window"
+PETS_LABEL = "Goblin pets"
 # True whether the strip shows goblins or only its "all quiet" label: a click anywhere on it opens the window.
 STRIP_HINT = ("Goblin Horde keeps watching from here. Click the strip to open the window again; "
               "Quit is in the ⋯ menu, or right-click the strip.")
@@ -141,6 +145,17 @@ def keep_unreadable_settings(raw: bytes) -> None:
         pass
 
 
+def starting_surface(asked: str, saved: str, pets: bool) -> str:
+    """Where a start opens: ``asked`` on the command line, over the surface the settings ``saved``.
+    Starting from the Start menu, `start`, or a double-click opens the window, and only the sign-in
+    shortcut asks for the strip; where the window or the strip was last closed is not reused. The pet
+    field is the one surface that is: a player who chose it gets it back on every start, the sign-in
+    one included, until they go back to the Horde window. ``pets`` says whether the field can be shown."""
+    if pets and (asked == "pets" or (saved == "pets" and asked != "window")):
+        return "pets"
+    return asked if asked in ("window", "strip") else "window"
+
+
 def read_saved_settings() -> dict:
     """The settings file as it is on disk ({} when missing, unreadable, or not an object)."""
     try:
@@ -174,9 +189,9 @@ class GoblinWidget:
         self.reduced_motion_choice = self.settings["reducedMotion"]
         self.keep_on_top = self.settings["keepOnTop"]
         self.show_strip_pref = self.settings["stripWithWindow"]
-        # Starting from the Start menu, `start`, or a double-click always opens the window; only the
-        # sign-in shortcut asks for the strip (`--surface strip`). Where it was last closed is not reused.
-        self.surface = surface if surface in ("window", "strip") else "window"
+        self.pets_available = pet_field.supported() and not self.demo  # The demo has no game to play.
+        self.surface = starting_surface(surface, self.settings["surface"], self.pets_available)
+        self.field: PetField | None = None  # Made the first time the pet field is shown.
         self.done_open = self.settings["doneOpen"]
         self.welcomed = self.settings["welcomed"]
         self.strip_hinted = self.settings["stripHinted"]
@@ -265,7 +280,11 @@ class GoblinWidget:
 
         self.place_window()
         self.refresh()
-        if self.surface == "strip":
+        if self.surface == "pets":
+            # Asked for on the command line, the field is saved at once, so a start with no surface
+            # comes back to it even when this run is stopped without its Quit.
+            self.show_pets(initial=surface != "pets")
+        elif self.surface == "strip":
             self.strip.show()
         else:
             self.open_app(initial=True)
@@ -327,6 +346,8 @@ class GoblinWidget:
         """Show the Horde window in front, optionally on one goblin."""
         was_hidden = not self.window_visible()
         self.surface = "window"
+        if self.field is not None:
+            self.field.hide()
         self.root.deiconify()
         if was_hidden:
             desktop_platform.dark_title_bar(self.root, caption=HEADER)
@@ -364,7 +385,7 @@ class GoblinWidget:
         if self.demo or not self.api.available("/api/app/open"):
             classic()
             return
-        if not self.strip.shown:
+        if not self.strip.shown and self.surface != "pets":
             self.strip.show()
         # One task view window: an open one comes forward (and is told which task to show) instead of
         # another window opening on every click.
@@ -379,6 +400,20 @@ class GoblinWidget:
                 return
             classic()
         self.when_done(self.executor.submit(self.api.open_app, select or ""), done)
+
+    def show_pets(self, initial: bool = False) -> None:
+        """Switch to the pet field: the horde loose on the desktop, with the Horde window and the strip
+        put away until "Back to the Horde window"."""
+        self.remember_geometry()
+        self.surface = "pets"
+        self.tooltip.hide()
+        self.root.withdraw()
+        self.strip.hide()
+        if self.field is None:
+            self.field = PetField(self, self.theme)
+        self.field.show()
+        if not initial:
+            self.save_settings()
 
     def collapse_to_strip(self) -> None:
         """The window's X: the goblins stay on the desktop in their strip. The first time, a short note
@@ -428,7 +463,9 @@ class GoblinWidget:
         self.save_settings()
 
     def dialog_parent(self) -> tk.Misc:
-        return self.root if self.window_visible() else self.strip.window
+        if self.window_visible():
+            return self.root
+        return self.field.window if self.surface == "pets" and self.field is not None else self.strip.window
 
     # Settings ---------------------------------------------------------------------------------
     def settings_now(self) -> dict:
@@ -1248,7 +1285,7 @@ class GoblinWidget:
     def show_menu(self, event=None) -> None:
         menu = tk.Menu(self.root, tearoff=False)
         if not self.demo:
-            menu.add_command(label="Open the task view", command=self.open_app)
+            menu.add_command(label=TASK_VIEW_LABEL, command=self.open_app)
             menu.add_separator()
         menu.add_command(label="Reconnect Codex", command=self.reconnect_codex)
         if (self.sources.get("claude") or {}).get("canConnect"):
@@ -1256,17 +1293,17 @@ class GoblinWidget:
         if self.autostart.get("available"):
             self.autostart_var = tk.BooleanVar(self.root, bool(self.autostart.get("enabled")))
             menu.add_checkbutton(label="Start with Windows", variable=self.autostart_var, command=self.toggle_autostart)
-        menu.add_command(label=f"Phone access (Wi-Fi): {'On' if self.phone.get('enabled') else 'Off'}",
-                         command=self.toggle_phone)
+        self.add_phone_item(menu)
         menu.add_command(label="New pairing code (signs out phones)", command=self.reset_pairing)
         menu.add_command(label="Copy diagnostic report", command=self.copy_diagnostics)
         menu.add_separator()
-        self.motion_var = tk.BooleanVar(self.root, self.reduced_motion)
         self.top_var = tk.BooleanVar(self.root, self.keep_on_top)
         self.strip_var = tk.BooleanVar(self.root, self.show_strip_pref)
-        menu.add_checkbutton(label="Reduced motion", variable=self.motion_var, command=self.toggle_reduced_motion)
+        self.add_motion_item(menu)
         menu.add_checkbutton(label="Keep on top", variable=self.top_var, command=self.toggle_keep_on_top)
         menu.add_checkbutton(label="Show goblin strip", variable=self.strip_var, command=self.toggle_strip)
+        if self.pets_available:
+            menu.add_command(label=PETS_LABEL, command=self.show_pets)
         menu.add_command(label="Change goblin outfits", command=self.change_outfits)
         menu.add_command(label="Open the browser viewer", command=lambda: self.open_viewer(""))
         menu.add_separator()
@@ -1283,13 +1320,58 @@ class GoblinWidget:
         menu.add_command(label="Open Goblin Horde", command=self.open_app)
         # The Tk Horde window, kept while the task view is new.
         menu.add_command(label=CLASSIC_LABEL, command=self.open_window)
-        self.motion_var = tk.BooleanVar(self.root, self.reduced_motion)
-        menu.add_checkbutton(label="Reduced motion", variable=self.motion_var, command=self.toggle_reduced_motion)
+        if self.pets_available:
+            menu.add_command(label=PETS_LABEL, command=self.show_pets)
+        self.add_motion_item(menu)
         if self.window_visible():
             menu.add_command(label="Hide goblin strip", command=self.toggle_strip)
         menu.add_separator()
         menu.add_command(label=QUIT_LABEL, command=self.quit_all)
         menu.tk_popup(event.x_root, event.y_root)
+
+    def show_pets_menu(self, event) -> None:
+        """The pet field's menu: the rows the field lists, then what every surface's menu ends with."""
+        menu = self.pets_menu()
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def pets_menu(self) -> tk.Menu:
+        field = self.field
+        actions = {"buy": field.buy, "fight": field.fight, "goblins": field.toggle_goblins, "task": self.open_app,
+                   "window": self.open_window}
+        menu = tk.Menu(self.root, tearoff=False)
+        self.add_rows(menu, field.menu_rows(), actions)
+        menu.add_separator()
+        self.add_motion_item(menu)
+        self.add_phone_item(menu)
+        menu.add_separator()
+        menu.add_command(label=QUIT_LABEL, command=self.quit_all)
+        return menu
+
+    def add_rows(self, menu: tk.Menu, rows: list, actions: dict) -> None:
+        """Menu items for (label, action, enabled) rows: a row with no label is a divider, an action that
+        is a list of rows a submenu, and any other action names an entry of ``actions`` and its arguments."""
+        for label, action, enabled in rows:
+            state = "normal" if enabled else "disabled"
+            if not label:
+                menu.add_separator()
+            elif isinstance(action, list):
+                submenu = tk.Menu(menu, tearoff=False)
+                self.add_rows(submenu, action, actions)
+                menu.add_cascade(label=label, menu=submenu, state=state)
+            elif action is None:
+                menu.add_command(label=label, state="disabled")
+            else:
+                name, *values = action
+                menu.add_command(label=label, state=state,
+                                 command=lambda name=name, values=values: actions[name](*values))
+
+    def add_motion_item(self, menu: tk.Menu) -> None:
+        self.motion_var = tk.BooleanVar(self.root, self.reduced_motion)
+        menu.add_checkbutton(label="Reduced motion", variable=self.motion_var, command=self.toggle_reduced_motion)
+
+    def add_phone_item(self, menu: tk.Menu) -> None:
+        menu.add_command(label=f"Phone access (Wi-Fi): {'On' if self.phone.get('enabled') else 'Off'}",
+                         command=self.toggle_phone)
 
     def toggle_reduced_motion(self) -> None:
         """Switch between animated goblins and one still, readable frame per action."""
@@ -1351,6 +1433,8 @@ class GoblinWidget:
                 pass
         self.tooltip.destroy()
         self.strip.destroy()
+        if self.field is not None:
+            self.field.destroy()
         self.sprite_images.clear()  # Tk images are freed here, on the Tk thread.
         self.executor.shutdown(wait=False, cancel_futures=True)
         self.root.destroy()
@@ -1360,13 +1444,14 @@ class GoblinWidget:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Goblin Horde on the desktop: the Horde window and the goblin strip")
+    parser = argparse.ArgumentParser(description="Goblin Horde on the desktop: the Horde window, the goblin strip, "
+                                                 "and the pet field")
     parser.add_argument("--thread", default="", help="Select this chat or agent when it appears.")
     parser.add_argument("--port", type=int, default=43917)
     parser.add_argument("--demo", nargs="?", const="default", default=None,
                         help="Invented goblins, no viewer: default, empty, one, crowd, or long.")
     parser.add_argument("--select", default="", help="Select this agent id at start (with --demo, for screenshots).")
-    parser.add_argument("--surface", choices=("window", "strip"), default="")
+    parser.add_argument("--surface", choices=SURFACES, default="")
     args = parser.parse_args()
     try:
         widget = GoblinWidget(args.thread, args.port, args.demo is not None, args.demo or "default", args.select,

@@ -216,6 +216,21 @@ def monitor_work_area(window: tk.Misc) -> tuple[int, int, int, int]:
             window.winfo_vrooty() + window.winfo_vrootheight())
 
 
+SPI_GETWORKAREA = 0x0030
+
+
+def primary_work_area(window: tk.Misc) -> tuple[int, int, int, int]:
+    """The primary display's work area (without the taskbar): where the pet field lives."""
+    if system() == "win32":
+        try:
+            area = _Rect()
+            if ctypes.windll.user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(area), 0):
+                return area.left, area.top, area.right, area.bottom
+        except (AttributeError, OSError, ValueError):
+            pass
+    return 0, menu_bar_inset(), window.winfo_screenwidth(), window.winfo_screenheight()
+
+
 def monitor_areas() -> list[tuple[int, int, int, int]]:
     """Work areas of every connected Windows display, including ones left of or above the primary.
 
@@ -246,6 +261,16 @@ def monitor_areas() -> list[tuple[int, int, int, int]]:
     except (AttributeError, OSError, ValueError, TypeError):
         return []
     return areas
+
+
+def rect_is_visible(rect: tuple[int, int, int, int], areas: list[tuple[int, int, int, int]],
+                    min_width: int = 40, min_height: int = 20) -> bool:
+    """Whether one display's work area shows at least ``min_width`` by ``min_height`` of ``rect``
+    (left, top, right, bottom). No areas means the displays could not be read: trust it."""
+    left, top, right, bottom = rect
+    return not areas or any(min(right, area_right) - max(left, area_left) >= min_width
+                            and min(bottom, area_bottom) - max(top, area_top) >= min_height
+                            for area_left, area_top, area_right, area_bottom in areas)
 
 
 def screen_geometry(x: int, y: int) -> str:
