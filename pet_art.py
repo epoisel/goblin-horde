@@ -1,4 +1,5 @@
-"""Pixel art for the 2D pets: the round blob goblin, its wardrobe and the small effects.
+"""Pixel art for the 2D pets: the round blob goblin, its wardrobe, the small effects and the buy
+buttons' icons.
 
 A frame is one pose row painted by a small rig onto a fixed cell as rows of tone keys, which a look's
 palette then colours, so a new action, hat or skin is a table row. Goblins face right and ``flip``
@@ -335,6 +336,25 @@ EFFECTS = {  # kind -> frames of rows, each centred on its point
 }
 EFFECT_FRAMES = {kind: len(frames) for kind, frames in EFFECTS.items()}
 
+# One icon a purchase, for its button: a goblin, an arrow up, a sword, a coin, a star and a hand.
+ICON_SIZE = 9
+ICON_TONES = {**FIXED, "g": "#7cba4a", "d": "#528a3a", "k": BLACK, "m": MOUTH, "e": "#dfe6ee", "E": "#8f9bb0",
+              "i": "#f6ecd2", "I": "#c9bd9c"}
+ICONS = {
+    "recruit": ("g.......g", "gg.....gg", ".ggggggg.", ".ggggggg.", ".gkgggkg.", ".ggggggg.", ".ggmmmgg.",
+                "..ddddd..", "........."),
+    "level": ("....g....", "...ggg...", "..ggggg..", ".ggggggg.", "ggggggggg", "...ggg...", "...ggg...",
+              "...ddd...", "...ddd..."),
+    "gear": (".......ee", "......eeE", ".....eeE.", "....eeE..", "w..eeE...", ".weeE....", "..wE.....",
+             ".WwwW....", "W...w...."),
+    "hoard": ("..ooooo..", ".oyyyyyo.", "oyyhyyyyo", "oyhyyyyyo", "oyhyyyyyo", "oyyyyyyyo", "oyyyyyyyo",
+              ".oyyyyyo.", "..ooooo.."),
+    "training": ("....a....", "....a....", "...aaa...", "aaaaaaaaa", ".aahaaaa.", "..aaaaa..", "..aaaaa..",
+                 ".aaa.aaa.", ".a.....a."),
+    "grip": ("..i.i.i..", "..i.i.i.i", "..i.i.i.i", "i.iiiiiii", "iiiiiiiii", "iiiiiiiiI", ".iiiiiiI.",
+             "..iiiiI..", "..IIII..."),
+}
+
 # A cell at the default unit of 2 is 44 by 40 screen pixels, 1,760 in all. The working set to hold is
 # 64 looks, 10 actions, 4 frames and 2 facings: 5,120 images, 9,011,200 pixels, a tenth under this.
 BUDGET = 10_000_000
@@ -436,6 +456,19 @@ def effect_pixels(kind: str, frame: int = 0) -> Pixels:
                   (len(rows[0]) // 2, len(rows) // 2))
 
 
+def _mixed(colour: str, toward: str, share: float = 0.62) -> str:
+    """``colour`` moved ``share`` of the way to ``toward``."""
+    return "#" + "".join(f"{round(int(colour[at:at + 2], 16) * (1 - share) + int(toward[at:at + 2], 16) * share):02x}"
+                         for at in (1, 3, 5))
+
+
+def icon_pixels(kind: str, dim: str | None = None) -> Pixels:
+    """The icon of purchase ``kind``, anchored at its top left. With ``dim``, a colour, it is faded
+    most of the way into it: the look of something that cannot be bought yet."""
+    tone = ICON_TONES.get if dim is None else lambda key: _mixed(ICON_TONES[key], dim) if key != "." else None
+    return Pixels(ICON_SIZE, ICON_SIZE, tuple(tuple(map(tone, row)) for row in ICONS[kind]), (0, 0))
+
+
 class _Rgba(dict):
     """RGBA bytes for a cell's colour, ``scale`` pixels wide, made on first use."""
 
@@ -489,6 +522,10 @@ class PetSprites:
         """The PhotoImage of an effect frame, to be centred on its point."""
         frame %= EFFECT_FRAMES[kind]
         return self._cached((kind, frame, scale), scale, lambda: effect_pixels(kind, frame))
+
+    def picture(self, key: tuple, pixels):
+        """The PhotoImage of pixels the caller makes with ``pixels()``, one screen pixel a cell."""
+        return self._cached(("picture", *key), 1, pixels)
 
     def _cached(self, key: tuple, scale: int, pixels):
         found = self.images.pop(key, None)

@@ -233,6 +233,8 @@ test("a count that is a fraction, below its least, or beyond any game is not a s
     ["half an upgrade", (save) => { save.state.upgrades.hoard = 0.5; }],
     ["an upgrade below nothing", (save) => { save.state.upgrades.training = -1; }],
     ["upgrade level 1,001", (save) => { save.state.upgrades.training = 1001; }],
+    ["half a grip", (save) => { save.state.upgrades.grip = 0.5; }],
+    ["a grip of no number", (save) => { save.state.upgrades.grip = null; }],
     ["fewer than no bosses cleared", (save) => { save.state.bosses.cleared = -1; }],
     ["more bosses cleared than any game has", (save) => { save.state.bosses.cleared = 100_001; }],
     ["1e308 bosses cleared", (save) => { save.state.bosses.cleared = 1e308; }],
@@ -286,16 +288,28 @@ test("a save whose horde power, prices, or next boss would not be numbers is not
   assert.equal(parseRecord(JSON.stringify(changed((save) => { save.state.horde.level = 400; })), CONFIG).state.horde.level, 400);
 });
 
+test("a game saved before grip was sold opens with a grip of 0, and saves it from then on", async (t) => {
+  const dir = stateDir(t);
+  const { grip: _level, ...upgrades } = record().state.upgrades;
+  const older = { ...record(), state: { ...record().state, upgrades: { ...upgrades, hoard: 3 } } };
+  writeFileSync(join(dir, "pets.json"), JSON.stringify(older));
+  const store = createPetsStore({ dir, config: CONFIG });
+  const { record: loaded } = await store.load();
+  assert.deepEqual(loaded, { ...older, state: { ...older.state, upgrades: { hoard: 3, training: 0, grip: 0 } } });
+  await store.save(loaded);
+  assert.equal(JSON.parse(readFileSync(join(dir, "pets.json"), "utf8")).state.upgrades.grip, 0);
+});
+
 test("saved games of every shape a real game makes still load, to the number", async (t) => {
   const day = createState(CONFIG, "2026-11-01");
   const games = {
     "a new game": record().state,
     "the laptop's game": { ...day, wallet: { coins: 4321, scrap: 9, lifetimeCoins: 9000 }, horde: { ...day.horde, size: 17, level: 3 }, bosses: { cleared: 4 } },
     "the walk-through's game": { ...day, wallet: { coins: 500, scrap: 12, lifetimeCoins: 2400 }, horde: { ...day.horde, size: 6, level: 2 }, bosses: { cleared: 1 } },
-    "a small game with XP": { schema: 1, wallet: { coins: 64, scrap: 0, lifetimeCoins: 39 }, horde: { size: 3, level: 1, xp: 1, gear: 0 }, upgrades: { hoard: 0, training: 0 },
+    "a small game with XP": { schema: 1, wallet: { coins: 64, scrap: 0, lifetimeCoins: 39 }, horde: { size: 3, level: 1, xp: 1, gear: 0 }, upgrades: { hoard: 0, training: 0, grip: 2 },
       bosses: { cleared: 0 }, today: { key: "2026-11-10", reruns: {} } },
     "a finished game": { schema: 1, wallet: { coins: 987_654_321, scrap: 54_321, lifetimeCoins: 9_876_543_210 }, horde: { size: 400, level: 60, xp: 123_456, gear: CONFIG.gear.maxTier },
-      upgrades: { hoard: CONFIG.upgrades.hoard.max, training: CONFIG.upgrades.training.max }, bosses: { cleared: CONFIG.bosses.count },
+      upgrades: { hoard: CONFIG.upgrades.hoard.max, training: CONFIG.upgrades.training.max, grip: CONFIG.upgrades.grip.max }, bosses: { cleared: CONFIG.bosses.count },
       today: { key: "2028-02-29", reruns: { 0: 3, 7: 1, [CONFIG.bosses.count - 1]: 12 } } },
     "a game with part coins": { ...day, wallet: { coins: 12.5, scrap: 0.25, lifetimeCoins: 100.75 } },
   };

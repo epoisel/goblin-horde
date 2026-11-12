@@ -1,5 +1,6 @@
-"""What the pet field says: the HUD line and its tip, a goblin's name tag, the menu's rows, and the
-banners. Every word here is fixed or a number from a Game, so nothing the viewer sends reaches the screen
+"""What the pet field says: the HUD line and its tip, a goblin's name tag, the menu's rows, a buy
+button's tip, and the banners. Every word here is fixed or a number from a Game, so nothing the viewer
+sends reaches the screen
 as text. Pure: no Tk.
 """
 
@@ -13,7 +14,6 @@ COIN = "◉"
 TROUBLE_MARK = "!"  # Goes on the pill while finished work is not being counted.
 GAP = "   "
 RERUNS = 8  # The Rerun submenu lists this many of the newest cleared bosses.
-TASK_VIEW_LABEL = "Open the task view"
 DIVIDER = ("", None, False)
 UNITS = {"coins": ("coin", "coins"), "scrap": ("scrap", "scrap"), "xp": ("XP", "XP")}
 
@@ -26,6 +26,14 @@ BUYS = {
               lambda game: f"Hoard {game.upgrades['hoard']}"),
     "training": (lambda game: f"Training {game.upgrades['training'] + 1}, more XP from work",
                  lambda game: f"Training {game.upgrades['training']}"),
+    "grip": (lambda game: f"Grip {game.upgrades['grip'] + 1}, pick up {goblins(game.carry + 1)} at once",
+             lambda game: f"Grip {game.upgrades['grip']}, pick up {goblins(game.carry)} at once"),
+}
+# What a purchase is for, where its name does not say: the second row of its button's tip.
+HINTS = {
+    "level": "Every goblin fights harder.",
+    "gear": "Every goblin fights harder. Beaten bosses pay scrap.",
+    "grip": "Drop goblins on a boss to end the fight sooner.",
 }
 # Why a purchase or a fight did not happen, by the viewer's reason for it.
 REASONS = {
@@ -38,6 +46,7 @@ REASONS = {
     FAILED: "The viewer did not answer, so nothing changed.",
 }
 REFUSED = "That did not go through, so nothing changed."
+UPDATE_FAILED = "The update did not start, so nothing changed."
 WON, LOST = "Victory", "Not this time"
 WELCOME, WELCOME_BACK = "Welcome to the horde", "Welcome back"
 MENU_TIP = "Click for the menu."
@@ -52,6 +61,11 @@ def amount(number: int, currency: str) -> str:
     """'1 coin', '40 coins', '36 scrap', '52 XP'."""
     one, many = UNITS[currency]
     return f"{count(number)} {one if number == 1 else many}"
+
+
+def goblins(number: int) -> str:
+    """'1 goblin', '37 goblins'."""
+    return f"{count(number)} goblin{'' if number == 1 else 's'}"
 
 
 def gain_text(coins: int) -> str:
@@ -81,9 +95,9 @@ def stands_for(game: Game, shown: int) -> str:
 def hud_line(game: Game, shown: int, boss: str = "") -> str:
     """The pill: '◉ 1,284   37 goblins', '×N' while one drawn goblin stands for several, and the boss's
     name first during a battle."""
-    crowd = f"{count(game.size)} goblin{'' if game.size == 1 else 's'}"
     scale = stands_for(game, shown)
-    return GAP.join(part for part in (boss, f"{COIN} {count(game.coins)}", crowd, f"×{scale}" if scale else "") if part)
+    parts = (boss, f"{COIN} {count(game.coins)}", goblins(game.size), f"×{scale}" if scale else "")
+    return GAP.join(part for part in parts if part)
 
 
 def hud_tip(game: Game | None, earned: int = 0, quiet: int = 0, trouble: str = "") -> str:
@@ -115,10 +129,17 @@ def _buy_row(game: Game, kind: str) -> tuple:
     return (f"{name} ({cost})", ("buy", kind), game.affords(kind))
 
 
-def pets_menu(game: Game | None, *, battling: bool = False, hidden: bool = False, status: str = "") -> list:
+def buy_tip(game: Game, kind: str) -> str:
+    """A buy button's tip: the menu row's words, and under them what the purchase is for."""
+    return "\n".join(row for row in (_buy_row(game, kind)[0], HINTS.get(kind, "")) if row)
+
+
+def pets_menu(game: Game | None, *, battling: bool = False, hidden: bool = False, status: str = "",
+              screens: list = ()) -> list:
     """The field's menu as (label, action, enabled) rows. A row with no label is a divider, and an action
     that is a list is a submenu of rows. Without a game the purchases and fights give way to ``status``.
-    Nothing the player cannot afford is enabled, and no fight starts while one is running."""
+    Nothing the player cannot afford is enabled, and no fight starts while one is running. ``screens``
+    are the rows of a "Move to screen" submenu, which is left out when there are none."""
     if game is None:
         rows = [(status, None, False)]
     else:
@@ -132,14 +153,23 @@ def pets_menu(game: Game | None, *, battling: bool = False, hidden: bool = False
                   for boss in range(game.cleared - 1, max(-1, game.cleared - 1 - RERUNS), -1)]
         if reruns:
             rows.append(("Rerun a boss", reruns, not battling))
-    return rows + [DIVIDER, (TASK_VIEW_LABEL, ("task",), True),
-                   ("Show the goblins" if hidden else "Hide the goblins", ("goblins",), True),
-                   ("Back to the Horde window", ("window",), True)]
+    moves = [("Move to screen", list(screens), True)] if screens else []
+    return rows + [DIVIDER, ("Show the goblins" if hidden else "Hide the goblins", ("goblins",), True), *moves]
 
 
 def reason_line(reason: str) -> str:
     """One plain sentence for a purchase or a fight the viewer turned down."""
     return REASONS.get(reason, REFUSED)
+
+
+def update_label(version: str) -> str:
+    """The menu row for a verified update the viewer keeps: 'Update to 0.6.1 and restart'."""
+    return f"Update to {version} and restart"
+
+
+def updating_line(version: str) -> str:
+    """The banner while that update goes in: the goblins leave, and the new version brings them back."""
+    return f"Updating to {version}. The goblins are back in a moment."
 
 
 def result_line(won: bool, rewards: dict) -> str:

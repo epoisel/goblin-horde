@@ -296,7 +296,8 @@ test("snapshot quotes every purchase, the horde's power and the next boss", asyn
   const engine = engineFor({ dir: stateDir(t), source: memorySource(time), time });
   await engine.start();
   const snapshot = engine.snapshot();
-  assert.deepEqual(Object.keys(snapshot.quotes).sort(), ["gear", "hoard", "level", "recruit", "training"]);
+  assert.deepEqual(Object.keys(snapshot.quotes).sort(), ["gear", "grip", "hoard", "level", "recruit", "training"]);
+  assert.deepEqual(snapshot.quotes.grip, { coins: CONFIG.upgrades.grip.baseCost });
   assert.deepEqual(snapshot.quotes.level, { xp: CONFIG.levels.xpBase, coins: CONFIG.levels.coinBase });
   assert.deepEqual(snapshot.quotes.gear, { scrap: CONFIG.gear.scrapBase });
   assert.equal(snapshot.power, 100);
@@ -321,7 +322,7 @@ test("a game saved before the daily cap and the vault were removed opens with th
   const { state, quotes } = engine.snapshot();
   assert.deepEqual(state, {
     ...kept, wallet: { coins: 655, scrap: 12, lifetimeCoins: 5015 }, horde: { ...kept.horde, xp: 41 },
-    upgrades: { hoard: 3, training: 1 }, today: { key: utcDay(T0), reruns: { 4: 1 } },
+    upgrades: { hoard: 3, training: 1, grip: 0 }, today: { key: utcDay(T0), reruns: { 4: 1 } },
   });
   assert.ok(!("vault" in quotes));
   for (const name of ["pets.json", "pets.json.bak"]) {
@@ -331,7 +332,7 @@ test("a game saved before the daily cap and the vault were removed opens with th
   assert.deepEqual((await createPetsStore({ dir }).load()).record.state, state);
 });
 
-const savedState = (overrides = {}) => ({ schema: 1, wallet: { coins: 4321, scrap: 100, lifetimeCoins: 9000 }, horde: { size: 17, level: 3, xp: 100, gear: 1 }, upgrades: { hoard: 2, training: 1 },
+const savedState = (overrides = {}) => ({ schema: 1, wallet: { coins: 4321, scrap: 100, lifetimeCoins: 9000 }, horde: { size: 17, level: 3, xp: 100, gear: 1 }, upgrades: { hoard: 2, training: 1, grip: 1 },
   bosses: { cleared: 4 }, today: { key: utcDay(T0), reruns: {} }, ...overrides });
 const savedGame = (state) => JSON.stringify({ schema: 1, state, sources: { t3: { at: T0 - MIN, seen: [] } }, lastSeenAt: T0 - MIN, notBefore: T0 - DAY });
 const unreadableCopies = (dir) => readdirSync(dir).filter((name) => name.startsWith("pets.json.unreadable"));

@@ -355,6 +355,71 @@ class Dragging(unittest.TestCase):
         self.assertGreaterEqual(len(frames), 3)
         self.assertEqual(world.goblin_at(745, 400 + GOBLIN // 2), 7)
 
+    def crowd(self, size=120):
+        """A dense horde at rest, and a goblin on its feet near the middle of it."""
+        world = horde(size, seed=9, cap=size)
+        run(world, 4)
+        frame = world.frame()
+        middle = next(d.id for d in frame.draws if d.action in FOOTED and W * 0.4 < d.x < W * 0.6)
+        return world, middle, {d.id: d for d in frame.draws}
+
+    def test_a_hand_that_carries_more_picks_up_the_nearest_goblins_too(self):
+        world, middle, before = self.crowd()
+        self.assertTrue(world.grab(middle, 5))
+        world.move_grabbed(700, 300)
+        run(world, 0.5)
+        frame = world.frame()
+        held = [d for d in frame.draws if d.action == "grabbed"]
+        self.assertEqual(len(held), 5)
+        self.assertEqual(frame.draws[-1].id, middle, "the one under the cursor is drawn on top")
+        self.assertEqual({d.id for d in frame.draws[-5:]}, {d.id for d in held})
+        self.assertEqual(len({(round(d.x), round(d.y)) for d in held}), 5, "each hangs in its own place")
+        for d in held:
+            self.assertLessEqual(abs(before[d.id].x - before[middle].x), 120 + 0.01, "it stood within reach")
+            self.assertLessEqual(abs(d.x - 700), 30)
+            self.assertTrue(300 + GOBLIN <= d.y <= 300 + GOBLIN + 30, d)
+        self.assertIn(world.goblin_at(700, 300 + GOBLIN // 2), {d.id for d in held})
+
+    def test_a_hand_takes_no_more_than_it_carries(self):
+        for most, carried in ((1, 1), (3, 3), (8, 8), (50, 8), (0, 1)):
+            world, middle, before = self.crowd(200)
+            near = sum(abs(d.x - before[middle].x) <= 120 and abs(d.y - before[middle].y) <= 120 for d in before.values())
+            self.assertGreaterEqual(near, 8, "enough stand within reach to fill any hand")
+            world.grab(middle, most)
+            world.move_grabbed(700, 300)
+            run(world, 0.3)
+            self.assertEqual(sum(d.action == "grabbed" for d in world.frame().draws), carried, most)
+
+    def test_a_hand_gathers_nobody_from_far_away(self):
+        world = horde(3, seed=1)
+        for goblin_id, x in ((0, 300), (1, 900), (2, 1500)):
+            world.grab(goblin_id)
+            world.move_grabbed(x, GROUND - GOBLIN - 2)
+            run(world, 0.2)
+            world.drop()
+        run(world, 0.2)
+        world.grab(0, 8)
+        run(world, 0.3)
+        self.assertEqual([d.id for d in world.frame().draws if d.action == "grabbed"], [0])
+
+    def test_a_handful_let_go_flies_off_together_and_fans_out(self):
+        world, middle, _ = self.crowd()
+        world.grab(middle, 6)
+        for n in range(15):
+            world.move_grabbed(500 + 60 * n, 300)
+            world.step(TICK)
+        held = [d.id for d in world.frame().draws if d.action == "grabbed"]
+        start = {d.id: d.x for d in world.frame().draws if d.id in held}
+        world.drop()
+        run(world, 0.3)
+        flown = {d.id: d.x - start[d.id] for d in world.frame().draws if d.id in held}
+        self.assertEqual(len(flown), 6)
+        self.assertTrue(all(far > 80 for far in flown.values()), flown)
+        self.assertGreater(max(flown.values()) - min(flown.values()), 8, "not as one lump")
+        self.assertEqual(world.frame().draws[-1].action == "grabbed", False)
+        for goblin_id in held:
+            self.assertTrue(on_ground(draw_of(world, goblin_id)) or lands(world, goblin_id))
+
     def test_grabbing_nobody_is_refused(self):
         world = horde(5)
         self.assertFalse(world.grab(5))

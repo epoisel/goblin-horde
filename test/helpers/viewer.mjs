@@ -40,17 +40,19 @@ export async function readBody(request) {
   try { return JSON.parse(input); } catch { throw Object.assign(new Error("Invalid request."), { statusCode: 400 }); }
 }
 
+// Routes an older viewer had: the agent monitor's, the browser viewer's pages, and phone access. None may answer.
+const OLDER_ROUTES = ["/", "/index.html", "/app/", "/app/app.js", "/pair.html", "/pair.js", "/goblin_art.json", "/api/scene", "/api/threads", "/api/tasks",
+  "/api/transcript", "/api/agent", "/api/message", "/api/reply", "/api/respond", "/api/phone", "/api/phone/reset", "/api/mobile", "/api/config",
+  "/api/capabilities", "/api/diagnostics", "/api/connect-claude", "/api/autostart", "/api/app/open"];
+
 /**
- * Every path the viewer's route code names, read from its source: the quoted paths in server.mjs and the route
- * modules it mounts, and the static files its two file patterns list, at the top and under /app/.
+ * Every path the viewer's route code names, read from its source (the quoted paths in server.mjs and the pets
+ * routes it mounts), and every route an older viewer had.
  * @returns {string[]}
  */
 export function viewerPaths() {
-  const server = read("server.mjs");
-  const sources = [server, ...["lib/agent-detail.mjs", "lib/task-service.mjs", "lib/pets-routes.mjs"].map(read)];
-  const quoted = sources.flatMap((text) => text.match(/"\/[A-Za-z_./-]*"/g) || []).map((literal) => literal.slice(1, -1));
-  const files = [...server.matchAll(/\/\^\(((?:[a-z-]+\\\.[a-z]+\|?)+)\)\$\//g)].flatMap((match) => match[1].replaceAll("\\", "").split("|"));
-  return [...new Set([...quoted, ...files.flatMap((file) => [`/${file}`, `/app/${file}`])])].sort();
+  const quoted = ["server.mjs", "lib/pets-routes.mjs"].map(read).flatMap((text) => text.match(/"\/[A-Za-z_./-]*"/g) || []).map((literal) => literal.slice(1, -1));
+  return [...new Set([...quoted, ...OLDER_ROUTES])].sort();
 }
 
 /**
@@ -93,14 +95,10 @@ export async function until(read, done, problem, ms = 15_000) {
   throw new Error(problem);
 }
 
-/**
- * The environment of an isolated viewer under `root`: no Codex, no Orca, every folder inside `root`, a Wi-Fi
- * address this computer does not have, and `extra` on top.
- */
+/** The environment of an isolated viewer under `root`: every folder inside `root`, and `extra` on top. */
 export function viewerEnv(root, { port, stateDir, extra = {} }) {
   return { ...process.env, PORT: String(port), GOBLIN_HORDE_STATE_DIR: stateDir, HOME: join(root, "home"), USERPROFILE: join(root, "home"),
-    LOCALAPPDATA: join(root, "local"), APPDATA: join(root, "roaming"), CLAUDE_CONFIG_DIR: join(root, "claude"), CODEX_HOME: join(root, "codex"),
-    CODEX_CLI_PATH: join(root, "no-codex.exe"), ORCA_CLI_COMMAND: join(root, "no-orca"), LAN_IP: "10.255.255.254", ...extra };
+    LOCALAPPDATA: join(root, "local"), APPDATA: join(root, "roaming"), ...extra };
 }
 
 /**

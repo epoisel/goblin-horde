@@ -3,10 +3,10 @@
  * The pet game in a sandbox, for trying it out and for screenshots: the real viewer (server.mjs) on a free
  * port, over a temp folder that holds its state folder and a fixture T3 database.
  *
- *   node scripts/dev/pets-rig.mjs [--horde N] [--bosses N] [--coins N]
+ *   node scripts/dev/pets-rig.mjs [--horde N] [--bosses N] [--coins N] [--grip N]
  *
- * The viewer's home, app-data, Claude and Codex folders all point into the temp folder and GOBLIN_T3_DB names
- * the fixture, so nothing reads or writes the real ~/.t3 or the real Goblin Horde state. The rig prints what a
+ * The viewer's home and app-data folders point into the temp folder and GOBLIN_T3_DB names the fixture, so
+ * nothing reads or writes the real ~/.t3 or the real Goblin Horde state. The rig prints what a
  * Python widget needs to join it, then reads the commands in COMMANDS from stdin. The viewer is the saved
  * game's only writer, so the rig writes pets.json only while no viewer runs: a seed is saved before the first
  * start, and `give` and `horde` stop the viewer, save, and start it again on the same port.
@@ -29,8 +29,8 @@ import { initialWatermark } from "../../lib/t3-source.mjs";
 import { createT3Fixture, hasSqlite, usage as tokenUsage } from "../../test/helpers/t3-fixture.mjs";
 
 /**
- * @typedef {{ horde?: number | string, bosses?: number | string, coins?: number | string }} Seed
- *   The horde's size, the bosses cleared, and the coins held. A field left out keeps its saved value.
+ * @typedef {{ horde?: number | string, bosses?: number | string, coins?: number | string, grip?: number | string }} Seed
+ *   The horde's size, the bosses cleared, the coins held, and the grip upgrade's level. A field left out keeps its saved value.
  */
 
 const SOURCE = fileURLToPath(new URL("../..", import.meta.url));
@@ -59,6 +59,7 @@ const SEED = {
   horde: { min: 1, max: () => Infinity, put: (state, size) => ({ ...state, horde: { ...state.horde, size } }) },
   bosses: { min: 0, max: (config) => config.bosses.count, put: (state, cleared) => ({ ...state, bosses: { cleared } }) },
   coins: { min: 0, max: () => Infinity, put: withCoins },
+  grip: { min: 0, max: (config) => config.upgrades.grip.max, put: (state, grip) => ({ ...state, upgrades: { ...state.upgrades, grip } }) },
 };
 
 /** The change `seed` makes to a saved game's state. Throws a plain Error for a number out of range. */
@@ -107,13 +108,10 @@ export async function startRig(seed = {}) {
   writeFileSync(join(stateDir, "goblins.json"), "{}");
   const fixture = createT3Fixture({ dir: join(dir, "t3") });
   const store = createPetsStore({ dir: stateDir });
-  // No Codex, no Orca, a Wi-Fi address this computer does not have, and every folder the viewer could look
-  // in, its home folder included, inside the temp folder.
+  // Every folder the viewer could look in, its home folder included, inside the temp folder.
   const viewerEnv = {
     ...process.env, PORT: String(port), GOBLIN_HORDE_STATE_DIR: stateDir, GOBLIN_T3_DB: fixture.path,
     HOME: home, USERPROFILE: home, LOCALAPPDATA: join(dir, "local"), APPDATA: join(dir, "roaming"),
-    CLAUDE_CONFIG_DIR: join(dir, "claude"), CODEX_HOME: join(dir, "codex"), CODEX_CLI_PATH: join(dir, "no-codex.exe"),
-    ORCA_CLI_COMMAND: join(dir, "no-orca"), LAN_IP: "10.255.255.254",
   };
   let viewer = null;
   let turns = 0;
@@ -260,13 +258,11 @@ const COMMANDS = {
   quit: { usage: "quit", about: "Stop the viewer and delete the temp folder. The end of stdin does the same." },
 };
 const commandList = () => Object.values(COMMANDS).map(({ usage, about }) => `  ${usage.padEnd(18)}${about}`).join("\n");
-const USAGE = "Usage: node scripts/dev/pets-rig.mjs [--horde N] [--bosses N] [--coins N]";
+const USAGE = "Usage: node scripts/dev/pets-rig.mjs [--horde N] [--bosses N] [--coins N] [--grip N]";
 
 function welcome(rig, answer) {
   const { GOBLIN_HORDE_STATE_DIR: stateDir } = rig.env;
-  const widget = process.platform === "win32"
-    ? `$env:GOBLIN_HORDE_STATE_DIR = '${stateDir}'; python desktop_widget.py --port ${rig.port}`
-    : `GOBLIN_HORDE_STATE_DIR='${stateDir}' python3 desktop_widget.py --port ${rig.port}`;
+  const widget = `$env:GOBLIN_HORDE_STATE_DIR = '${stateDir}'; python desktop_widget.py --port ${rig.port}`;
   return [
     "The pets rig is up: the real viewer over a temp folder and a fixture T3 database.",
     `  Port:        ${rig.port}`,
@@ -280,7 +276,7 @@ function welcome(rig, answer) {
 }
 
 async function main(argv) {
-  const options = { horde: { type: "string" }, bosses: { type: "string" }, coins: { type: "string" }, help: { type: "boolean", short: "h" } };
+  const options = { horde: { type: "string" }, bosses: { type: "string" }, coins: { type: "string" }, grip: { type: "string" }, help: { type: "boolean", short: "h" } };
   let values;
   try { ({ values } = parseArgs({ args: argv, options })); } catch (error) { throw new Error(`${error.message}\n${USAGE}`); }
   if (values.help) {

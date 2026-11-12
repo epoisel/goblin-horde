@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { savePairingCode } from "../lib/phone.mjs";
+import { savePairingCode } from "../lib/pairing.mjs";
 import { CODE } from "./helpers/shared-host.mjs";
 import { createT3Fixture, hasSqlite, TRAP, usage } from "./helpers/t3-fixture.mjs";
 import { ask, freePort, startViewer, until, viewerEnv, viewerPaths } from "./helpers/viewer.mjs";
@@ -155,7 +155,7 @@ test("two viewers share one game: the host pays and saves, the display shows and
       // The display paired from this same address, and an address is one computer: its session was replaced, not added to.
       assert.equal((await (await fetch(`http://127.0.0.1:${hostPort}/api/shared`)).json()).shared.sessions, 1, "one computer holds one session");
       const answered = [];
-      for (const path of [...viewerPaths(), "/api/pets/whoami"]) {
+      for (const path of [...viewerPaths(), "/api/pets/whoami", "/api/pair"]) {
         for (const method of ["GET", "POST"]) {
           // A purchase and a fight the game refuses, so asking every route changes nothing.
           const { status } = await call(method, path, { cookie, body: { kind: "dragon", boss: -1, enabled: false, code: "nope", id: "x" } });
@@ -182,7 +182,7 @@ test("two viewers share one game: the host pays and saves, the display shows and
       const saveBefore = readFileSync(join(dir.host, "pets.json"), "utf8");
       const second = start(viewerEnv(root, { port: secondPort, stateDir: dir.host, extra: { GOBLIN_T3_DB: fixture.path, GOBLIN_SHARED_LOOPBACK: String(secondShared) } }), logs.second);
       const refused = await until(local(secondPort), (answer) => answer.ready === false && answer.message === LOCKED, "The second viewer was not refused by the lock.");
-      assert.deepEqual(refused, { ready: false, reason: "locked", message: LOCKED });
+      assert.deepEqual(refused, { ready: false, reason: "locked", message: LOCKED, update: null });
       assert.deepEqual(await post(secondPort, "/api/pets/buy", { kind: "level" }), { status: 503, body: { error: LOCKED } });
       await sleep(1500);
       assert.equal(readFileSync(join(dir.host, "pets.json"), "utf8"), saveBefore, "the saved game is untouched");
@@ -215,10 +215,11 @@ test("two viewers share one game: the host pays and saves, the display shows and
     await t.test("with the host stopped the display says so in plain words, keeps its other routes, and comes back with the host", async () => {
       await host.stop();
       const down = await until(displayPets, (answer) => answer.ready === false, "The display kept showing a game with the host stopped.");
-      assert.deepEqual(down, { ready: false, message: "The shared game on 127.0.0.1 is not reachable. Is Goblin Horde running there?" });
+      assert.deepEqual(down, { ready: false, message: "The shared game on 127.0.0.1 is not reachable. Is Goblin Horde running there?", update: null },
+        "the display's own goblins also hear whether the display has an update waiting");
       const started = Date.now();
-      const [health, config] = await Promise.all([local(displayPort)("/api/health"), local(displayPort)("/api/config")]);
-      assert.deepEqual([health.product, typeof config.pollMs], ["GoblinHorde", "number"]);
+      const [health, shared] = await Promise.all([local(displayPort)("/api/health"), local(displayPort)("/api/shared")]);
+      assert.deepEqual([health.product, shared.shared.enabled], ["GoblinHorde", false]);
       assert.ok(Date.now() - started < 1000, "the display's other routes do not wait for the host");
       assert.deepEqual(await post(displayPort, "/api/pets/buy", { kind: "level" }).then(({ status }) => status), 503);
 
@@ -268,18 +269,6 @@ test("two viewers share one game: the host pays and saves, the display shows and
       assert.match(goblin("display", "pets-host", "enable").out, /A computer is a host or a display, not both\./);
     });
 
-    await t.test("a new pairing code on the host signs the display out until it joins with the new code", async () => {
-      await until(displayPets, (answer) => answer.ready, "The display did not come back after the listener opened again.", 45_000);
-      const reset = await post(hostPort, "/api/phone/reset", {});
-      assert.equal(reset.status, 200);
-      assert.notEqual(reset.body.code, CODE);
-      const out = await until(displayPets, (answer) => answer.ready === false, "The display kept its session after the code changed.");
-      assert.deepEqual(out, { ready: false, message: "The shared game on 127.0.0.1 did not accept this computer's pairing code." });
-      const own = `127.0.0.1:${sharedPort}`;
-      const old = await ask(sharedPort, "POST", "/api/pair", { body: { code: CODE }, headers: { Host: own, Origin: `http://${own}`, "Content-Type": "application/json" } });
-      assert.equal(old.status, 401, "the old code no longer pairs");
-    });
-
     await t.test("pets-join --off puts the display back on its own game", async () => {
       const off = goblin("display", "pets-join", "--off");
       assert.equal(off.status, 0);
@@ -303,7 +292,7 @@ test("two viewers share one game: the host pays and saves, the display shows and
       writeFileSync(join(dir.display, "pets.json"), impossible);
       const refusing = start(displayEnv, logs.display);
       const unread = await until(displayPets, (answer) => answer.ready === false && answer.reason === "unreadable", "The display did not say that its saved game cannot be read.");
-      assert.deepEqual(unread, { ready: false, reason: "unreadable", message: "The saved game could not be read. A copy was kept next to it. Nothing was replaced." });
+      assert.deepEqual(unread, { ready: false, reason: "unreadable", message: "The saved game could not be read. A copy was kept next to it. Nothing was replaced.", update: null });
       assert.deepEqual(await post(displayPort, "/api/pets/buy", { kind: "recruit" }), { status: 503, body: { error: unread.message } });
       assert.equal(readFileSync(join(dir.display, "pets.json"), "utf8"), impossible, "the viewer did not start a new game over the save it could not read");
       const kept = readdirSync(dir.display).filter((name) => /^pets\.json\.unreadable\.\d+-[0-9a-f]{8}$/.test(name));

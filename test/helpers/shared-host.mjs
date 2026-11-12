@@ -14,9 +14,9 @@ import { ask, json, readBody } from "./viewer.mjs";
 // A pairing code of letters that no sentence holds side by side, so a leak of any part of it is easy to see.
 export const CODE = "ZQXZQXZQ";
 export const NAMES = ["servitor.tail1234.ts.net", "servitor"];
-export const STATE = { schema: 1, wallet: { coins: 64, scrap: 0, lifetimeCoins: 39 }, horde: { size: 3, level: 1, xp: 1, gear: 0 }, upgrades: { hoard: 0, training: 0 },
+export const STATE = { schema: 1, wallet: { coins: 64, scrap: 0, lifetimeCoins: 39 }, horde: { size: 3, level: 1, xp: 1, gear: 0 }, upgrades: { hoard: 0, training: 0, grip: 0 },
   bosses: { cleared: 0 }, today: { key: "2026-11-10", reruns: {} } };
-export const GAME = { state: STATE, quotes: { recruit: { coins: 40 }, level: { xp: 40, coins: 15 }, gear: { scrap: 20 }, hoard: { coins: 40 }, training: null },
+export const GAME = { state: STATE, quotes: { recruit: { coins: 40 }, level: { xp: 40, coins: 15 }, gear: { scrap: 20 }, hoard: { coins: 40 }, training: null, grip: { coins: 50 } },
   power: 3, nextBoss: { index: 0, requiredPower: 2.5 } };
 
 /** An engine that answers from fixed values and keeps the purchases and fights it was asked for in `calls`. */
@@ -68,7 +68,7 @@ export async function sharedHost(t, { network = {}, game = engine(), code = CODE
 
 /**
  * A local viewer that mounts a display's pets routes over `remote` as server.mjs mounts them, plus one other
- * local route. A request with the x-phone header stands for one that is not from this computer.
+ * local route. A request with the x-elsewhere header stands for one that is not from this computer.
  */
 export async function displayViewer(t, remote) {
   const route = remotePetsRoutes(remote);
@@ -78,7 +78,7 @@ export async function displayViewer(t, remote) {
     if (url.pathname === "/api/health") return json(response, 200, { product: "GoblinHorde" });
     const fail = (res, status, message) => json(res, status, { error: message });
     try {
-      if (!(await route(request, response, { url, local: !request.headers["x-phone"], origin, json, readBody, fail }))) json(response, 404, { error: "Not found" });
+      if (!(await route(request, response, { url, local: !request.headers["x-elsewhere"], origin, json, readBody, fail }))) json(response, 404, { error: "Not found" });
     } catch { json(response, 500, { error: "Unexpected error." }); }
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));

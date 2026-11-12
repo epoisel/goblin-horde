@@ -129,14 +129,14 @@ test("a purchase and a fight through a display reach the host's game with only t
   assert.deepEqual(bodies, [["/api/pets/buy", { kind: "recruit" }], ["/api/pets/fight", { boss: 0 }]], "nothing else from the local request is sent on");
 });
 
-test("a display keeps the local checks: a phone, another site's page, and a bad body never reach the host", async (t) => {
+test("a display keeps the local checks: another computer, another site's page, and a bad body never reach the host", async (t) => {
   const host = await sharedHost(t);
   const view = await display(t, createRemotePets(setting(host.port), { env: STAND_IN }));
-  const phone = { "x-phone": "1" };
-  assert.deepEqual(await view.get("/api/pets", phone).then(({ status, body }) => [status, body]), [403, { error: "The game is on this computer only." }]);
+  const elsewhere = { "x-elsewhere": "1" };
+  assert.deepEqual(await view.get("/api/pets", elsewhere).then(({ status, body }) => [status, body]), [403, { error: "The game is on this computer only." }]);
   const own = { Origin: `http://127.0.0.1:${view.port}`, "Content-Type": "application/json" };
   for (const [path, body] of [["/api/pets/buy", { kind: "recruit" }], ["/api/pets/fight", { boss: 0 }]]) {
-    for (const [who, headers] of [["a phone", { ...own, ...phone }], ["no Origin", { "Content-Type": "application/json" }],
+    for (const [who, headers] of [["another computer", { ...own, ...elsewhere }], ["no Origin", { "Content-Type": "application/json" }],
       ["another site's page", { ...own, Origin: "http://evil.example" }], ["a form", { ...own, "Content-Type": "text/plain" }]])
       assert.equal((await view.post(path, body, headers)).status, 403, `${path} from ${who}`);
   }

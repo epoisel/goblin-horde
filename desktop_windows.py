@@ -39,9 +39,9 @@ CLICK_THROUGH = 0x00080000 | 0x00000020  # WS_EX_LAYERED with WS_EX_TRANSPARENT
 DWMWA_EXTENDED_FRAME_BOUNDS, DWMWA_CLOAKED = 9, 14
 SM_CXSCREEN, SM_CYSCREEN = 0, 1
 PER_MONITOR_AWARE_V2 = -4
-TASKBAR_CLASS = "Shell_TrayWnd"
+TASKBAR_CLASS, SECOND_TASKBAR_CLASS = "Shell_TrayWnd", "Shell_SecondaryTrayWnd"
 # The desktop itself and the taskbars: under everything or part of the ground, never a platform.
-SHELL_CLASSES = frozenset({"Progman", "WorkerW", TASKBAR_CLASS, "Shell_SecondaryTrayWnd"})
+SHELL_CLASSES = frozenset({"Progman", "WorkerW", TASKBAR_CLASS, SECOND_TASKBAR_CLASS})
 CLASS_NAME_LENGTH = 64
 
 # Why a visible top-level window is left out, cheapest question first. "own process" stays ahead of
@@ -97,6 +97,7 @@ class _Win32:
         self._title_length = self._bind(user32.GetWindowTextLengthW, ctypes.c_int, handle)
         self._rect = self._bind(user32.GetWindowRect, ctypes.c_int, handle, ctypes.POINTER(_Rect))
         self._find = self._bind(user32.FindWindowW, handle, ctypes.c_wchar_p, ctypes.c_wchar_p)
+        self._find_next = self._bind(user32.FindWindowExW, handle, handle, handle, ctypes.c_wchar_p, ctypes.c_wchar_p)
         self._shell = self._bind(user32.GetShellWindow, handle)
         self._metric = self._bind(user32.GetSystemMetrics, ctypes.c_int, ctypes.c_int)
         self._foreground = self._bind(user32.GetForegroundWindow, handle)
@@ -182,13 +183,30 @@ class _Win32:
             return None
         return rect.left, rect.top, rect.right, rect.bottom
 
-    def taskbar(self) -> tuple[int, int, int, int] | None:
-        """The primary taskbar's rectangle, or None when there is none on show."""
+    def taskbar(self, display: tuple[int, int, int, int] | None = None) -> tuple[int, int, int, int] | None:
+        """The primary taskbar's rectangle, or None when there is none on show. Given a display's
+        rectangle, the taskbar on that display instead: the primary one or a second display's."""
+        found = None if display is None else self._second_taskbars(display)
+        if found is not None:
+            return found
         hwnd = self._find(TASKBAR_CLASS, None)
         rect = _Rect()
         if not hwnd or not self._visible(hwnd) or not self._rect(hwnd, ctypes.byref(rect)):
             return None
-        return rect.left, rect.top, rect.right, rect.bottom
+        frame = rect.left, rect.top, rect.right, rect.bottom
+        return frame if display is None or _inside(frame, display) else None
+
+    def _second_taskbars(self, display: tuple[int, int, int, int]) -> tuple[int, int, int, int] | None:
+        """The taskbar Windows draws on a display other than the primary, when one lies on ``display``."""
+        hwnd = self._find_next(None, None, SECOND_TASKBAR_CLASS, None)
+        while hwnd:
+            rect = _Rect()
+            if self._visible(hwnd) and self._rect(hwnd, ctypes.byref(rect)):
+                frame = rect.left, rect.top, rect.right, rect.bottom
+                if _inside(frame, display):
+                    return frame
+            hwnd = self._find_next(None, hwnd, SECOND_TASKBAR_CLASS, None)
+        return None
 
     def foreground(self) -> int | None:
         """The window the person is working in, or None between two of them."""
@@ -241,20 +259,27 @@ def snapshot() -> list[WindowRect]:
     return [rect for rect in rects if rect.x1 > rect.x0 and rect.y1 > rect.y0]
 
 
-def taskbar_top(work_area_bottom: int) -> int:
+def _inside(frame: tuple[int, int, int, int], display: tuple[int, int, int, int]) -> bool:
+    """Whether the middle of ``frame`` lies on ``display``, both as (left, top, right, bottom)."""
+    x, y = (frame[0] + frame[2]) / 2, (frame[1] + frame[3]) / 2
+    return display[0] <= x < display[2] and display[1] <= y < display[3]
+
+
+def taskbar_top(work_area_bottom: int, display: tuple[int, int, int, int] | None = None) -> int:
     """The y of the taskbar's top edge, where the horde's feet rest.
 
     Usually the work area ends where the taskbar begins and the two agree. They differ when the
     taskbar lies over the work area: on a desktop whose work area ignores it the answer is the
     taskbar's own top, and when it has slid away to hide (under half of it left above the work
     area's bottom) the answer is ``work_area_bottom``, as it is for a taskbar docked on another
-    side or not on show. Same units as snapshot(); never raises."""
+    side or not on show. ``display`` is the (left, top, right, bottom) of the display the horde
+    stands on, the primary one when it is left out. Same units as snapshot(); never raises."""
     if sys.platform != "win32":
         return work_area_bottom
     try:
         desktop = _win32()
         with desktop.real_pixels() as scale:
-            frame = desktop.taskbar()
+            frame = desktop.taskbar() if display is None else desktop.taskbar(_scaled(display, 1 / scale))
     except _FAILURES:
         return work_area_bottom
     if frame is None:
@@ -265,23 +290,25 @@ def taskbar_top(work_area_bottom: int) -> int:
     return top if along_the_bottom and half_on_show else work_area_bottom
 
 
-def foreground_is_fullscreen() -> bool:
-    """Whether a full-screen app (a game, a video, a slide show) is in front on the primary display,
-    where the horde lives: the window in front covers that whole display and none of NOT_FULLSCREEN
-    holds for it. A full-screen app on another display does not count. False off Windows and
-    whenever Windows cannot be asked; never raises."""
+def foreground_is_fullscreen(display: tuple[int, int, int, int] | None = None) -> bool:
+    """Whether a full-screen app (a game, a video, a slide show) is in front on the display where the
+    horde lives, the primary one unless ``display`` (left, top, right, bottom) says otherwise: the
+    window in front covers that whole display and none of NOT_FULLSCREEN holds for it. A full-screen
+    app on another display does not count. False off Windows and whenever Windows cannot be asked;
+    never raises."""
     if sys.platform != "win32":
         return False
     try:
         desktop = _win32()
-        with desktop.real_pixels():
+        with desktop.real_pixels() as scale:
             hwnd = desktop.foreground()
             if not hwnd or any(holds(desktop, hwnd) for _reason, holds in NOT_FULLSCREEN):
                 return False
-            frame, (width, height) = desktop.frame(hwnd), desktop.screen()
+            frame = desktop.frame(hwnd)
+            left, top, right, bottom = (0, 0, *desktop.screen()) if display is None else _scaled(display, 1 / scale)
     except _FAILURES:
         return False
-    return frame is not None and frame[0] <= 0 and frame[1] <= 0 and frame[2] >= width and frame[3] >= height
+    return frame is not None and frame[0] <= left and frame[1] <= top and frame[2] >= right and frame[3] >= bottom
 
 
 def seconds_since_input() -> float:

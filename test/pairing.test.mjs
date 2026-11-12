@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { PAIRING_CODE, Pairing, newPairingCode, sessionCookie } from "../lib/pairing.mjs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CODE_FILE, PAIRING_CODE, Pairing, loadPairingCode, newPairingCode, sessionCookie, startingPairingCode } from "../lib/pairing.mjs";
 
 const clock = (start = 1_000_000) => {
   const time = { now: start };
@@ -27,7 +30,7 @@ test("the right code earns a session and clears the address's attempts; a wrong 
   const token = pairing.pair("ip", " abcd efgh ");
   assert.match(token, /^[a-f0-9]{64}$/);
   assert.equal(pairing.attempts.has("ip"), false);
-  assert.equal(pairing.allow("ip"), true, "a paired phone starts with a fresh count");
+  assert.equal(pairing.allow("ip"), true, "a paired computer starts with a fresh count");
   assert.equal(pairing.hasSession(token), true);
   assert.equal(pairing.hasSession("f".repeat(64)), false);
   assert.equal(pairing.hasSession("not-hex"), false);
@@ -49,20 +52,31 @@ test("old attempt records and expired sessions are pruned as requests arrive", (
   assert.equal(pairing.hasSession(token), false);
 });
 
-test("a reset sets a new code and signs every phone out; endSessions only signs them out", () => {
+test("endSessions signs every computer out, and the same code pairs again", () => {
   const { now } = clock();
   const pairing = new Pairing({ code: "ABCDEFGH", now });
   const first = pairing.pair("ip", "ABCDEFGH");
   pairing.endSessions();
   assert.equal(pairing.hasSession(first), false);
   const second = pairing.pair("ip", "ABCDEFGH");
-  for (let index = 0; index < 5; index++) pairing.allow("other");
-  pairing.reset("JKLMNPQR");
-  assert.equal(pairing.hasSession(second), false);
-  assert.equal(pairing.pair("ip", "ABCDEFGH"), "");
-  assert.equal(pairing.allow("other"), true, "attempt counts start over with the new code");
+  assert.equal(pairing.hasSession(second), true);
   assert.match(newPairingCode(), PAIRING_CODE);
   assert.equal(newPairingCode(() => Buffer.from([0, 1, 2, 3, 4, 5, 6, 31])), "ABCDEFG9");
+});
+
+test("the pairing code is made once, saved, and the same code is read back on the next start", () => {
+  const dir = mkdtempSync(join(tmpdir(), "goblin-pairing-"));
+  try {
+    const made = loadPairingCode(dir);
+    assert.match(made, PAIRING_CODE);
+    assert.equal(readFileSync(join(dir, CODE_FILE), "utf8"), `${made}\n`);
+    assert.equal(loadPairingCode(dir), made);
+    assert.equal(startingPairingCode(dir, { log: {} }), made);
+    writeFileSync(join(dir, CODE_FILE), "not a code\n");
+    const replaced = loadPairingCode(dir);
+    assert.match(replaced, PAIRING_CODE, "a file that holds no code is given a new one");
+    assert.equal(readFileSync(join(dir, CODE_FILE), "utf8"), `${replaced}\n`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 /** One request to pair, as answerPair makes it: counted first, then checked. */
@@ -72,7 +86,7 @@ test("live sessions are capped at 32, and the oldest makes room for the newest",
   const { now } = clock();
   const pairing = new Pairing({ code: "ABCDEFGH", now });
   const tokens = Array.from({ length: 40 }, (_, index) => tryPair(pairing, `10.0.0.${index}`));
-  assert.ok(tokens.every((token) => /^[a-f0-9]{64}$/.test(token)), "each of 40 phones pairs");
+  assert.ok(tokens.every((token) => /^[a-f0-9]{64}$/.test(token)), "each of 40 addresses pairs");
   assert.equal(pairing.sessionCount(), 32);
   assert.deepEqual(tokens.map((token) => pairing.hasSession(token)), [...Array(8).fill(false), ...Array(32).fill(true)], "the first eight were signed out, oldest first");
 
@@ -131,10 +145,10 @@ test("with one session per computer, the code again from a computer that is sign
   busy.endSessions();
   assert.equal(tryPair(busy, "100.100.1.3"), "", "at its limit and signed out: nothing more until the ten minutes pass");
 
-  const phones = new Pairing({ code: "ABCDEFGH", now });
-  const [one, two] = [tryPair(phones, "192.168.1.30"), tryPair(phones, "192.168.1.30")];
+  const each = new Pairing({ code: "ABCDEFGH", now });
+  const [one, two] = [tryPair(each, "100.100.1.30"), tryPair(each, "100.100.1.30")];
   assert.notEqual(one, two);
-  assert.deepEqual([phones.hasSession(one), phones.hasSession(two)], [true, true], "phones keep a session for each browser");
+  assert.deepEqual([each.hasSession(one), each.hasSession(two)], [true, true], "without onePerPeer, each pairing is a session of its own");
 });
 
 test("the right code over and over from one address makes a bounded number of sessions, not thousands", () => {
@@ -161,8 +175,6 @@ test("the right code over and over from one address makes a bounded number of se
   const many = new Pairing({ code: "ABCDEFGH", now });
   for (let peer = 0; peer < 300; peer += 1) for (let turn = 0; turn < 20; turn += 1) tryPair(many, `100.100.${peer >> 8}.${peer & 255}`);
   assert.equal(many.sessionCount(), 32, "however many addresses pair, at most 32 sessions live");
-  many.reset("JKLMNPQR");
-  assert.match(tryPair(many, "100.100.0.0", "JKLMNPQR"), /^[a-f0-9]{64}$/, "a new code starts every count over");
 });
 
 test("the attempt table is bounded, and a full table refuses new addresses and forgives nobody", () => {

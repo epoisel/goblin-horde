@@ -2,7 +2,8 @@
 
 Standard library only, no Tk. Screen pixels go in and come out; inside, everything is sprite
 pixels (screen pixels / unit), so the tables in `pet_behaviors` and `pet_battle` hold at any
-scale. The view feeds it window tops and the cursor, calls `step`, and draws `frame`.
+scale. The view feeds it window tops and the cursor, calls `step`, and draws `frame`. The cursor is a
+hand: it carries one goblin or a handful, and a goblin it lets go over a boss lands on it.
 """
 import math
 import random
@@ -29,6 +30,12 @@ SEPARATION = 4.0
 SEPARATION_PUSH = 0.3
 BOUNCE_RATE = 11.0
 GRAB_HALF = 6.0       # half width of the box a cursor grabs a goblin by
+GRAB_REACH = 60.0     # how far from that goblin a hand that carries more gathers the rest
+# Where each goblin of a handful hangs from the cursor, the first one grabbed first. Its length is
+# the most a hand can carry.
+HANG = ((0.0, 0.0), (-8.0, 2.0), (8.0, 2.0), (-15.0, 6.0), (15.0, 6.0), (-5.0, 9.0), (5.0, 9.0),
+        (0.0, 15.0))
+THROW_SPREAD = 0.12   # how far the speeds of a handful let go differ, so it fans out
 FADE_RATE = 3.0       # alpha per second, arriving and leaving
 MAX_EFFECTS = 320
 CHEER_CROWD = 7
@@ -91,8 +98,8 @@ class World:
     """Goblins, platforms and at most one boss fight, stepped by the view and read back as a Frame.
 
     Screen pixels are measured from the world's top left corner. The view calls `resize`,
-    `set_horde`, `set_platforms`, `grab`, `move_grabbed`, `drop`, `goblin_at`, `reward`, `stir`,
-    `start_battle`, `step`, `frame`, `battling` and `shown`; the other methods without an
+    `set_horde`, `set_platforms`, `keep_clear`, `grab`, `move_grabbed`, `drop`, `goblin_at`,
+    `reward`, `stir`, `start_battle`, `step`, `frame`, `battling` and `shown`; the other methods without an
     underscore are what the behaviour and battle rows work through. The crowd has depth: feet
     rest up to LANES - 1 sprite pixels below `ground_y`, so the view draws that far past the line.
     """
@@ -106,8 +113,9 @@ class World:
         self.effects = []
         self.events = []
         self.battle = None
-        self.held = None
+        self.held = []
         self.hand = (0.0, 0.0)
+        self.wings = (0.0, 0.0)
         self.clock = self.quake = self.excite = 0.0
         self.haste = 1.0
         self.floor = 0.0
@@ -144,8 +152,7 @@ class World:
         if want < have:
             self.leaving += self.goblins[want:]
             del self.goblins[want:]
-            if self.held is not None and self.held.id >= want:
-                self.held = None
+            self.held = [g for g in self.held if g.id < want]
             for g in self.goblins:
                 for link in ('target', 'carrier', 'rider'):
                     other = getattr(g, link)
@@ -162,17 +169,28 @@ class World:
             self._tops = tops
             self._lay()
 
-    def grab(self, goblin_id):
-        """Pick a goblin up by the scruff; it hangs from the cursor until `drop`. False for no such id."""
+    def keep_clear(self, left=0.0, right=0.0):
+        """Screen pixels at each end of the ground that the view covers with things of its own. The
+        next boss stands, and falls, clear of them."""
+        self.wings = (max(0.0, left) / self.unit, max(0.0, right) / self.unit)
+
+    def grab(self, goblin_id, most=1):
+        """Pick a goblin up by the scruff, and its nearest neighbours with it, `most` in all and never
+        more than HANG has places. They hang from the cursor until `drop`. False for no such id."""
         if not 0 <= goblin_id < len(self.goblins):
             return False
         self.drop()
-        g = self.goblins[goblin_id]
-        self.hand = (g.x, g.y - GOBLIN_H)
-        self.lift(g)
-        g.vx = g.vy = 0.0
-        self.enter(g, 'held')
-        self.held = g
+        first = self.goblins[goblin_id]
+        near = sorted((g for g in self.goblins if g is not first
+                       and abs(g.x - first.x) <= GRAB_REACH and abs(g.y - first.y) <= GRAB_REACH),
+                      key=lambda g: abs(g.x - first.x) + abs(g.y - first.y))
+        self.hand = (first.x, first.y - GOBLIN_H)
+        for g, hang in zip([first] + near, HANG[:max(1, int(most))]):
+            self.lift(g)
+            g.vx = g.vy = 0.0
+            g.hang = hang
+            self.enter(g, 'held')
+            self.held.append(g)
         return True
 
     def move_grabbed(self, x, y):
@@ -182,14 +200,17 @@ class World:
                          min(max(y / self.unit, 0.0), self.floor - GOBLIN_H))
 
     def drop(self):
-        """Let go: the goblin keeps the cursor's speed, up to a limit, and falls to what is below."""
-        g, self.held = self.held, None
-        if g is None:
-            return
-        speed = math.hypot(g.vx, g.vy)
-        if speed > THROW_MAX:
-            g.vx, g.vy = g.vx * THROW_MAX / speed, g.vy * THROW_MAX / speed
-        self.enter(g, 'fall')
+        """Let go: each goblin keeps the cursor's speed, up to a limit, and falls to what is below,
+        or onto a boss in its way."""
+        held, self.held = self.held, []
+        for g in held:
+            speed = math.hypot(g.vx, g.vy)
+            if speed > THROW_MAX:
+                g.vx, g.vy = g.vx * THROW_MAX / speed, g.vy * THROW_MAX / speed
+            if len(held) > 1:
+                g.vx *= self.rng.uniform(1.0 - THROW_SPREAD, 1.0 + THROW_SPREAD)
+                g.vy *= self.rng.uniform(1.0 - THROW_SPREAD, 1.0 + THROW_SPREAD)
+            self.enter(g, 'thrown')
 
     def goblin_at(self, x, y):
         """The id of the goblin drawn on top at this screen point, or None."""
@@ -197,7 +218,7 @@ class World:
         top = None
         for g in self.goblins:
             if abs(g.x - px) <= GRAB_HALF and g.y - GOBLIN_H - 2.0 <= py <= g.y + 1.0:
-                if g is self.held:
+                if g in self.held:
                     return g.id
                 if top is None or _layer(g) >= _layer(top):
                     top = g
@@ -279,9 +300,8 @@ class World:
         """This instant as draw records in screen pixels, back to front. Changes nothing."""
         unit, held, battle = self.unit, self.held, self.battle
         draws = [_draw(g, unit) for g in self.leaving]
-        draws += [_draw(g, unit) for g in sorted(self.goblins, key=_layer) if g is not held]
-        if held is not None:
-            draws.append(_draw(held, unit))
+        draws += [_draw(g, unit) for g in sorted(self.goblins, key=_layer) if g not in held]
+        draws += [_draw(g, unit) for g in reversed(held)]
         pops = tuple(Pop(EFFECTS[e.kind].pop, e.x * unit, e.y * unit, e.text, e.age, e.ttl)
                      for e in self.effects)
         boss = pet_battle.boss_draw(battle, unit) if battle is not None else None
@@ -292,7 +312,7 @@ class World:
         """Which transition table a goblin reads: the fight's phase, its trip home, or its footing."""
         battle = self.battle
         if battle is not None and battle.phase != 'disperse':
-            return battle.phase
+            return pet_battle.context(self, g)
         if g.spot is not None:
             return 'disperse'
         return g.platform.kind if g.platform is not None else 'ground'
@@ -378,6 +398,7 @@ class World:
         g.clock, g.rate = rng.uniform(0.0, 10.0), rng.uniform(0.85, 1.2)
         g.target = g.carrier = g.rider = g.spot = None
         g.vx = g.vy = g.goal = g.hit = g.u = g.v = g.tu = g.tv = g.alpha = 0.0
+        g.hang = HANG[0]
         g.wave = 0
         g.state, g.behavior = 'idle', BEHAVIORS['idle']
         g.facing = rng.choice((-1, 1))

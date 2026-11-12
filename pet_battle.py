@@ -8,7 +8,7 @@ import bisect
 import math
 from typing import NamedTuple
 
-from pet_behaviors import GOBLIN_H, INF, BossDraw, run_to
+from pet_behaviors import BEHAVIORS, GOBLIN_H, INF, BossDraw, air, hurry, run_to
 from pet_boss import boss_profile
 
 BOSS_COUNT = 36
@@ -21,16 +21,25 @@ CLING_DENSITY = 0.3   # share of the silhouette climbers may cover
 CLIMB_SPEED = 62.0
 WAVES = 4
 WAVE_GAP = 0.6
+NOTICE = 0.8          # seconds for word of the boss to cross the whole ground, however wide
+RALLY_RANGE = 480.0   # how far from where the boss stands a goblin still charges from its own spot
+RALLY_CLEAR = 40.0    # how far outside the boss's reach the nearest of the rallied wait
+CHARGE_TIME = 2.5     # seconds a charge takes from anywhere in that range
+CHARGE_SPARE = BEHAVIORS['charge'].dur[0] - CHARGE_TIME
 CHARGE_SHARE = 0.125  # of the horde at the boss before the charge counts as a swarm
 FLEE_MARGIN = 130.0   # how far past the danger a goblin still runs from it
 HIT_EVERY = 0.5
 HIT_POP_EVERY = 0.3
+THROW_BLOWS = 25      # what a goblin the player threw onto the boss counts for in the number that pops
+THROW_SKIP = 0.4      # seconds of the swarm it knocks off
+THROW_SHARE = 0.5     # the most of a swarm that throwing can knock off
 DOWN_TIME = 3.0       # a beaten boss lies there this long
 BLINK_TIME = 0.7      # and blinks out over the last of it,
 BLINK_RATE = 14.0     # this many flickers a second
 COINS = 30
 MARGIN = 6.0          # ground left clear at each screen edge
 FIGHT_PHASES = ('charge', 'swarm')
+WORN_PHASES = ('enter', 'charge', 'swarm')  # while a thrown goblin can land on the boss and hurt it
 
 
 class Show(NamedTuple):
@@ -72,13 +81,14 @@ class BossState(NamedTuple):
     lean: float = 0.0    # how far the head leans toward the face at the peak, in body heights
     dip: float = 0.0     # how far the body sinks at the peak, in body heights
     walks: float = 0.0   # body heights per second toward its aim
+    hastes: bool = False  # walks at the boss's own gait, so a longer way on or off takes no longer
     aim: str = ''        # AIMS row
     turns: bool = False  # faces the way it walks
     holds: bool = True   # climbers can stay on
 
 
 BOSS_STATES = {
-    'walk': BossState('walk', 'stride', next='arrive', dip=0.012, walks=0.6, aim='home'),
+    'walk': BossState('walk', 'stride', next='arrive', dip=0.012, walks=0.6, hastes=True, aim='home'),
     'arrive': BossState('roar', 'strike', 1.3, at=0.35, effect='announce', shake=2.0, lean=0.04),
     'stand': BossState('stand', 'clock', 1.3),
     'stomp': BossState('stomp', 'strike', 0.8, at=0.4, effect='stomp', dip=0.03),
@@ -89,8 +99,8 @@ BOSS_STATES = {
     'fall': BossState('fall', 'tip', 0.55, next='down', at=0.5, effect='crash', holds=False),
     'down': BossState('fall', 'flat', holds=False),
     'bellow': BossState('roar', 'strike', 1.4, next='leave', at=0.4, effect='shockwave', shake=3.0, lean=0.05),
-    'leave': BossState('walk', 'stride', next='gone', dip=0.012, walks=0.75, aim='out', turns=True,
-                       holds=False),
+    'leave': BossState('walk', 'stride', next='gone', dip=0.012, walks=0.75, hastes=True, aim='out',
+                       turns=True, holds=False),
     'gone': BossState('walk', 'hold', holds=False),
 }
 BOSS_FRAMES = {'stand': 2, 'walk': 4, 'stomp': 2, 'roar': 2, 'hurt': 1, 'fall': 3}
@@ -105,13 +115,13 @@ FRAME_RULES = {  # rule -> (frames it needs of its pose, which one to show)
 
 
 class Boss:
-    __slots__ = ('x', 'y', 'h', 'heights', 'widths', 'reach', 'mouth', 'facing', 'home', 'out', 'goal',
+    __slots__ = ('x', 'y', 'h', 'heights', 'widths', 'reach', 'mouth', 'facing', 'home', 'out', 'goal', 'gait',
                  'state', 'timer', 'clock', 'fired', 'walked', 'hp', 'tenths', 'flash', 'sway', 'lean', 'dip')
 
 
 class Battle:
     __slots__ = ('index', 'name', 'won', 'end', 'show', 'boss', 'phase', 'clock', 'beat', 'began',
-                 'blows', 'pop_at', 'room', 'attached', 'counted', 'over')
+                 'blows', 'pop_at', 'room', 'attached', 'counted', 'over', 'smacks', 'boost')
 
 
 def _boss(world):
@@ -155,11 +165,15 @@ def begin(world, side, index, won, ratio):
     boss.heights, boss.widths = zip(*sorted(profile.slices))
     boss.reach = max(boss.widths) * boss.h
     boss.mouth = (profile.mouth[0] * boss.h, profile.mouth[1] * boss.h)
-    inset = min(boss.h + 2.0 * boss.reach * BOSS_ROOM, world.width * 0.6)
-    inset = max(inset, min(boss.reach, world.width / 2))
+    # The boss stands, and falls, on the ground the view left clear, and walks the rest of the way
+    # on at a brisker gait so its entrance is as long from either side.
+    left, right = world.wings[0], world.width - world.wings[1]
+    inset = min(boss.h + 2.0 * boss.reach * BOSS_ROOM, (right - left) * 0.6)
+    inset = max(inset, min(boss.reach, (right - left) / 2))
     boss.facing = 1 if came == 'left' else -1
-    boss.home = inset if came == 'left' else world.width - inset
+    boss.home = left + inset if came == 'left' else right - inset
     boss.x = boss.out = -boss.reach if came == 'left' else world.width + boss.reach
+    boss.gait = abs(boss.home - boss.out) / (inset + boss.reach)
     boss.y = world.floor + BOSS_LANE
     boss.hp, boss.tenths = 1.0, 10
     boss.clock = boss.flash = boss.sway = boss.walked = 0.0
@@ -169,7 +183,8 @@ def begin(world, side, index, won, ratio):
     battle.end = end_hp(battle.won, ratio)
     battle.show = next(s for s in (WIN_SHOWS if battle.won else LOSS_SHOWS) if ratio >= s.ratio)
     battle.beat, battle.began, battle.pop_at, battle.counted = -1, world.clock, 0.0, -1.0
-    battle.blows = battle.attached = 0
+    battle.blows = battle.attached = battle.smacks = 0
+    battle.boost = 0.0
     battle.over = False
     area = 2.0 * sum(boss.widths) / len(boss.widths) * boss.h * boss.h
     battle.room = max(2, int(CLING_DENSITY * area / (GOBLIN_H * 8.0)))
@@ -212,6 +227,11 @@ def _next_pose(world, battle, spec):
     _pose(world, battle, state)
 
 
+def _stride(boss, spec):
+    """Sprite pixels a second the boss covers in a walking state."""
+    return spec.walks * boss.h * (boss.gait if spec.hastes else 1.0)
+
+
 def _boss_step(world, battle, dt):
     boss = battle.boss
     spec = BOSS_STATES[boss.state]
@@ -221,7 +241,7 @@ def _boss_step(world, battle, dt):
     boss.sway = spec.shake * math.sin(boss.clock * 55.0)
     if spec.walks:
         gap = boss.goal - boss.x
-        pace = spec.walks * boss.h * dt
+        pace = _stride(boss, spec) * dt
         if abs(gap) <= pace:
             boss.x = boss.goal
             _next_pose(world, battle, spec)
@@ -330,7 +350,7 @@ BOSS_EFFECTS = {'announce': _fx_announce, 'stomp': _fx_stomp, 'shake_off': _fx_s
 
 def _enter_start(world, battle):
     boss, rng = battle.boss, world.rng
-    world.rouse(lambda g: 0.05 + abs(g.x - boss.x) / 900.0 + rng.random() * 0.35)
+    world.rouse(lambda g: 0.05 + NOTICE * abs(g.x - boss.x) / world.width + rng.random() * 0.35)
 
 
 def _enter_done(world, battle):
@@ -355,7 +375,7 @@ def _swarm_start(world, battle):
 
 
 def _swarm_done(world, battle):
-    return battle.clock >= battle.show.swarm
+    return battle.clock + battle.boost >= battle.show.swarm
 
 
 def _finish_start(world, battle):
@@ -381,7 +401,7 @@ def _disperse_start(world, battle):
     world.events.append(('battle_over', {'won': battle.won, 'boss': battle.index}))
     rng = world.rng
     crowd = sorted((g for g in world.goblins
-                    if g is not world.held and (g.platform is None or g.platform.kind == 'ground')),
+                    if g not in world.held and (g.platform is None or g.platform.kind == 'ground')),
                    key=lambda g: g.x)
     span = world.width - 2.0 * MARGIN
     for rank, g in enumerate(crowd):  # in standing order, so nobody has to cross anybody
@@ -421,15 +441,27 @@ def _go(world, battle, name):
 
 
 def _wear_down(world, battle):
-    """Health follows the show's curve; the blows goblins land only pace the numbers that pop."""
+    """Health follows the show's curve. A goblin the player threw onto the boss moves the show
+    along, so the same health is lost sooner, and its blow pops as one large number."""
     boss, show = battle.boss, battle.show
-    t = battle.clock / show.swarm
+    hurt = bool(battle.smacks)
+    if hurt:
+        world.effect('smash', boss.x, boss.y - 0.8 * boss.h, 0.0, -30.0, '-%d' % (THROW_BLOWS * battle.smacks))
+        battle.smacks = 0
+    t = ((battle.clock if battle.phase == 'swarm' else 0.0) + battle.boost) / show.swarm
     boss.hp = battle.end if t >= 1.0 else 1.0 - (1.0 - battle.end) * _dealt(show.curve, t)
     tenths = math.ceil(10.0 * boss.hp)
     if tenths < boss.tenths:
-        boss.tenths, boss.flash = tenths, 0.12
+        boss.tenths, hurt = tenths, True
+    if hurt:
+        boss.flash = 0.12
         if boss.state == 'stand':
             _pose(world, battle, 'flinch')
+
+
+def _pop_blows(world, battle):
+    """The blows goblins land only pace the numbers that pop."""
+    boss = battle.boss
     if battle.blows and world.clock >= battle.pop_at:
         rng = world.rng
         world.effect('hit', boss.x + rng.uniform(-0.6, 0.6) * boss.reach,
@@ -439,6 +471,16 @@ def _wear_down(world, battle):
         battle.pop_at = world.clock + HIT_POP_EVERY
 
 
+def context(world, g):
+    """The transition table a goblin reads during a fight: the phase, or 'muster' while the boss
+    walks in and the goblin stands too far off to charge from there. On a wide screen that is most
+    of the horde, and it closes up during the entrance, so a charge is as short as on a narrow one."""
+    battle = world.battle
+    if battle.phase == 'enter' and g.platform is not None and abs(g.x - battle.boss.home) > RALLY_RANGE:
+        return 'muster'
+    return battle.phase
+
+
 def step(world, dt):
     """Advance the fight: the boss's beat, its health, then the phase machine."""
     battle = world.battle
@@ -446,8 +488,10 @@ def step(world, dt):
     if battle.boss is not None:
         battle.boss.y = world.floor + BOSS_LANE
         _boss_step(world, battle, dt)
-        if battle.phase == 'swarm':
+        if battle.phase in WORN_PHASES:
             _wear_down(world, battle)
+        if battle.phase == 'swarm':
+            _pop_blows(world, battle)
     phase = PHASES[battle.phase]
     if phase.done(world, battle) or battle.clock >= phase.limit:
         _go(world, battle, phase.next[battle.won])
@@ -477,10 +521,55 @@ def boss_draw(battle, unit):
                     boss.facing < 0, boss.flash > 0.0, boss.hp, boss.h * unit)
 
 
+def _rally(world, g, dt):
+    """Close up on where the boss will stand, to be there by the time it is."""
+    boss = _boss(world)
+    if boss is None:
+        world.advance(g)
+        return
+    aim = boss.home + g.goal
+    spec = BOSS_STATES[boss.state]
+    hurry(g, abs(aim - g.x), abs(boss.goal - boss.x) / _stride(boss, spec) if spec.walks else 0.0)
+    if run_to(world, g, dt, aim):
+        world.advance(g)
+
+
 def _storm(world, g, dt):
     boss = _boss(world)
-    if boss is None or run_to(world, g, dt, boss.x + g.goal):
+    if boss is None:
         world.advance(g)
+        return
+    aim = boss.x + g.goal
+    hurry(g, abs(aim - g.x), g.timer - CHARGE_SPARE)
+    if run_to(world, g, dt, aim):
+        world.advance(g)
+
+
+def _hurl(world, g, dt):
+    """A goblin the hand let go flies like any other, unless a boss is in its way: then it lands on
+    it, hard."""
+    battle, boss = world.battle, _boss(world)
+    if boss is not None and battle.phase in WORN_PHASES:
+        v = (boss.y - g.y + GOBLIN_H / 2) / boss.h
+        if 0.0 <= v <= 1.0 and abs(g.x - boss.x) <= _half_at(boss, v) * boss.h:
+            _smack(world, battle, g, v)
+            return
+    air(world, g, dt)
+
+
+def _smack(world, battle, g, v):
+    """The thrown goblin takes hold where it hit, and the blow counts."""
+    boss, rng = battle.boss, world.rng
+    half = _half_at(boss, v)
+    g.u = min(max((g.x - boss.x) / (boss.facing * boss.h), -half), half)
+    g.v = min(max(v, 0.05), 0.96)
+    g.vx = g.vy = 0.0
+    world.enter(g, 'cling')
+    battle.smacks += 1
+    battle.boost = min(battle.boost + THROW_SKIP, THROW_SHARE * battle.show.swarm)
+    world.quake = max(world.quake, 2.0)
+    for _ in range(3):
+        world.effect('spark', g.x + rng.uniform(-5.0, 5.0), g.y - rng.uniform(2.0, 10.0))
 
 
 def _grip(world, g):
@@ -550,9 +639,21 @@ def _start_flee(world, g):
     return True
 
 
+def _start_rally(world, g):
+    boss = _boss(world)
+    if boss is None or g.platform is None:
+        return False
+    side = 1.0 if g.x >= boss.home else -1.0
+    g.goal = side * world.rng.uniform(boss.reach + RALLY_CLEAR, RALLY_RANGE)
+    return True
+
+
 def _start_charge(world, g):
+    """The horde goes in waves, bravest first. One still far off does not wait its turn."""
     battle, boss = world.battle, _boss(world)
-    if boss is None or g.platform is None or world.clock - battle.began < g.wave * WAVE_GAP:
+    if boss is None or g.platform is None:
+        return False
+    if abs(g.x - boss.x) <= RALLY_RANGE and world.clock - battle.began < g.wave * WAVE_GAP:
         return False
     g.goal = world.rng.uniform(-1.0, 1.0) * (boss.reach + 22.0)
     return True
@@ -588,9 +689,9 @@ def _face_boss(world, g):
     return True
 
 
-MOTIONS = {'storm': _storm, 'scale': _scale, 'cling': _cling}
-START = {'leap': _start_leap, 'gawk': _start_gawk, 'flee': _start_flee, 'charge': _start_charge,
-         'climb': _start_climb, 'cling': _face_boss, 'brawl': _face_boss}
+MOTIONS = {'rally': _rally, 'storm': _storm, 'scale': _scale, 'cling': _cling, 'hurl': _hurl}
+START = {'leap': _start_leap, 'gawk': _start_gawk, 'flee': _start_flee, 'rally': _start_rally,
+         'charge': _start_charge, 'climb': _start_climb, 'cling': _face_boss, 'brawl': _face_boss}
 
 
 def check_tables():

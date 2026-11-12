@@ -12,7 +12,7 @@ Work in the unzipped GoblinHorde folder. Read AGENTS.md and docs/SHARED-PETS.md 
    It keeps the state folder and any saved game. Never run uninstall, and never use --remove-settings.
 3. Use the installed manager from here on. Only if step 1 found no saved game and I gave you the path
    of a pets.json to bring over, run: pets-adopt "<that path>". With a saved game here, keep it.
-4. Run: pets-host enable, then start --surface pets, then doctor, then pets-host status.
+4. Run: pets-host enable, then start, then doctor, then pets-host status.
 5. Prove it earns. Read coins and seq from http://127.0.0.1:43917/api/pets and tell me them.
    Ask me to finish one turn in T3 Code on this computer, and wait until I say it is done.
    Read /api/pets?after=<that seq>. The new seq must be higher, with one "work" event whose coins
@@ -31,4 +31,4 @@ The host asks Tailscale for its address when its listener opens, which every sta
 
 If `pets-host status` says a file could not be made private, the host is not listening: sharing stays off until `pairing-code.txt` and `shared.json` can be read by your account alone. If step 5 reads `ready: false` with "The saved game could not be read. A copy was kept next to it. Nothing was replaced.", no game was started in its place. The agent should report that as worded and change no file. What happens to the saved game is yours to decide.
 
-The pairing code is shown in two places only, both on the host: `pets-host code` in a terminal you sit at, and the phone pairing page while phone access is on. A display sends it to the host when it pairs, to the host's Tailscale address and nowhere else.
+The pairing code is shown in one place only, on the host: `pets-host code` in a terminal you sit at. A display sends it to the host when it pairs, to the host's Tailscale address and nowhere else.

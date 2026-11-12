@@ -1,5 +1,4 @@
-# Windows shortcut for the cross-platform manager (goblin.mjs). It keeps the earlier parameters so
-# existing instructions still work; every action is carried out by `node goblin.mjs`.
+# Windows shortcut for the manager (goblin.mjs); every action is carried out by `node goblin.mjs`.
 # The shared game's actions: -Action PetsHost -HostAction enable|disable|status|code,
 # -Action PetsJoin -HostAddress <address[:port]> -CodeFile <path> (or -Off), and
 # -Action PetsAdopt -SaveFile <path> [-Replace]. The pairing code is never a parameter.
@@ -8,7 +7,6 @@ param(
   [string]$InstallRoot = '',
   [string]$SkillDirectory = '',
   [ValidateRange(1024, 65535)][int]$Port = 0,
-  [string]$Surface = '',
   [ValidateSet('', 'enable', 'disable', 'status', 'code')][string]$HostAction = '',
   [string]$HostAddress = '',
   [string]$CodeFile = '',
@@ -17,9 +15,7 @@ param(
   [switch]$Replace,
   [switch]$NoStart,
   [switch]$SkipSkill,
-  [switch]$RemoveSettings,
-  [switch]$ClaudeHooks,
-  [switch]$NoClaudeHooks
+  [switch]$RemoveSettings
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,7 +31,6 @@ if ($Action -eq 'PetsAdopt' -and $SaveFile) { $arguments += [IO.Path]::GetFullPa
 if ($InstallRoot) { $arguments += @('--install-dir', [IO.Path]::GetFullPath($InstallRoot)) }
 if ($SkillDirectory) { $arguments += @('--codex-skill-dir', [IO.Path]::GetFullPath($SkillDirectory)) }
 if ($Port) { $arguments += @('--port', [string]$Port) }
-if ($Surface) { $arguments += @('--surface', $Surface) }
 if ($HostAddress) { $arguments += @('--host', $HostAddress) }
 if ($CodeFile) { $arguments += @('--code-file', [IO.Path]::GetFullPath($CodeFile)) }
 if ($Off) { $arguments += '--off' }
@@ -43,8 +38,6 @@ if ($Replace) { $arguments += '--replace' }
 if ($NoStart) { $arguments += '--no-start' }
 if ($SkipSkill) { $arguments += '--skip-skill' }
 if ($RemoveSettings) { $arguments += '--remove-settings' }
-if ($ClaudeHooks) { $arguments += '--claude-hooks' }
-if ($NoClaudeHooks) { $arguments += '--no-claude-hooks' }
 
 & $node.Source @arguments
 exit $LASTEXITCODE

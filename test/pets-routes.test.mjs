@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { errorText } from "../lib/phone.mjs";
+import { localOnlyRefusal } from "../lib/local-only.mjs";
 import { petsRoutes } from "../lib/pets-routes.mjs";
 import { createPetsService } from "../lib/pets-service.mjs";
 import { loadConfig } from "../lib/rewards.mjs";
@@ -18,13 +18,13 @@ const STATE = {
   schema: 1,
   wallet: { coins: 64, scrap: 0, lifetimeCoins: 39 },
   horde: { size: 3, level: 1, xp: 1, gear: 0 },
-  upgrades: { hoard: 0, training: 0 },
+  upgrades: { hoard: 0, training: 0, grip: 0 },
   bosses: { cleared: 0 },
   today: { key: "2026-11-10", reruns: {} },
 };
 const GAME = {
   state: STATE,
-  quotes: { recruit: { coins: 40 }, level: { xp: 40, coins: 15 }, gear: { scrap: 20 }, hoard: { coins: 40 }, training: { coins: 30 } },
+  quotes: { recruit: { coins: 40 }, level: { xp: 40, coins: 15 }, gear: { scrap: 20 }, hoard: { coins: 40 }, training: { coins: 30 }, grip: { coins: 50 } },
   power: 3,
   nextBoss: { index: 0, requiredPower: 2.5 },
 };
@@ -88,11 +88,12 @@ async function readBody(request) {
   });
   try { return JSON.parse(input); } catch { throw Object.assign(new Error("Invalid request."), { statusCode: 400 }); }
 }
-// The real server tells a phone by its address. Every request here is local, so a test's phone says it is one.
-const isLocal = (request) => !request.headers["x-phone"];
+// The real server tells another computer by its address. Every request here is local, so a test's caller from
+// another computer says it is one.
+const isLocal = (request) => !request.headers["x-elsewhere"];
 function fail(response, status, message) {
   if (response.headersSent) return response.destroy();
-  return json(response, status, { error: errorText({ local: isLocal(response.req), status, message }) });
+  return json(response, status, { error: message });
 }
 
 /** A local HTTP server with the pets routes mounted as server.mjs mounts them, over a service on `engine`. */
@@ -171,16 +172,26 @@ test("GET /api/pets says the game is opening, and once it is open answers the ga
   assertNothingPrivate(view.texts);
 });
 
-test("a phone is refused the game, and a purchase or a fight is taken only from this viewer's own page", async (t) => {
+test("only this computer, from its own page, with a JSON body, may use a route that changes something", () => {
+  const origin = "http://127.0.0.1:5000";
+  const json = { origin, "content-type": "application/json" };
+  assert.deepEqual(localOnlyRefusal({ local: false, origin, headers: json }), { status: 403, error: "Only this computer can do that." });
+  assert.equal(localOnlyRefusal({ local: true, origin, headers: { ...json, origin: "http://evil.example" } }).status, 403);
+  assert.equal(localOnlyRefusal({ local: true, origin, headers: { origin, "content-type": "text/plain" } }).status, 403);
+  assert.equal(localOnlyRefusal({ local: true, origin, headers: { "content-type": "application/json" } }).status, 403);
+  assert.equal(localOnlyRefusal({ local: true, origin, headers: json }), null);
+});
+
+test("another computer is refused the game, and a purchase or a fight is taken only from this viewer's own page", async (t) => {
   const engine = fakeEngine();
   const view = await viewer(t, engine);
   await view.service.begin();
-  const phone = { "x-phone": "1" };
+  const elsewhere = { "x-elsewhere": "1" };
 
-  assert.deepEqual(await view.get("/api/pets", phone), { status: 403, body: { error: "The game is on this computer only." } });
+  assert.deepEqual(await view.get("/api/pets", elsewhere), { status: 403, body: { error: "The game is on this computer only." } });
   for (const [path, body] of [["/api/pets/buy", { kind: "recruit" }], ["/api/pets/fight", { boss: 0 }]]) {
     const refusals = [
-      ["a phone", { ...view.own, ...phone }],
+      ["another computer", { ...view.own, ...elsewhere }],
       ["no Origin", { "Content-Type": "application/json" }],
       ["another site's page", { "Content-Type": "application/json", Origin: "http://evil.example" }],
       ["a form, not JSON", { "Content-Type": "text/plain", Origin: view.base }],
@@ -227,7 +238,7 @@ test("a purchase and a fight answer their result and the game after it, and noth
   assert.deepEqual([keys(bought.body), keys(bought.body.game)], [KEYS.buy, KEYS.game]);
   const refused = await view.post("/api/pets/buy", { kind: "gear" });
   assert.deepEqual([refused.status, refused.body.ok, refused.body.reason], [200, false, "scrap"], "a purchase the game refuses is still an answer");
-  for (const kind of ["level", "hoard", "training"]) assert.equal((await view.post("/api/pets/buy", { kind })).status, 200, kind);
+  for (const kind of ["level", "hoard", "training", "grip"]) assert.equal((await view.post("/api/pets/buy", { kind })).status, 200, kind);
 
   const fought = await view.post("/api/pets/fight", { boss: 0 });
   assert.equal(fought.status, 200);
@@ -235,7 +246,7 @@ test("a purchase and a fight answer their result and the game after it, and noth
   assert.deepEqual([keys(fought.body), keys(fought.body.game)], [KEYS.fight, KEYS.game]);
   assert.equal((await view.post("/api/pets/fight", { boss: 35 })).status, 200);
 
-  assert.deepEqual(engine.calls, [["buy", "recruit"], ["buy", "gear"], ["buy", "level"], ["buy", "hoard"], ["buy", "training"], ["fight", 0], ["fight", 35]]);
+  assert.deepEqual(engine.calls, [["buy", "recruit"], ["buy", "gear"], ["buy", "level"], ["buy", "hoard"], ["buy", "training"], ["buy", "grip"], ["fight", 0], ["fight", 35]]);
   assertNothingPrivate(view.texts);
 });
 
@@ -292,9 +303,8 @@ test("an isolated viewer pays a turn that finishes in T3 within 2 seconds, and s
     const big = usage(5_000_000, 200_000);
     fixture.addTurn({ id: "before-launch", completedAt: Date.now() - 60_000, tokens: big });
     const port = await freePort();
-    // No Codex, no Orca, every folder temporary, a Wi-Fi address this computer does not have, and the fixture for T3.
-    const env = { ...process.env, PORT: String(port), GOBLIN_HORDE_STATE_DIR: state, GOBLIN_T3_DB: fixture.path, LOCALAPPDATA: join(root, "local"), APPDATA: join(root, "roaming"),
-      CLAUDE_CONFIG_DIR: join(root, "claude"), CODEX_HOME: join(root, "codex"), CODEX_CLI_PATH: join(root, "no-codex.exe"), ORCA_CLI_COMMAND: join(root, "no-orca"), LAN_IP: "10.255.255.254" };
+    // Every folder temporary, and the fixture for T3.
+    const env = { ...process.env, PORT: String(port), GOBLIN_HORDE_STATE_DIR: state, GOBLIN_T3_DB: fixture.path, LOCALAPPDATA: join(root, "local"), APPDATA: join(root, "roaming") };
     const url = `http://127.0.0.1:${port}`;
     const texts = [];
     const answer = async (response) => {

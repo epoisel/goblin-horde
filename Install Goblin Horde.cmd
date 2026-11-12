@@ -14,10 +14,15 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-node goblin.mjs setup
+rem Double-clicked in the installed app folder, it is installed already, so it only starts the game.
+if exist "%~dp0goblin-horde-install.json" (
+  node goblin.mjs start
+) else (
+  node goblin.mjs install
+)
 if errorlevel 1 (
   echo.
-  echo Setup did not finish. The message above says why.
+  echo Goblin Horde did not finish. The message above says why.
 )
 echo.
 pause

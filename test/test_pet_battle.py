@@ -175,6 +175,31 @@ class TheBoss(unittest.TestCase):
             self.assertTrue(0 < walk[-1].x < W)
             self.assertGreater(len({b.frame for b in walk}), 2)
 
+    def test_it_stands_and_falls_clear_of_the_ground_the_view_keeps_and_is_no_longer_coming_on(self):
+        kept = 400
+        for won, ending in ((True, "finish"), (False, "rout")):
+            plain = played(side="right", won=won, ratio=1.8 if won else 0.6)
+            world = begin(120, 1)
+            world.keep_clear(right=kept)
+            world.start_battle("right", 0, won, 1.8 if won else 0.6)
+            show = play(world)
+            widest = max(half_width(show.at("swarm", 1).boss, v / 10) for v in range(1, 10))
+            stood = [frame.boss for _, frame in show.during("swarm") + show.during("finish") if frame.boss]
+            self.assertGreater(len(stood), 100)
+            for boss in stood:
+                self.assertLessEqual(boss.x + widest, W - kept + 1)
+                if boss.pose == "fall":
+                    self.assertLessEqual(boss.x + boss.height_px, W - kept + 1, "it falls on clear ground too")
+            self.assertGreater(plain.at("swarm", 1).boss.x + widest, W - kept, "without the word it stood there")
+            for phase in ("enter", ending):
+                took = {name: end - start for name, start, end in show.spans()}[phase]
+                usual = {name: end - start for name, start, end in plain.spans()}[phase]
+                self.assertAlmostEqual(took, usual, delta=0.25, msg=phase)
+        world = begin(120, 1)
+        world.keep_clear(right=kept)
+        world.start_battle("left", 0, True, 1.8)
+        self.assertEqual(play(world).at("swarm", 1).boss.x, played(side="left").at("swarm", 1).boss.x, "the far side is as it was")
+
     def test_no_side_picks_one_by_the_seed(self):
         sides = set()
         for seed in range(8):
@@ -366,6 +391,196 @@ class TheSwarm(unittest.TestCase):
         show = play(world, after=0.5)
         mid = show.at("swarm", 6)
         self.assertTrue(all(d.y != 600 and abs(d.x - mid.boss.x) < 300 for d in mid.draws if d.id < 2))
+
+
+@functools.lru_cache(maxsize=None)
+def on_a_screen(width, size=150, seed=1, side="left"):
+    """A won fight on a screen `width` pixels wide, from the moment it is asked for."""
+    world = World(width, H, GROUND, unit=UNIT, seed=seed, cap=size)
+    world.set_horde(size)
+    for _ in range(round(3 / TICK)):
+        world.step(TICK)
+    before = world.frame()
+    assert world.start_battle(side, 5, True, 1.8)
+    return before, play(world, after=0.5)
+
+
+def gathered(show, share, within=300):
+    """Seconds into a fight until `share` of the horde is within `within` pixels of the boss."""
+    return next(t for t, frame in show.frames
+                if frame.boss and sum(abs(d.x - frame.boss.x) <= within for d in frame.draws) >= share * len(frame.draws))
+
+
+class WideScreens(unittest.TestCase):
+    def test_the_horde_reaches_the_boss_as_fast_on_a_wide_screen_as_on_a_narrow_one(self):
+        for seed, side in ((1, "left"), (2, "right")):
+            narrow = gathered(on_a_screen(1920, seed=seed, side=side)[1], 0.5)
+            for width in (3440, 5120):
+                wide = gathered(on_a_screen(width, seed=seed, side=side)[1], 0.5)
+                self.assertLess(abs(wide - narrow), 1.5, (width, seed, wide, narrow))
+                self.assertLess(wide, 7.0, (width, seed))
+
+    def test_goblins_far_from_the_boss_close_up_while_it_walks_in(self):
+        before, show = on_a_screen(5120)
+        roar = show.during("charge")[0][1]
+        far = {d.id: d.x for d in before.draws if abs(d.x - roar.boss.x) > 2400}
+        self.assertGreater(len(far), 30)
+        closer = [abs(far[d.id] - roar.boss.x) - abs(d.x - roar.boss.x) for d in roar.draws if d.id in far]
+        self.assertGreater(sorted(closer)[len(closer) // 10], 600, "nine in ten came at least 600 pixels nearer")
+
+    def test_goblins_near_the_boss_stand_and_watch_it_walk_in(self):
+        before, show = on_a_screen(5120)
+        roar = show.during("charge")[0][1]
+        near = {d.id: d.x for d in before.draws if 250 < abs(d.x - roar.boss.x) < 800}
+        self.assertGreater(len(near), 8)
+        moved = sorted(abs(d.x - near[d.id]) for d in roar.draws if d.id in near)
+        self.assertLess(moved[len(moved) // 2], 150)
+
+    def test_nobody_runs_faster_than_a_dash(self):
+        _, show = on_a_screen(5120)
+        fight = [frame for _, frame in show.frames if frame.phase in ("enter", "charge", "swarm")]
+        for earlier, later in zip(fight, fight[1:]):
+            was = {d.id: d.x for d in earlier.draws if d.action == "run"}
+            steps = [abs(d.x - was[d.id]) for d in later.draws if d.action == "run" and d.id in was]
+            self.assertLess(max(steps, default=0), 8 * 44 * UNIT * TICK + 4)
+
+
+def throw_at_boss(world, most=1, pick=None):
+    """Carry goblins to the middle of the boss, as a cursor would, and let go. The ids it carried."""
+    boss = world.frame().boss
+    farthest = max(world.frame().draws, key=lambda d: abs(d.x - boss.x))
+    assert world.grab(farthest.id if pick is None else pick, most)
+    carried = []
+    for _ in range(6):
+        boss = world.frame().boss
+        world.move_grabbed(boss.x, boss.y - boss.height_px / 2)
+        world.step(TICK)
+        carried = [d.id for d in world.frame().draws if d.action == "grabbed"]
+    world.drop()
+    return carried
+
+
+def fight(size=60, seed=4, boss=3, won=True, ratio=1.8):
+    """A fight stepped to its swarm."""
+    world = begin(size, seed)
+    assert world.start_battle("left", boss, won, ratio)
+    while world.frame().phase != "swarm":
+        world.step(TICK)
+    return world
+
+
+def seconds_left(world):
+    """Step a fight to its end; how long that took."""
+    t = 0.0
+    while world.battling:
+        world.step(TICK)
+        t += TICK
+        assert t < 90
+    return t
+
+
+class Throwing(unittest.TestCase):
+    def test_a_goblin_thrown_onto_the_boss_takes_hold_and_its_blow_shows(self):
+        world = fight()
+        before = world.frame().boss.hp
+        (thrown,) = throw_at_boss(world)
+        seen = []
+        for _ in range(8):
+            world.step(TICK)
+            seen.append(world.frame())
+        boss = seen[-1].boss
+        held_on = next(d for d in seen[-1].draws if d.id == thrown)
+        self.assertEqual(held_on.action, "climb")
+        self.assertLess(abs(held_on.x - boss.x), half_width(boss, 0.5) + GOBLIN)
+        self.assertLess(held_on.y, GROUND - GOBLIN)
+        crits = {pop.text for frame in seen for pop in frame.pops if pop.kind == "crit"}
+        self.assertEqual(crits, {"-25"})
+        self.assertTrue(any(frame.boss.flash for frame in seen))
+        self.assertLess(boss.hp, before)
+        self.assertGreater(max(frame.quake for frame in seen), 0)
+
+    def test_a_handful_thrown_at_once_pops_as_one_number(self):
+        world = fight(size=120)
+        carried = throw_at_boss(world, 5)
+        self.assertEqual(len(carried), 5)
+        crits = []
+        for _ in range(8):
+            world.step(TICK)
+            crits += [pop.text for pop in world.frame().pops if pop.kind == "crit" and pop.age < TICK * 1.5]
+        self.assertEqual(sum(int(text) for text in crits), -125, crits)
+        self.assertLessEqual(len(crits), 3)
+
+    def test_throwing_goblins_at_the_boss_ends_the_fight_sooner_but_never_skips_more_than_half_the_swarm(self):
+        plain = seconds_left(fight())
+        once = fight()
+        throw_at_boss(once)
+        self.assertAlmostEqual(plain - seconds_left(once), 0.4, delta=0.25)
+        some = fight()
+        for _ in range(5):
+            throw_at_boss(some)
+        self.assertAlmostEqual(plain - seconds_left(some) - 5 * 6 * TICK, 2.0, delta=0.5)
+        many = fight(size=120)
+        swarm = 14.0
+        spent = 0.0
+        for _ in range(12):
+            throw_at_boss(many, 8)
+            spent += 6 * TICK
+        left = seconds_left(many)
+        whole = seconds_left(fight(size=120))
+        self.assertGreater(whole - left - spent, swarm / 2 - 1.5)
+        self.assertLess(whole - left - spent, swarm / 2 + 0.5)
+
+    def test_a_thrown_goblin_that_misses_the_boss_just_lands(self):
+        world = fight()
+        boss = world.frame().boss
+        far = next(d for d in world.frame().draws if d.action in ("idle", "run") and abs(d.x - boss.x) > 300)
+        hp = boss.hp
+        world.grab(far.id)
+        world.move_grabbed(far.x, GROUND - 200)
+        for _ in range(4):
+            world.step(TICK)
+        world.drop()
+        pops = []
+        for _ in range(30):
+            world.step(TICK)
+            pops += [pop for pop in world.frame().pops if pop.kind == "crit"]
+        self.assertEqual(pops, [])
+        self.assertAlmostEqual(world.frame().boss.hp, hp, delta=0.12)
+
+    def test_a_goblin_can_be_thrown_at_the_boss_while_it_is_still_walking_in(self):
+        world = begin(60, 4)
+        world.start_battle("left", 3, True, 1.8)
+        for _ in range(round(1.5 / TICK)):
+            world.step(TICK)
+        self.assertEqual(world.frame().phase, "enter")
+        throw_at_boss(world, 3)
+        for _ in range(4):
+            world.step(TICK)
+        frame = world.frame()
+        self.assertTrue(any(pop.kind == "crit" for pop in frame.pops))
+        self.assertLess(frame.boss.hp, 1.0)
+
+    def test_a_goblin_thrown_at_a_beaten_boss_passes_through(self):
+        world = fight()
+        while world.frame().phase != "finish":
+            world.step(TICK)
+        for _ in range(round(1.6 / TICK)):
+            world.step(TICK)
+        self.assertEqual(world.frame().boss.pose, "fall")
+        thrown = next(d.id for d in world.frame().draws if d.action in ("idle", "run", "cheer"))
+        throw_at_boss(world, pick=thrown)
+        pops, actions = [], set()
+        for _ in range(20):
+            world.step(TICK)
+            pops += [pop for pop in world.frame().pops if pop.kind == "crit"]
+            actions.add(next(d.action for d in world.frame().draws if d.id == thrown))
+        self.assertEqual(pops, [])
+        self.assertNotIn("climb", actions, "it takes no hold of a boss that is down")
+
+    def test_a_fight_nobody_throws_at_plays_as_it_always_did(self):
+        show = played()
+        self.assertFalse(any(pop.kind == "crit" for _, frame in show.frames for pop in frame.pops))
+        self.assertTrue(all(frame.boss.hp == 1.0 for _, frame in show.during("enter") + show.during("charge")))
 
 
 class Endings(unittest.TestCase):

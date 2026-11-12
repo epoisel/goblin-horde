@@ -1,4 +1,4 @@
-"""The window's game calls: the routes they ask, the JSON they send, and an older viewer without the game."""
+"""The widget's game calls: the routes they ask, the JSON they send, and an older viewer without the game."""
 
 import threading
 import unittest
@@ -33,15 +33,13 @@ class PetsClientTests(unittest.TestCase):
         self.assertFalse(self.api.pets_fight(0)["won"])
         self.assertEqual(FakeViewer.seen[-1], ("POST", "/api/pets/fight", {"boss": 0}, self.api.origin))
 
-    def test_an_older_viewer_without_the_game_is_remembered(self):
+    def test_an_older_viewer_without_the_game_is_told_apart(self):
         calls = {"/api/pets": self.api.pets, "/api/pets/buy": lambda: self.api.pets_buy("recruit"), "/api/pets/fight": lambda: self.api.pets_fight(0)}
         for path, call in calls.items():
             with self.subTest(path=path):
-                self.assertTrue(self.api.available(path))
                 with self.assertRaises(ApiError) as raised:
                     call()
                 self.assertTrue(raised.exception.missing)
-                self.assertFalse(self.api.available(path))
 
     def test_a_refusal_keeps_the_viewers_words_and_is_not_a_missing_route(self):
         FakeViewer.routes[("GET", "/api/pets")] = (403, {"error": "The game is on this computer only."})
@@ -54,7 +52,6 @@ class PetsClientTests(unittest.TestCase):
                     call()
                 self.assertEqual((raised.exception.status, str(raised.exception)), (status, FakeViewer.routes[("GET" if path == "/api/pets" else "POST", path)][1]["error"]))
                 self.assertFalse(raised.exception.missing)
-                self.assertTrue(self.api.available(path))
 
 
 if __name__ == "__main__":

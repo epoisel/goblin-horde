@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /**
  * The team ZIP installed from a clean folder, in a sandbox: unzip it, run its own `doctor` and `install`,
- * load the pet game from the installed copy, run the installed viewer without its window, share its game with a
- * second installed copy over a loopback stand-in for Tailscale, and uninstall.
+ * load the pet game from the installed copy, run the installed server without the desktop goblins, share its game
+ * with a second installed copy over a loopback stand-in for Tailscale, take out an earlier version's Claude Code
+ * hook entries, and uninstall.
  *
  *   node scripts/dev/clean-install.mjs [--zip path/to/GoblinHorde-Team.zip] [--keep]
  *
@@ -11,13 +12,14 @@
  * runs with those folders as flags and as its environment, so the real Goblin Horde state, ~/.claude,
  * ~/.codex, ~/.t3 and Start menu are never read or written. GOBLIN_SHARED_LOOPBACK makes the shared game's
  * listener a loopback one, so Tailscale is never asked and nothing listens off 127.0.0.1. No widget is started:
- * the pet game's Python modules are imported and built on a hidden Tk root. Exits 1 when any check fails. --keep
- * leaves the folder.
+ * `start` runs with a PATH that holds only Node.js, so it finds no Python and starts only the server, and the
+ * pet game's Python modules are imported and built on a hidden Tk root instead. Exits 1 when any check fails.
+ * --keep leaves the folder.
  *
  * Needs Node.js 22.13 or newer and, for the Python step, a Python with Tkinter.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -86,9 +88,7 @@ function filesUnder(dir, prefix = "") {
 }
 
 function unzip(zip, into) {
-  const [tool, args] = process.platform === "win32" ? [join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe"), ["-xf", zip, "-C", into]]
-    : ["unzip", ["-q", zip, "-d", into]];
-  const done = spawnSync(tool, args, { encoding: "utf8" });
+  const done = spawnSync(join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe"), ["-xf", zip, "-C", into], { encoding: "utf8" });
   if (done.status !== 0) throw new Error(`Could not unzip ${zip}: ${done.stderr || done.error?.message}`);
 }
 
@@ -111,15 +111,19 @@ async function main() {
   const flags = ["--install-dir", dir.app, "--state-dir", dir.state, "--claude-config-dir", dir.claude, "--codex-home", dir.codex,
     "--codex-skill-dir", dir["codex-skill"], "--port", String(port)];
   const env = { ...process.env, USERPROFILE: dir.home, HOME: dir.home, APPDATA: dir.roaming, LOCALAPPDATA: dir.local, GOBLIN_T3_DB: fixture.path,
-    CODEX_CLI_PATH: join(root, "no-codex.exe"), ORCA_CLI_COMMAND: join(root, "no-orca"), LAN_IP: "10.255.255.254", GOBLIN_SHARED_LOOPBACK: String(sharedPort) };
-  for (const name of ["GOBLIN_HORDE_INSTALL_DIR", "GOBLIN_HORDE_STATE_DIR", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "CODEX_VIEWER_THREAD_ID", "PORT"]) delete env[name];
+    GOBLIN_SHARED_LOOPBACK: String(sharedPort) };
+  for (const name of ["GOBLIN_HORDE_INSTALL_DIR", "GOBLIN_HORDE_STATE_DIR", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "PORT"]) delete env[name];
+  // What `start` runs with: a PATH that holds only Node.js and the PowerShell that lists processes, so it finds no
+  // Python and opens no desktop goblins.
+  const nodeOnly = Object.fromEntries(Object.entries(env).filter(([name]) => !/^path$/i.test(name)));
+  nodeOnly.PATH = [dirname(process.execPath), join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0")].join(";");
   const shortcuts = join(dir.roaming, "Microsoft", "Windows", "Start Menu", "Programs");
 
   const copies = { [dir.app]: "the installed copy", [dir["display-app"]]: "the second installed copy" };
   /** Run a manager from `folder` with `its` folders and port, print what it said, and return { status, out }. */
   const manager = (its, folder, ...args) => {
     say(`\n$ node goblin.mjs ${args.join(" ").replaceAll(root, "<sandbox>")}   (in ${copies[folder] || "the unzipped package"})`);
-    const done = spawnSync(process.execPath, [join(folder, "goblin.mjs"), ...args, ...its], { cwd: folder, env, encoding: "utf8", windowsHide: true });
+    const done = spawnSync(process.execPath, [join(folder, "goblin.mjs"), ...args, ...its], { cwd: folder, env: args[0] === "start" ? nodeOnly : env, encoding: "utf8", windowsHide: true });
     const out = `${done.stdout || ""}${done.stderr || ""}`;
     for (const line of out.trimEnd().split(/\r?\n/)) say(`    ${line.replaceAll(root, "<sandbox>")}`);
     say(`    exit ${done.status}`);
@@ -151,12 +155,13 @@ async function main() {
     const enabled = goblin(dir.app, "pets-host", "enable");
     check(enabled.status === 0 && enabled.out.includes(`Shared game host: on, listening at ${where}.`), "pets-host enable opens the listener of the running copy");
     check(/Login check: off\. This is the loopback stand-in/.test(enabled.out), "it says the login check is off for the stand-in");
-    check(manager([...displayFlags, "--skip-skill"], source, "install", "--no-claude-hooks", "--no-start").status === 0, "a second copy installs beside the first");
+    check(manager([...displayFlags, "--skip-skill"], source, "install", "--no-start").status === 0, "a second copy installs beside the first");
+    check(display("update", "--off").status === 0, "the second copy's server will not look for updates either");
     const joined = display("pets-join", "--host", where, "--code-file", join(dir.state, "pairing-code.txt"));
     check(joined.status === 0 && /^Joined\./.test(joined.out), "pets-join checks the host and saves its two files");
     const code = readFileSync(join(dir.state, "pairing-code.txt"), "utf8").trim();
     check(code.length === 8 && ![enabled.out, joined.out].some((out) => out.includes(code)), "neither command printed the pairing code");
-    check(display("start", "--ui", "none", "--no-browser").status === 0, "the second copy starts");
+    check(display("start").status === 0, "the second copy starts");
     const host = await pets();
     const shown = await until(OPEN_MS, (answer) => answer.ready, petsAt(displayPort));
     check(Boolean(shown) && shown.boot === host.boot && shown.game.state.wallet.coins === host.game.state.wallet.coins, "the second copy shows the first copy's game");
@@ -188,7 +193,7 @@ async function main() {
     check(doctor.status === 0, "doctor exits 0");
     check(/✓ pets-t3/.test(doctor.out) && /✓ pets-node/.test(doctor.out), "doctor reads the sandbox T3 database and accepts this Node.js");
 
-    const install = goblin(source, "install", "--no-claude-hooks", "--no-start");
+    const install = goblin(source, "install", "--no-start");
     say("\nInstall");
     check(install.status === 0, "install exits 0");
     const installed = filesUnder(dir.app);
@@ -196,11 +201,12 @@ async function main() {
     check(installed.filter((file) => !manifest.includes(file)).join() === "goblin-horde-install.json", "the app folder holds nothing else but its install marker");
     check(existsSync(join(dir["codex-skill"], "SKILL.md")) && existsSync(join(dir.claude, "skills", SKILL, "SKILL.md")), "the manager skill is in the sandbox Codex and Claude folders");
     check(!existsSync(join(dir.claude, "settings.json")), "no Claude Code settings file was created");
-    if (process.platform === "win32") {
-      check(existsSync(join(shortcuts, "Goblin Horde.lnk")), "the Start menu entry is in the sandbox app-data folder");
-      check(!existsSync(join(shortcuts, "Startup", "Goblin Horde.lnk")), "nothing starts at sign-in");
-    }
+    check(existsSync(join(shortcuts, "Goblin Horde.lnk")), "the Start menu entry is in the sandbox app-data folder");
+    check(!existsSync(join(shortcuts, "Startup", "Goblin Horde.lnk")), "nothing starts at sign-in");
     check(filesUnder(dir.home).length === 0 && filesUnder(dir.local).length === 0, "nothing was written to the stand-in home or local app-data folder");
+    // Off before anything starts, so no server in the sandbox ever looks on github.com, whatever key this build carries.
+    const off = goblin(dir.app, "update", "--off");
+    check(off.status === 0 && JSON.parse(readFileSync(join(dir.state, "updates", "settings.json"), "utf8")).check === false, "update --off turns the daily update check off");
 
     say("\nPython, from the installed copy");
     const { findPythonTk, makeContext } = await import(pathToFileURL(join(dir.app, "lib", "manager.mjs")).href);
@@ -208,7 +214,7 @@ async function main() {
     check(Boolean(widgetPython), `the installed manager finds a Python with Tkinter${widgetPython ? ` (${widgetPython})` : ""}`);
     if (widgetPython) {
       // pythonw has no output to read, so the python.exe beside it runs the same modules.
-      const python = process.platform === "win32" ? join(dirname(widgetPython), "python.exe") : widgetPython;
+      const python = join(dirname(widgetPython), "python.exe");
       const run = spawnSync(python, ["-c", PYTHON_CHECK], { cwd: dir.app, env, encoding: "utf8", windowsHide: true, timeout: 120_000 });
       let result = null;
       try { result = JSON.parse(run.stdout.trim().split(/\r?\n/).at(-1)); } catch { /* Reported below. */ }
@@ -223,25 +229,28 @@ async function main() {
       }
     }
 
-    say("\nThe installed viewer, without its window");
-    const started = goblin(dir.app, "start", "--ui", "none", "--no-browser");
-    check(started.status === 0, "start --ui none exits 0");
+    say("\nThe installed server, without the desktop goblins");
+    const started = goblin(dir.app, "start");
+    check(started.status === 0, "start exits 0");
+    check(/Python with Tkinter was not found, so the desktop goblins did not start and nothing was opened\./.test(started.out), "start says the desktop goblins did not start and why");
     const opened = await until(OPEN_MS, (answer) => answer.ready);
     check(Boolean(opened), "GET /api/pets says the game is open");
     if (opened) {
       const { wallet, horde } = opened.game.state;
       say(`    ${wallet.coins} coins, ${horde.size} goblins, source ${JSON.stringify(opened.source)}`);
       check(wallet.coins === 25 && horde.size === 3, "a new game starts with 25 coins and 3 goblins");
-      check(opened.source.ok === true, "the viewer reads the sandbox T3 database");
+      check(opened.source.ok === true, "the server reads the sandbox T3 database");
       fixture.addTurn({ id: "clean-install-turn", completedAt: Date.now() });
       const paid = await until(PAY_MS, (answer) => answer.ready && answer.game.state.wallet.coins > wallet.coins);
       check(Boolean(paid), `a turn that finished in T3 Code paid coins${paid ? ` (${wallet.coins} to ${paid.game.state.wallet.coins})` : ""}`);
     }
     await sharedGame();
     const status = goblin(dir.app, "status");
-    check(/Viewer: running/.test(status.out), "status says the viewer is running");
+    check(/Server: running/.test(status.out) && /Desktop goblins: stopped/.test(status.out), "status says the server is running, and the desktop goblins are not");
+    check(/Updates: (the game does not look by itself|this build has no update key)/.test(status.out) && /Last update check: none yet\./.test(status.out),
+      "status says how updates stand, and that no check was made");
     const stopped = goblin(dir.app, "stop");
-    check(stopped.status === 0 && /stopped \(1 process\)/.test(stopped.out), "stop ends the one viewer process");
+    check(stopped.status === 0 && /stopped \(1 process\)/.test(stopped.out), "stop ends the one server process");
     check((await pets()) === null, "the port is closed again");
     say(`    state folder now holds: ${filesUnder(dir.state).join(", ") || "(nothing)"}`);
 
@@ -255,8 +264,18 @@ async function main() {
     say(`    state folder keeps: ${kept.join(", ") || "(nothing)"}`);
     check(kept.includes("pets.json"), "the saved game is kept");
 
-    say("\nFull reset");
-    check(goblin(source, "install", "--no-claude-hooks", "--no-start").status === 0, "install again exits 0");
+    say("\nAn earlier version's Claude Code hooks, then a full reset");
+    // As an earlier version of this copy left Claude Code's settings: its hook beside the person's own.
+    const settingsFile = join(dir.claude, "settings.json");
+    const ours = { type: "command", command: process.execPath, args: [join(dir.app, "claude-hook.mjs"), "--goblin-horde-hook", "--state-dir", dir.state], async: true, timeout: 10 };
+    const theirs = { type: "command", command: "guard.cmd" };
+    writeFileSync(settingsFile, JSON.stringify({ model: "opus", hooks: { PreToolUse: [{ matcher: "*", hooks: [theirs, ours] }], Stop: [{ hooks: [ours] }] } }));
+    const upgraded = goblin(source, "install", "--no-start");
+    check(upgraded.status === 0, "install again exits 0");
+    const cleaned = JSON.parse(readFileSync(settingsFile, "utf8"));
+    check(JSON.stringify(cleaned) === JSON.stringify({ model: "opus", hooks: { PreToolUse: [{ matcher: "*", hooks: [theirs] }] } })
+      && existsSync(`${settingsFile}.goblin-horde-backup`) && /Removed 2 Claude Code hook entries an earlier Goblin Horde added/.test(upgraded.out),
+    "install took out the earlier version's hook entries, kept the person's own and a backup, and said so");
     check(goblin(dir.app, "uninstall", "--remove-settings").status === 0, "uninstall --remove-settings exits 0");
     const left = filesUnder(dir.state);
     check(left.length === 0, `the state folder is empty${left.length ? ` (left: ${left.join(", ")})` : ""}`);

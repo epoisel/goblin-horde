@@ -169,7 +169,9 @@ class FakeDesktop:
     def titled(self, hwnd):
         return self._windows[hwnd].title_length > 0
 
-    def taskbar(self):
+    def taskbar(self, display=None):
+        if display is not None and not (self._taskbar and desktop_windows._inside(self._taskbar, display)):
+            return None
         return self._taskbar
 
     def foreground(self):
@@ -292,6 +294,13 @@ class TaskbarTopTests(unittest.TestCase):
     def test_a_process_that_is_not_dpi_aware_gets_the_top_in_its_own_units(self):
         self.assertEqual(self.top((0, 2784, 5120, 2880), 1440, scale=0.5), 1392)
 
+    def test_the_taskbar_asked_for_is_the_one_on_the_display_the_horde_stands_on(self):
+        second = (2560, 1872, 3640, 1920)
+        with patch.object(sys, "platform", "win32"), \
+                patch.object(desktop_windows, "_win32", return_value=FakeDesktop(taskbar=second)):
+            self.assertEqual(taskbar_top(1920, (2560, 0, 3640, 1920)), 1872)
+            self.assertEqual(taskbar_top(1440, (0, 0, 2560, 1440)), 1440, "that display has no taskbar on show")
+
 
 class FullscreenTests(unittest.TestCase):
     SCREEN = (0, 0, 2560, 1440)
@@ -304,6 +313,17 @@ class FullscreenTests(unittest.TestCase):
         self.assertTrue(self.fullscreen(FakeWindow(1, self.SCREEN, style=0)))
         self.assertTrue(self.fullscreen(FakeWindow(1, (-2, -2, 2562, 1442), style=0)), "a little larger still covers it")
         self.assertTrue(self.fullscreen(FakeWindow(1, self.SCREEN, style=0), FakeWindow(2, (100, 100, 500, 400))))
+
+    def test_the_display_asked_about_is_the_one_a_full_screen_app_must_cover(self):
+        second, first = (2560, 0, 3640, 1920), (0, 0, 2560, 1440)
+        def covers(frame, display):
+            with patch.object(sys, "platform", "win32"), \
+                    patch.object(desktop_windows, "_win32", return_value=FakeDesktop([FakeWindow(1, frame, style=0)])):
+                return foreground_is_fullscreen(display)
+        self.assertTrue(covers(second, second))
+        self.assertFalse(covers(second, first), "a full-screen app on the other display does not hide this one")
+        self.assertFalse(covers(first, second))
+        self.assertFalse(covers((2560, 0, 3640, 1900), second), "short of the bottom")
 
     def test_a_window_that_leaves_any_of_the_display_showing_is_not(self):
         for name, frame in (("an ordinary window", (100, 100, 900, 700)), ("stops at the taskbar", (0, 0, 2560, 1392)),

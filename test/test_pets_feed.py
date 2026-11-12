@@ -11,15 +11,15 @@ from pets_feed import BACKOFF_MS, FAILED, POLL_MS, STALE_MS, WAITING, Feed, Laun
 NOW = 1_800_000_000.0
 
 
-def game(coins=64, size=5, cleared=2, scrap=3, **quotes) -> dict:
+def game(coins=64, size=5, cleared=2, scrap=3, grip=0, **quotes) -> dict:
     """The viewer's ``game`` object, as lib/reward-engine.mjs snapshot() shapes it."""
     return {
         "state": {"schema": 1, "wallet": {"coins": coins, "scrap": scrap, "lifetimeCoins": coins + 10},
                   "horde": {"size": size, "level": 2, "xp": 30, "gear": 1},
-                  "upgrades": {"hoard": 1, "training": 0}, "bosses": {"cleared": cleared},
+                  "upgrades": {"hoard": 1, "training": 0, "grip": grip}, "bosses": {"cleared": cleared},
                   "today": {"key": "2026-11-11", "reruns": {}}},
         "quotes": {"recruit": {"coins": 41}, "level": {"xp": 52, "coins": 21}, "gear": {"scrap": 36},
-                   "hoard": {"coins": 60}, "training": {"coins": 30}, **quotes},
+                   "hoard": {"coins": 60}, "training": {"coins": 30}, "grip": {"coins": 50}, **quotes},
         "power": size * 1.265, "nextBoss": {"index": cleared, "requiredPower": 2.5 * (cleared + 1) ** 2},
     }
 
@@ -70,7 +70,8 @@ class ReadyTests(unittest.TestCase):
         self.assertEqual((answer.game.coins, answer.game.scrap, answer.game.size, answer.game.level, answer.game.gear),
                          (1284, 3, 37, 2, 1))
         self.assertEqual(answer.game.lifetime, 1294, "every coin ever paid, not the coins held")
-        self.assertEqual(answer.game.upgrades, {"hoard": 1, "training": 0})
+        self.assertEqual(answer.game.upgrades, {"hoard": 1, "training": 0, "grip": 0})
+        self.assertEqual((answer.game.carry, read_game(game(grip=2)).carry), (1, 3), "a hand at grip 2 picks up three goblins")
         self.assertEqual((answer.game.cleared, answer.game.next_boss, answer.game.next_need), (2, 2, 22.5))
         self.assertEqual(answer.game.prices["level"], {"coins": 21, "xp": 52})
         self.assertIsNone(answer.game.prices["gear"], "a maxed purchase has no price")
@@ -92,14 +93,34 @@ class ReadyTests(unittest.TestCase):
         self.assertFalse(numbers.affords("hoard"))
         self.assertFalse(read_game(game(coins=9_999, training=None)).affords("training"), "maxed")
 
+    def test_what_a_purchase_lacks_is_said_in_the_viewers_word_for_it(self):
+        numbers = read_game(game(coins=41, scrap=35, training=None))
+        self.assertEqual([numbers.lacks(kind) for kind in ("recruit", "gear", "level", "hoard", "training", "grip")],
+                         ["", "scrap", "xp", "coins", "maxed", "coins"])
+
+    def test_a_game_can_be_shown_as_it_stood_before_a_fight_paid(self):
+        start = read_game(game(coins=64, cleared=2, scrap=3))
+        after = read_game(game(coins=118 - 41, cleared=3, scrap=7, size=6))
+        shown = after.before(start, coins=54, scrap=4, xp=10)
+        self.assertEqual((shown.coins, shown.scrap, shown.xp, shown.lifetime), (23, 3, 20, 33))
+        self.assertEqual((shown.cleared, shown.next_boss, shown.next_need), (2, 2, start.next_need))
+        self.assertEqual((shown.size, shown.prices), (6, after.prices), "a goblin bought during the fight is there")
+        self.assertEqual(after.before(start, coins=9_999, scrap=9_999, xp=9_999).coins, 0, "never below nothing")
+
+    def test_a_viewer_that_reports_no_grip_cannot_be_read(self):
+        raw = game()
+        del raw["state"]["upgrades"]["grip"]
+        with self.assertRaises(KeyError):
+            read_game(raw)
+
     def test_the_vault_an_older_viewer_still_reports_is_left_out(self):
         raw = game()
         raw["state"]["upgrades"]["vault"] = 2
         raw["state"]["today"]["coinsEarned"] = 12
         raw["quotes"]["vault"] = {"coins": 60}
         numbers = read_game(raw)
-        self.assertEqual(numbers.upgrades, {"hoard": 1, "training": 0})
-        self.assertEqual(sorted(numbers.prices), ["gear", "hoard", "level", "recruit", "training"])
+        self.assertEqual(numbers.upgrades, {"hoard": 1, "training": 0, "grip": 0})
+        self.assertEqual(sorted(numbers.prices), ["gear", "grip", "hoard", "level", "recruit", "training"])
 
     def test_launch_events_carry_the_coins_paid_for_the_time_away(self):
         launch = {"seq": 1, "at": NOW * 1000, "type": "launch", "welcome": False, "away": {"minutes": 90, "coins": 9},
@@ -236,6 +257,26 @@ class ActionTests(unittest.TestCase):
                 fight = feed.fight(0)
                 self.assertEqual((fight["won"], fight["ratio"], fight["reason"], fight["game"]), (False, 0.0, FAILED, None))
                 self.assertEqual(fight["rewards"], {"coins": 0, "scrap": 0, "xp": 0})
+
+
+class UpdateTests(unittest.TestCase):
+    def test_a_waiting_update_comes_back_as_its_version_whether_or_not_the_game_is_open(self):
+        feed, _viewer = feed_for({**ready(), "update": {"version": "0.6.1"}})
+        self.assertEqual(feed.poll().update, "0.6.1")
+        opening, _viewer = feed_for({"ready": False, "message": "Goblin Horde is opening your saved game.", "update": {"version": "0.6.1"}})
+        self.assertEqual(opening.poll().update, "0.6.1", "an update is offered even while the game cannot open")
+        self.assertEqual(feed_for(ready())[0].poll().update, "", "an older viewer says nothing of updates")
+
+    def test_anything_but_a_plain_version_is_no_update(self):
+        for update in (None, {}, "0.6.1", {"version": "0.6"}, {"version": "v0.6.1"}, {"version": "0.6.1-beta"}, {"version": "0.6.1\nInstall now"},
+                       {"version": "١.٢.٣"}, {"version": 61}, {"version": "1" * 12 + ".0.0"}, {"version": "01.2.3"}):
+            with self.subTest(update=update):
+                feed, _viewer = feed_for({**ready(), "update": update})
+                self.assertEqual(feed.poll().update, "")
+
+    def test_a_viewer_that_does_not_answer_offers_no_update(self):
+        feed, _viewer = feed_for(OSError("down"))
+        self.assertEqual(feed.poll().update, "")
 
 
 if __name__ == "__main__":

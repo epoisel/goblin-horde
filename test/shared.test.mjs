@@ -33,15 +33,15 @@ function direct(handler, address, { method = "GET", url = "/api/pets/whoami", he
 
 test("the shared listener answers its five routes and no other route the viewer has", async (t) => {
   const paths = viewerPaths();
-  for (const known of ["/api/quit", "/api/scene", "/api/tasks", "/api/transcript", "/api/agent", "/api/message", "/api/phone", "/api/phone/reset", "/api/shared", "/api/reply",
-    "/api/respond", "/api/health", "/api/diagnostics", "/api/app/open", "/api/connect-claude", "/", "/app/", "/index.html", "/app/app.js", "/goblin_art.json", "/pair.js"])
+  for (const known of ["/api/quit", "/api/shared", "/api/health", "/api/pets", "/api/pets/buy", "/api/pets/fight"])
     assert.ok(paths.includes(known), `the route list read from server.mjs holds ${known}`);
-  assert.ok(paths.length >= 45, `${paths.length} paths`);
+  for (const older of ["/api/scene", "/api/phone/reset", "/", "/pair.js"]) assert.ok(paths.includes(older), `and an older viewer's ${older}`);
+  assert.ok(paths.length >= 30, `${paths.length} paths`);
 
   const shared = await host(t);
   const cookie = await shared.session();
   const answered = [];
-  for (const path of [...paths, "/api/pets/whoami"]) {
+  for (const path of [...paths, "/api/pets/whoami", "/api/pair"]) {
     for (const method of ["GET", "POST", "PUT", "DELETE"]) {
       const { status, body } = await shared.call(method, path, { cookie, body: { kind: "recruit", boss: 0, enabled: false, code: "nope" } });
       if (status === 404) assert.deepEqual(body, { error: "Not found" }, `${method} ${path}`);

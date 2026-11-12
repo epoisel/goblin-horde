@@ -14,6 +14,7 @@ const CONFIG = validateConfig({
   upgrades: {
     hoard: { baseCost: 40, growth: 1.5, bonus: 0.08, max: 20 },
     training: { baseCost: 30, growth: 1.5, bonus: 0.1, max: 20 },
+    grip: { baseCost: 50, growth: 1.6, max: 3 },
   },
   bosses: {
     count: 30, powerBase: 6, powerExponent: 2, variance: 0.2,
@@ -222,7 +223,7 @@ test("no reducer changes the state or config it was given", () => {
   turnPayout(config, state, work(50_000, 3_000));
   turnPayout(config, state, { outcome: "subagent" });
   idlePayout(config, state, 120);
-  for (const kind of ["recruit", "level", "gear", "hoard", "training"]) assert.ok(buy(config, state, kind).ok, kind);
+  for (const kind of ["recruit", "level", "gear", "hoard", "training", "grip"]) assert.ok(buy(config, state, kind).ok, kind);
   for (const boss of [0, 1, 2]) assert.ok(fight(config, state, boss, 0.5).won, `boss ${boss}`);
   assert.deepEqual(state, before);
 });
@@ -236,9 +237,30 @@ test("validateConfig names the missing or invalid key, and the shipped game_conf
   assert.throws(broken((config) => { delete config.income.k; }), /income\.k is missing/);
   assert.throws(broken((config) => { config.bosses.rerunDecay = []; }), /bosses\.rerunDecay must be/);
   assert.throws(broken((config) => { config.upgrades.hoard.max = 1.5; }), /upgrades\.hoard\.max must be/);
+  assert.throws(broken((config) => { delete config.upgrades.hoard.bonus; }), /upgrades\.hoard\.bonus is missing/);
+  assert.throws(broken((config) => { delete config.upgrades.grip; }), /upgrades\.grip\.baseCost is missing/);
   assert.throws(broken((config) => { config.horde.recruitBaseCost = "10"; }), /horde\.recruitBaseCost must be/);
   assert.throws(broken((config) => { config.schema = 2; }), /schema must be 1/);
   assert.equal(loadConfig(fileURLToPath(new URL("../game_config.json", import.meta.url))).schema, 1);
+});
+
+test("grip is bought with coins up to its max, and changes no payout and no power", () => {
+  const rich = player({ wallet: { coins: 1000 }, horde: { size: 40 } });
+  assert.equal(rich.upgrades.grip, 0, "a new player's hand carries one goblin");
+  const levels = [];
+  let state = rich;
+  for (let bought = buy(CONFIG, state, "grip"); bought.ok; bought = buy(CONFIG, state, "grip")) {
+    levels.push(state.wallet.coins - bought.state.wallet.coins);
+    state = bought.state;
+  }
+  assert.deepEqual(levels, [50, 80, 128], "50 coins, then 1.6 times as much each level");
+  assert.equal(state.upgrades.grip, 3);
+  assert.deepEqual(buy(CONFIG, state, "grip"), { state, ok: false, reason: "maxed" });
+  assert.deepEqual(buy(CONFIG, player({ wallet: { coins: 49 } }), "grip").reason, "coins");
+  const big = work(3_200_000);
+  assert.deepEqual([turnPayout(CONFIG, state, big).coins, turnPayout(CONFIG, state, big).xp], [turnPayout(CONFIG, rich, big).coins, turnPayout(CONFIG, rich, big).xp]);
+  assert.equal(fight(CONFIG, state, 0, 0.5).ratio, fight(CONFIG, rich, 0, 0.5).ratio);
+  assert.ok(fight(CONFIG, rich, 0, 0.5).ratio > 1);
 });
 
 test("the vault upgrade is gone: buying it is refused, even for a player an older version sold vault levels to", () => {

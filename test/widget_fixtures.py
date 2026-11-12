@@ -1,4 +1,4 @@
-"""Helpers for tests that build the real Tk window from the demo world (imported, not collected)."""
+"""Helpers for tests that build the real widget (imported, not collected)."""
 
 import _tkinter
 import gc
@@ -23,19 +23,6 @@ def isolate(test) -> str:
     return folder.name
 
 
-def quiet(widget) -> None:
-    """Stop every timer so a test drives the window by hand."""
-    for name in ("poll_after", "receive_after", "detail_after", "animate_after", "tick_after", "catalog_after",
-                 "sources_after", "show_after", "save_after"):
-        timer = getattr(widget, name, None)
-        if timer:
-            try:
-                widget.root.after_cancel(timer)
-            except Exception:
-                pass
-            setattr(widget, name, None)
-
-
 def settle(widget, limit: int = 20_000) -> None:
     """Process pending window events, failing rather than hanging."""
     widget.root.update_idletasks()
@@ -55,29 +42,4 @@ def wait_for(widget, condition, seconds: float = 5.0) -> None:
         if condition():
             return
         time.sleep(0.01)
-    raise AssertionError("timed out waiting for the window")
-
-
-def load(widget) -> None:
-    """Read the demo scene, sources, and catalog once, as the loops would. Pending timers are
-    cancelled first: a loop called by hand reschedules itself, and an orphaned timer would fire
-    into the next test's Tk."""
-    wait_for(widget, lambda: widget.pending is None)  # A read already on its way lands first.
-    quiet(widget)
-    widget.fetch_now()
-    wait_for(widget, lambda: widget.pending is None and widget.connection != "CONNECTING")
-    quiet(widget)
-    widget.poll_sources()
-    widget.load_catalog()
-    wait_for(widget, lambda: widget.sources_pending is None and widget.catalog_pending is None)
-    quiet(widget)
-    settle(widget)
-
-
-def load_detail(widget) -> None:
-    """Read the selected goblin's records once."""
-    quiet(widget)
-    widget.poll_detail()
-    wait_for(widget, lambda: widget.detail_pending is None)
-    quiet(widget)
-    settle(widget)
+    raise AssertionError("timed out waiting for the widget")

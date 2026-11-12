@@ -10,10 +10,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PAIRING_CODE, Pairing } from "../lib/pairing.mjs";
+import { CODE_FILE, PAIRING_CODE, Pairing, loadPairingCode, savePairingCode, startingPairingCode } from "../lib/pairing.mjs";
 import { REMOTE_CODE_FILE, createRemotePets, readRemoteSetting, startingRemoteSetting, writeRemoteSetting } from "../lib/pets-remote.mjs";
 import { UNREADABLE, createPetsStore } from "../lib/pets-store.mjs";
-import { CODE_FILE, loadPairingCode, savePairingCode, startingPairingCode } from "../lib/phone.mjs";
 import { PrivateFileError, createPrivateFile, protectFile, readersOf, writePrivateFile } from "../lib/private-file.mjs";
 import { createState, loadConfig } from "../lib/rewards.mjs";
 import { SHARED_FILE, SharedAccess, readSharedSetting, writeSharedSetting } from "../lib/shared.mjs";
@@ -77,7 +76,7 @@ test("in a folder every user may read, the files that hold a code or the shared 
 
   // A code that a code-less viewer makes up on its first start is saved the same way.
   rmSync(join(dir, CODE_FILE));
-  const made = loadPairingCode(dir, { env: {} });
+  const made = loadPairingCode(dir);
   assert.equal(readFileSync(join(dir, CODE_FILE), "utf8"), `${made}\n`);
   mineOnly(CODE_FILE);
 });
@@ -112,7 +111,7 @@ test("a host that starts with sharing on makes the pairing code and the shared s
   writeFileSync(join(dir, SHARED_FILE), JSON.stringify({ enabled: true, address: "127.0.0.1" }));
   for (const name of [CODE_FILE, SHARED_FILE]) assert.ok(allowed(join(dir, name)).includes("BU"), `${name} starts out readable by every user`);
   const listens = [];
-  const shared = new SharedAccess({ stateDir: dir, port: 43917, pairing: new Pairing({ code: startingPairingCode(dir, { env: {}, log: {} }) }), network: standIn, serve: recording(listens), log: {}, routes: {} });
+  const shared = new SharedAccess({ stateDir: dir, port: 43917, pairing: new Pairing({ code: startingPairingCode(dir, { log: {} }) }), network: standIn, serve: recording(listens), log: {}, routes: {} });
   const state = await shared.apply();
   assert.deepEqual([state.listening, state.problem, listens], [true, "", ["127.0.0.1"]]);
   for (const name of [CODE_FILE, SHARED_FILE])
@@ -279,15 +278,15 @@ test("a viewer whose new pairing code cannot be saved privately starts with a co
   const dir = folder(t);
   // Nothing can be saved under this name: a folder has it.
   mkdirSync(join(dir, CODE_FILE));
-  assert.throws(() => loadPairingCode(dir, { env: {} }), PrivateFileError, "the code is not saved, and whoever asked for the saved code is told");
+  assert.throws(() => loadPairingCode(dir), PrivateFileError, "the code is not saved, and whoever asked for the saved code is told");
   const lines = [];
-  const code = startingPairingCode(dir, { env: {}, log: { error: (line) => lines.push(line) } });
+  const code = startingPairingCode(dir, { log: { error: (line) => lines.push(line) } });
   assert.match(code, PAIRING_CODE);
   assert.deepEqual(lines, ["pairing-code.txt could not be made private to your account on this computer, so it was not saved. A pairing code for this run only is in use."]);
   assert.ok(!lines.join().includes(code), "the code is not in the log line");
   assert.deepEqual(readdirSync(dir), [CODE_FILE], "no file, and no temp file, holds the code");
   assert.deepEqual(readdirSync(join(dir, CODE_FILE)), []);
-  assert.notEqual(startingPairingCode(dir, { env: {}, log: {} }), code, "the next run has another code");
+  assert.notEqual(startingPairingCode(dir, { log: {} }), code, "the next run has another code");
 
   // The shared setting is the same when it is turned on, and turning it off works whatever the file is.
   mkdirSync(join(dir, SHARED_FILE));

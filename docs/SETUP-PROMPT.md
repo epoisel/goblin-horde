@@ -11,10 +11,10 @@ Set up the Goblin Horde pet game on this Windows computer.
 2. In the package folder, read AGENTS.md and follow "Install the pet game".
 3. Run: node goblin.mjs doctor
    Tell me what is missing. Do not install Node.js, Python, or T3 Code yourself.
-4. If doctor shows no blocker, run: node goblin.mjs install --no-claude-hooks --surface pets
+4. If doctor shows no blocker, run: node goblin.mjs install
 5. Report back: what is missing, whether install printed "The desktop goblins are running.",
    and how many coins and goblins http://127.0.0.1:43917/api/pets shows.
 
 Work only in the package folder. Let the installer write its own app folder and state folder.
-Change no other setting, do not turn on phone access, and send no file anywhere.
+Change no other setting, do not turn on the shared game, and send no file anywhere.
 ```

@@ -37,7 +37,7 @@ export async function computer(t, { tailscale = null, env = {}, adapters, contex
     User: { 1: { LoginName: login } } });
   const interfaces = adapters ?? (tailscale?.address ? { Tailscale: [{ family: "IPv4", internal: false, address: tailscale.address }] } : {});
   const ctx = makeContext({
-    platform: "win32", home: join(root, "home"), log: (line) => lines.push(line), listProcesses: () => [], openUrl: () => {},
+    platform: "win32", home: join(root, "home"), log: (line) => lines.push(line), listProcesses: () => [],
     env: { CLAUDE_CONFIG_DIR: join(root, "claude"), CODEX_HOME: join(root, "codex"), LOCALAPPDATA: join(root, "local"), ProgramFiles: "C:\\Program Files", GOBLIN_T3_DB: join(root, "no-t3.sqlite"), ...env },
     nodeVersion: () => "22.13.0", which: () => "", probe: () => "", exists: (path) => Boolean(tailscale) && path === TAILSCALE, openT3: async () => ({ ok: false, reason: "missing", message: "No T3." }),
     interfaces: () => interfaces,

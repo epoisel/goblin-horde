@@ -23,7 +23,7 @@ LANES = 6             # depth rows on the ground, one pixel apart, so a crowd is
 TOWER = 3             # goblins in one stack
 MOUNT_SPEED = 48.0
 SPREAD_SLACK = 1.5    # seconds before its time is up that a scattering goblin is at its spot
-SPREAD_MAX = 8.0      # multiple of RUN_SPEED a far one may reach
+DASH = 8.0            # multiple of RUN_SPEED a goblin with far to go may reach
 DAZED_SHARE = 0.2     # of the horde, flat on its back at once
 
 
@@ -54,7 +54,7 @@ class BossDraw(NamedTuple):
 
 class Pop(NamedTuple):
     """A short-lived effect. A pop with `text` is drawn as that text, any other as the `kind` sprite."""
-    kind: str    # coin | hit | alert | dust | star | banner
+    kind: str    # coin | hit | crit | alert | dust | star | banner
     x: float
     y: float
     text: str
@@ -121,11 +121,13 @@ BEHAVIORS = {
     'cheer': B('cheer', 'stand', (0.8, 1.5), bounce=7),
     'dazed': B('dazed', 'stand', (0.9, 1.8), fail='land', push=False),
     'held': B('grabbed', 'held', push=False),
+    'thrown': B('jump', 'hurl', push=False),
     'stroll': B('run', 'walk', (4.0, 4.0), 0.55, edge='stop'),
     'sit': B('sit', 'stand', (1.5, 3.5), push=False),
     'walkoff': B('run', 'walk', (4.0, 4.0), 1.0, edge='fall'),
     'gawk': B('idle', 'stand', (0.15, 0.5)),
     'flee': B('run', 'walk', (0.4, 1.0), 2.0, fail='gawk'),
+    'rally': B('run', 'rally', (4.0, 4.0), 2.0, edge='fall', fail='gawk'),
     'charge': B('run', 'storm', (9.0, 9.0), 3.0, edge='fall', fail='gawk', goal=True),
     'climb': B('climb', 'scale', (5.0, 5.0), fail='brawl', push=False),
     'cling': B('grip', 'cling', (1.2, 3.0), hits=True, push=False),
@@ -176,6 +178,7 @@ TRANSITIONS = {  # context -> finished state -> weighted choices; '*' is every o
         '*': (To('idle', 1),),
     },
     'enter': {'*': (To('gawk', 3), To('flee', 2), To('hop', 0.6))},
+    'muster': {'*': (To('rally', 1),)},
     'charge': _FIGHT,
     'swarm': _FIGHT,
     'finish': {**_LET_GO, 'brawl': (To('flee', 1),), 'charge': (To('flee', 1),), '*': (To('cheer', 1),)},
@@ -223,6 +226,7 @@ EFFECTS = {
     'dust': EffectKind('dust', (0.4, 0.6)),
     'spark': EffectKind('star', (0.12, 0.2)),
     'hit': EffectKind('hit', (0.55, 0.55)),
+    'smash': EffectKind('crit', (0.9, 0.9)),
     'alert': EffectKind('alert', (0.5, 0.8)),
     'banner': EffectKind('banner', (1.8, 1.8)),
 }
@@ -232,7 +236,7 @@ class Goblin:
     __slots__ = ('id', 'x', 'y', 'vx', 'vy', 'grounded', 'platform', 'facing', 'state', 'timer',
                  'personality', 'lane', 'clock', 'rate', 'tempo', 'pace', 'behavior', 'move',
                  'target', 'carrier', 'rider', 'goal', 'spot', 'wave', 'hit', 'u', 'v', 'tu', 'tv',
-                 'alpha')
+                 'alpha', 'hang')
 
 
 def _stand(world, g, dt):
@@ -274,7 +278,7 @@ def _edge_fall(world, g, p, x):
 EDGES = {'turn': _edge_turn, 'stop': _edge_stop, 'fall': _edge_fall}
 
 
-def _air(world, g, dt):
+def air(world, g, dt):
     g.vy += GRAVITY * dt
     x = g.x + g.vx * dt
     if x < EDGE or x > world.width - EDGE:
@@ -299,7 +303,8 @@ def _air(world, g, dt):
 
 def _held(world, g, dt):
     x, y = world.hand
-    y += GOBLIN_H
+    x = min(max(x + g.hang[0], EDGE), world.width - EDGE)
+    y = min(y + g.hang[1] + GOBLIN_H, world.floor)
     g.vx = 0.6 * g.vx + 0.4 * (x - g.x) / dt
     g.vy = 0.6 * g.vy + 0.4 * (y - g.y) / dt
     g.x, g.y = x, y
@@ -365,22 +370,26 @@ def run_to(world, g, dt, aim):
     return False
 
 
+def hurry(g, gap, left):
+    """Speed a runner up to cover `gap` in `left` seconds: never slower than it was, nor past DASH."""
+    g.pace = max(g.pace, min(gap / max(0.3, left), DASH * RUN_SPEED))
+
+
 def _spread(world, g, dt):
     """Run to its own spot on the ground, as fast as it takes to be there in time."""
     spot = g.spot
     if spot is None:
         world.advance(g)
         return
-    need = abs(spot - g.x) / max(0.3, g.timer - SPREAD_SLACK)
-    g.pace = max(g.pace, min(need, SPREAD_MAX * RUN_SPEED))
+    hurry(g, abs(spot - g.x), g.timer - SPREAD_SLACK)
     if run_to(world, g, dt, spot):
         g.spot = None
         world.advance(g)
 
 
-MOTIONS = {'stand': _stand, 'walk': _walk, 'air': _air, 'held': _held, 'seek': _seek,
+MOTIONS = {'stand': _stand, 'walk': _walk, 'air': air, 'held': _held, 'seek': _seek,
            'scuffle': _scuffle, 'mount': _mount, 'ride': _ride, 'spread': _spread}
-NEEDS_FOOTING = frozenset(('stand', 'walk', 'seek', 'scuffle', 'storm', 'spread'))
+NEEDS_FOOTING = frozenset(('stand', 'walk', 'seek', 'scuffle', 'rally', 'storm', 'spread'))
 STACKED = frozenset(('mount', 'ride'))
 
 
@@ -537,5 +546,5 @@ def check_tables(motions, starts):
     for name, anim in ANIMS.items():
         assert max(anim.seq) < ACTION_FRAMES[anim.action], name
     for name, kind in EFFECTS.items():
-        assert kind.pop in ('coin', 'hit', 'alert', 'dust', 'star', 'banner'), name
+        assert kind.pop in ('coin', 'hit', 'crit', 'alert', 'dust', 'star', 'banner'), name
     assert set(starts) <= set(BEHAVIORS), set(starts) - set(BEHAVIORS)

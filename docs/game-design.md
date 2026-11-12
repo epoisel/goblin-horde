@@ -10,9 +10,9 @@ Using AI is the income. Every agent turn that finishes pays coins. Coins build a
 
 ## 2. Host and data source: T3 *(decided)*
 
-T3 is a requirement for the first edition; Orca is dropped. Separate editions later, each with its own source adapter (*proposed*: shared core plus `hosts/t3`; a Claude-hooks edition can return later from git history).
+T3 is a requirement for the first edition. Other hosts can come later as separate editions, each with its own source adapter (*proposed*: shared core plus `hosts/t3`).
 
-The T3 adapter reads `~/.t3/userdata/statev2.sqlite` **read-only** (Node 22.13+, `node:sqlite`). It selects only ids, status, provider, token counts and timestamps. It never reads `payload_json` text fields, message text, or titles. Nothing about prompts, commands, or files is stored. The T3 edition installs no Claude Code hook.
+The T3 adapter reads `~/.t3/userdata/statev2.sqlite` **read-only** (Node 22.13+, `node:sqlite`). It selects only ids, status, provider, token counts and timestamps. It never reads `payload_json` text fields, message text, or titles. Nothing about prompts, commands, or files is stored.
 
 Tables used: `orchestration_v2_projection_provider_turns` (turn status, `turnTokenUsage`), `..._runs`, `..._subagents`, `..._turn_items` (item types and statuses). The raw `orchestration_v2_events` table is compacted away, so a persisted timestamp watermark plus a recent-id set replaces an event cursor. First launch starts from "now": nothing that finished before launch pays, even minutes before. Work finished while the app was closed is replayed on the next launch under the normal rules, up to `idle.catchUpDays` (7) back, and the small idle trickle is paid once on top. The adapter checks that the tables and columns exist and fails closed with a plain message, because T3's schema is internal and unversioned.
 
@@ -34,11 +34,11 @@ coins = max(2, 1.6 * sqrt(W / 1000))
 - Subagent completions pay a flat 4 coins. T3 reports usage for the main agent only.
 - No daily cap *(decided)*. Every finished turn pays in full all day, so 20 agents are 20 full streams. The square root above is the only brake on income. Section 11 shows what each kind of user earns a day.
 
-Replay on the owner's 10 days: heavy days 610–770 coins, light days 25–50, about 2,700 total.
+Replay on the owner's 10 days: heavy days 610 to 770 coins, light days 25 to 50, about 2,700 total.
 
 ### Idle trickle *(proposed, tune)*
 
-0.1 coin/min per 100 goblins, capped at 4 hours banked, shown once as "while you were away". It must stay far below a light day (25–50 coins) so AI use remains the income.
+0.1 coin/min per 100 goblins, capped at 4 hours banked, shown once as "while you were away". It must stay far below a light day (25 to 50 coins) so AI use remains the income.
 
 ## 4. The horde
 
@@ -55,7 +55,7 @@ With hundreds of goblins, per-goblin levels and gear are unmanageable. Each clas
 
 ### Upgrades *(proposed, tune)*
 
-Costs grow about 1.4–1.5x per level, benefits linearly. Total income multiplier capped around 3x.
+Costs grow about 1.4x to 1.5x per level, benefits linearly. Total income multiplier capped around 3x.
 
 | Upgrade | Effect |
 |---|---|
@@ -66,7 +66,7 @@ Costs grow about 1.4–1.5x per level, benefits linearly. Total income multiplie
 ## 5. Battles *(decided unless marked)*
 
 - **Never blocked.** No energy, stamina or sortie limits. Start a battle any time.
-- **Whole horde fights.** One big boss per battle. Resolved as an aggregate simulation (class counts x level x gear against boss HP, phases and weaknesses), not per-goblin physics. Levers: horde size, class mix, gear, which boss to challenge. Bosses can be weak to certain classes. A battle runs 30–60 s.
+- **Whole horde fights.** One big boss per battle. Resolved as an aggregate simulation (class counts x level x gear against boss HP, phases and weaknesses), not per-goblin physics. Levers: horde size, class mix, gear, which boss to challenge. Bosses can be weak to certain classes. A battle runs 30 to 60 s.
 - **Rewards per battle.** First clear pays the most; reruns pay less.
 - **Death costs nothing.** A lost battle gives no reward and loses nothing.
 - **Whole team gets XP**, class by class.
@@ -86,13 +86,13 @@ Benchmarked: Tk canvas, keyed-colour transparent topmost window (the existing te
 | 800 | 49.3 (20) | 49.8 (20) |
 
 - Cost is **per canvas item, not per pixel** (about 0.06 ms per goblin). Shrinking goblins does not help rendering, only count and update rate do. Smaller goblins still help screen space.
-- Process CPU stayed low (3–13% of a core): the time is blocked waiting on the layered window, on the UI thread. Network polling must stay off the draw thread.
+- Process CPU stayed low (3% to 13% of a core): the time is blocked waiting on the layered window, on the UI thread. Network polling must stay off the draw thread.
 - **Plan:** simulate the whole horde as math (thousands is fine) and draw a representative crowd, capped at about 200 animated sprites at 30 fps (`maxOnScreen` in `game_config.json`). Beyond the cap, one sprite stands for N goblins with a count badge, or only a subset animates each tick. Re-benchmark with real sprites, a boss, and effects. If thousands must animate, revisit Phase 4 (Tauri, Electron or WebView).
 - Caveats: one machine, synthetic sprites, no boss or particles.
 
 ## 7. Privacy
 
-Stored in the state folder: counts, class levels, wallet, watermark, daily counters. Never stored: prompt text, commands, todo text, file names, message text. The legacy Claude hook log is purged on first run if present.
+Stored in the state folder: counts, class levels, wallet, watermark, daily counters. Never stored: prompt text, commands, todo text, file names, message text.
 
 ## 8. Build order
 
@@ -101,9 +101,9 @@ Stored in the state folder: counts, class levels, wallet, watermark, daily count
 3. `game_config.json` plus pure `rewards.mjs`: coins, offline, upgrades. Unit tests.
 4. `pets.json` store: atomic write, `.bak`, retry on rename.
 5. Horde simulator script to tune rewards and boss HP before UI.
-6. Strip UI: coin counter, pop-ups, horde count, class panel.
+6. Pet field UI: coin counter, pop-ups, horde count, class panel.
 7. Battle sim and arena renderer under the on-screen cap.
-8. Strip the old monitor and phone code from the T3 edition.
+8. Remove the old monitor code from this branch.
 
 ## 9. Open questions
 
@@ -124,13 +124,15 @@ GameState = {
   schema: 1,
   wallet:   { coins, scrap, lifetimeCoins },
   horde:    { size, level, xp, gear },            // gear is a tier
-  upgrades: { hoard, training },                  // levels
+  upgrades: { hoard, training, grip },            // levels
   bosses:   { cleared },                          // boss i may be first-cleared only when i === cleared
   today:    { key, reruns: { [bossIndex]: count } }
 }
 ```
 
 A save written before the daily cap was removed also holds `upgrades.vault` and `today.coinsEarned`. It still loads. Those two fields are dropped when it is read and are not written again, to `pets.json` or to its backup. Coins spent on vault levels are not refunded.
+
+A save written before grip was sold has no `upgrades.grip`. It loads with grip 0, and the field is saved from then on. A display reads a host of that older version the same way, with grip 0 and nothing to buy.
 
 ### Rules
 
@@ -139,6 +141,7 @@ A save written before the daily cap was removed also holds `upgrades.vault` and 
 - **Power:** `size * (1 + powerPerLevel * (level - 1)) * (1 + powerPerGear * gear)`.
 - **Boss i** needs `powerBase * (i + 1) ** powerExponent`, a power law because the horde's power rises fast early and flattens later, so an exponential ladder is cleared in week one and then stalls. A fight wins when `power * (1 + variance * (luck - 0.5)) >= required`, with `luck` injected in [0, 1) so tests and the sim stay deterministic.
 - **First clear** of boss `cleared` pays full coins, scrap and XP, and advances `cleared`. **Reruns** of any cleared boss pay `rerunDecay[min(n, last)]` of the first-clear coins, scrap and XP, where `n` is that boss's reruns today (the first rerun is `n = 0`). Each of the three is rounded and then raised to at least 1, so a win always pays something. A loss pays and changes nothing, and does not count as a rerun.
+- **Grip** costs `baseCost * growth ** level` coins up to `max` levels, as hoard and training do. It changes no payout and no power, so it has no `bonus`. Its level is how many goblins more than one the pointer picks up in the widget.
 - **Level up** needs `xp >= xpToNext(level)` and `levelCoinCost(level)` coins. It spends the coins, subtracts the XP, and keeps the remainder.
 - **Purchases** never take the wallet below zero. Recruit cost is `recruitBaseCost * recruitGrowth ** (size - startSize)`.
 
@@ -251,31 +254,35 @@ Items 1, 2, 3 and 7 were changed again by the round above.
 - `lib/t3-source.mjs`: read-only T3 reader. `json_extract` runs inside SQLite so no payload text reaches JavaScript, ids leave only as 16-character hashes, and an unexpected T3 schema fails closed with a plain message. It costs about 0.3 ms per poll on a 250-row history and grows linearly.
 - `lib/pets-store.mjs`: `pets.json` saved by temp file and rename, with `pets.json.bak`, retry on Windows file locks, and a shape check that writes only the documented numeric fields. A save from before the cap was removed loads, and its `vault` and `coinsEarned` are not written again, to the save or to the backup.
 - `lib/reward-engine.mjs`: the single writer. `start`, `tick`, `snapshot`, `buy`, `fight`, all through one queue. The payment and the watermark save as one record.
-- `desktop_platform.rect_is_visible`: the strip must show at least 40 by 20 pixels on a real display or it docks again (fixes the L-shaped monitor case, issue #9).
 
 Verified on the real T3 database: first launch pays nothing for old history, 3 days away catches up 18 turns for 319 coins once, reopening pays nothing more, and the save file holds no text.
 
-- `lib/pets-service.mjs`, `lib/pets-routes.mjs`, wiring in `server.mjs`, and `HordeApi.pets`, `pets_buy`, `pets_fight`: the engine behind the local viewer. The game opens when the viewer holds its port, ticks every second, and answers local requests only (a phone gets 403).
-- `desktop_widget.py --surface pets` saves the pet field as the surface when it starts, so a later start with no surface (the Start menu entry) comes back to the game even when it was stopped without **Quit Goblin Horde**.
+- `lib/pets-service.mjs`, `lib/pets-routes.mjs`, wiring in `server.mjs`, and `HordeApi.pets`, `pets_buy`, `pets_fight`: the engine behind the local server. The game opens when the server holds its port, ticks every second, and answers local requests only.
 
 - `lib/shared.mjs`, `lib/pets-remote.mjs`, `lib/tailscale.mjs`, `lib/shared-manager.mjs`: one game on several computers over Tailscale. The host listens on its Tailscale address for five routes behind layered checks, and a display forwards its local pets routes to the host and opens no saved game. The widget is unchanged. See `docs/SHARED-PETS.md`.
 
 ### API for the widget
 
 - `GET /api/pets?after=N` answers `{ready: false, message}` until the game is open, then `{ready: true, boot, seq, events, game, source}`. `game` is `{state, quotes, power, nextBoss}`, `source` is `{ok: true}` or `{ok: false, reason, message}`. `events` are the numbered pop-ups above N: `launch` (new player, away coins, caught-up work) and `work` (coins, xp, turns, subagents per paying tick).
-- `boot` names the viewer's run. When it differs from the last one seen, event numbers began again at 1, so ask again from 0.
-- `POST /api/pets/buy {kind}` and `POST /api/pets/fight {boss}` need the viewer's Origin. Buy answers `{ok, reason, game}`, fight `{won, ratio, first, rewards, reason, game}`. `kind` is `recruit`, `level`, `gear`, `hoard` or `training`. Any other kind, the removed `vault` included, answers 400.
+- `boot` names the local server's run. When it differs from the last one seen, event numbers began again at 1, so ask again from 0.
+- `POST /api/pets/buy {kind}` and `POST /api/pets/fight {boss}` need the local server's Origin. Buy answers `{ok, reason, game}`, fight `{won, ratio, first, rewards, reason, game}`. `kind` is `recruit`, `level`, `gear`, `hoard`, `training` or `grip`. Any other kind, the removed `vault` included, answers 400.
 - Poll at most every 900 ms to keep the 2 second "coins appear" criterion, since the server ticks every 1000 ms.
-- `GOBLIN_T3_DB` points the viewer at another T3 database or a missing one, for tests.
+- `GOBLIN_T3_DB` points the local server at another T3 database or a missing one, for tests.
 - Measured on the real server: coins rose 951 ms after a turn row landed, 76 to 914 ms over 12 more samples.
+
+### The fight on screen
+
+The fight's outcome and rewards are settled by `POST /api/pets/fight` before the show starts, and nothing the widget does changes them. Two rules of the show are worth knowing here, both in `pet_battle.py`.
+
+- **Its timing does not depend on the screen's width.** A goblin farther than `RALLY_RANGE` from where the boss will stand closes up while the boss walks in, a charge takes `CHARGE_TIME` from anywhere inside that range, and nobody runs faster than `DASH` times the walking pace. Before this, half the horde reached the boss in about 5 seconds on a 1920 pixel screen and about 11 seconds on a 5120 pixel one.
+- **The player can shorten it.** A goblin the pointer drops on the boss takes hold where it lands and moves the show forward by `THROW_SKIP` seconds, up to `THROW_SHARE` of the swarm. The boss's health follows the show, so it drops at once. Grip lets the pointer carry more goblins, so one throw counts for more.
 
 ### Next
 
-1. Strip UI: coin counter, "+N" pop-ups per `work` event, horde count, level-up, buy and fight buttons.
+1. Pet field UI: coin counter, "+N" pop-ups per `work` event, horde count, level-up, buy and fight buttons.
 2. Idle coins are paid only at launch. While the app runs there is no trickle yet, and `lastSeenAt` moves only when a save happens. Decide whether the running app should pay idle coins on a timer.
 3. Battle arena under the on-screen sprite cap.
-4. Two viewers on different ports that share one state folder no longer both write `pets.json`. The engine holds `pets.lock` (`lib/pets-lock.mjs`), and the second viewer says another Goblin Horde runs the game and saves nothing.
-5. `AGENTS.md`, `README.md` and `SECURITY.md` still describe the old agent monitor and its Claude hook. They need rewriting when the monitor code is removed from the T3 edition. The viewer now reads T3's database read-only for token counts and timestamps.
+4. Two local servers on different ports that share one state folder no longer both write `pets.json`. The engine holds `pets.lock` (`lib/pets-lock.mjs`), and the second server says another Goblin Horde runs the game and saves nothing.
+5. `AGENTS.md`, `README.md` and `SECURITY.md` describe the pet game only. The earlier agent monitor is on the `main` branch.
 6. Node 20 cannot load `node:sqlite`. The T3 edition should raise `engines.node` to 22.13 or newer.
-7. Three older tests in `test/task-routes.test.mjs` are cancelled before and after this work. A cause is known: a test waits on promises whose only timers are unref'd, so Node ends the file early. One ref'ed timer makes all 6 pass.
-8. The farmer targets were moved, so a no-AI player who fights 100 battles a day ends with about three quarters of a typical horde at day 90. If that grind proves too rewarding, the alternative in section 11 (coins stop after a boss's third rerun of the day) holds the old targets.
+7. The farmer targets were moved, so a no-AI player who fights 100 battles a day ends with about three quarters of a typical horde at day 90. If that grind proves too rewarding, the alternative in section 11 (coins stop after a boss's third rerun of the day) holds the old targets.

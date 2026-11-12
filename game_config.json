@@ -33,7 +33,8 @@
   },
   "upgrades": {
     "hoard": { "baseCost": 40, "growth": 1.5, "bonus": 0.08, "max": 20 },
-    "training": { "baseCost": 30, "growth": 1.5, "bonus": 0.1, "max": 20 }
+    "training": { "baseCost": 30, "growth": 1.5, "bonus": 0.1, "max": 20 },
+    "grip": { "baseCost": 50, "growth": 1.6, "max": 7 }
   },
   "bosses": {
     "count": 36,

@@ -21,11 +21,12 @@ import pet_field
 from goblin_look import Look, look_for, name_for, title_for
 from horde_theme import Theme
 from pet_behaviors import BossDraw, Draw, Frame, Pop
-from pet_field import AWAY_AFTER, FRAME_MS, HUD, Display, PetField, primary_display, unit_for
+from pet_field import AWAY_AFTER, FRAME_MS, HUD, Display, PetField, field_display, unit_for
 from pet_field_canvas import EFFECT_POPS, PICTURES, TEXT_POPS, FieldCanvas
 from pet_platform import WindowRect
-from pets_feed import WAITING, Feed, Launch, Work, read_game
-from pets_text import COIN, LOST, REASONS, REFUSED, TROUBLE_MARK, WELCOME, WELCOME_BACK, WON, reason_line, result_line
+from pets_feed import PURCHASES, WAITING, Feed, Launch, Work, read_game
+from pets_text import (COIN, LOST, REASONS, REFUSED, TROUBLE_MARK, WELCOME, WELCOME_BACK, WON, buy_tip, reason_line,
+                       result_line)
 
 try:
     from test_pets_feed import game
@@ -33,10 +34,35 @@ except ImportError:
     from test.test_pets_feed import game
 
 DISPLAY = Display(-4000, -3000, 900, 500, 440)
-EXTRAS = 46  # The boss, its bar and plate, the pools of pops and banners, and the pill with its mark and its gain.
+SCREENS = [desktop_platform.Screen(0, 0, 2560, 1440, 1440, True),
+           desktop_platform.Screen(2560, 0, 3640, 1920, 1920, False)]
+# The boss, its bar and plate, the pools of pops and banners, the pill with its mark and its gain, and the row of buy buttons.
+EXTRAS = 47
 WIN = {"won": True, "ratio": 3.4, "rewards": {"coins": 54, "scrap": 4, "xp": 0}, "reason": ""}
 LOSS = {"won": False, "ratio": 0.2, "rewards": {"coins": 0, "scrap": 0, "xp": 0}, "reason": ""}
 NOT_FOUND = "T3 Code's database was not found."
+
+
+def button_look(paint, kind: str) -> tuple[str, str, bool]:
+    """A buy button as it is drawn: its rim's colour, its plate's, and whether its icon is lit. Read from
+    the pixels of the row's picture."""
+    canvas = paint.canvas
+    name = canvas.itemcget(paint.button_row, "image")
+    picture = next(image for image in paint.rows.values() if str(image) == name)
+    origin = canvas.coords(paint.button_row)
+    left, top, right, bottom = paint.button_boxes[kind]
+    x0, y0 = int(left - origin[0]), int(top - origin[1])
+
+    def colour(x: int, y: int) -> str:
+        return "#%02x%02x%02x" % tuple(picture.get(x0 + x, y0 + y))
+    side = right - left + 1
+    rim, plate = colour(0, 0), colour(1, 1)
+    assert {colour(side - 1, side - 1), colour(0, side - 1), colour(side // 2, 0)} == {rim}, "one rim all the way round"
+    inked = {colour(x, y) for x in range(2, side - 2) for y in range(2, side - 2)} - {plate}
+    lit = {tone for row in pet_art.icon_pixels(kind).rows for tone in row if tone}
+    dim = {tone for row in pet_art.icon_pixels(kind, plate).rows for tone in row if tone}
+    assert inked in (lit, dim), (kind, inked)
+    return rim, plate, inked == lit
 
 
 def ready(**numbers) -> Feed:
@@ -116,18 +142,35 @@ class LayoutTests(unittest.TestCase):
 
     def test_the_field_stands_on_the_taskbar_and_stops_a_row_short_of_the_display(self):
         window = SimpleNamespace(winfo_screenwidth=lambda: 2560, winfo_screenheight=lambda: 1440)
-        with patch.object(desktop_platform, "primary_work_area", return_value=(0, 0, 2560, 1440)), \
+        with patch.object(desktop_platform, "screens", return_value=[]), \
+                patch.object(desktop_platform, "primary_work_area", return_value=(0, 0, 2560, 1440)), \
                 patch.object(desktop_windows, "taskbar_top", return_value=1392) as taskbar_top:
-            self.assertEqual(primary_display(window), Display(0, 0, 2560, 1439, 1392))
+            self.assertEqual(field_display(window, 0), Display(0, 0, 2560, 1439, 1392), "displays that cannot be listed")
         taskbar_top.assert_called_once_with(1440)
-        with patch.object(desktop_platform, "primary_work_area", return_value=(0, 0, 2560, 1440)), \
+        with patch.object(desktop_platform, "screens", return_value=SCREENS), \
+                patch.object(desktop_windows, "taskbar_top", return_value=1392) as taskbar_top:
+            self.assertEqual(field_display(window, 0), Display(0, 0, 2560, 1439, 1392))
+        taskbar_top.assert_called_once_with(1440, (0, 0, 2560, 1440))
+        with patch.object(desktop_platform, "screens", return_value=SCREENS), \
                 patch.object(desktop_windows, "taskbar_top", return_value=1440):
-            self.assertEqual(primary_display(window).ground, 1439, "no taskbar on show: the ground is the field's last row")
+            self.assertEqual(field_display(window, 0).ground, 1439, "no taskbar on show: the ground is the field's last row")
 
-    def test_the_field_is_for_windows_where_a_keyed_colour_lets_the_pointer_through(self):
-        for system, supported in (("win32", True), ("darwin", False), ("linux", False)):
-            with patch.object(desktop_platform, "system", return_value=system):
-                self.assertEqual(pet_field.supported(), supported)
+    def test_the_field_can_stand_on_the_other_display(self):
+        with patch.object(desktop_platform, "screens", return_value=SCREENS), \
+                patch.object(desktop_windows, "taskbar_top", return_value=1872) as taskbar_top:
+            self.assertEqual(field_display(None, 1), Display(2560, 0, 1080, 1919, 1872))
+        taskbar_top.assert_called_once_with(1920, (2560, 0, 3640, 1920))
+
+    def test_a_display_that_is_gone_is_the_primary_one(self):
+        with patch.object(desktop_platform, "screens", return_value=SCREENS), \
+                patch.object(desktop_windows, "taskbar_top", side_effect=lambda bottom, display: bottom):
+            for choice in (2, 7, -1):
+                self.assertEqual(field_display(None, choice).left, 0, choice)
+        beside = [SCREENS[1]._replace(left=-1080, right=0, primary=False), SCREENS[0]]
+        with patch.object(desktop_platform, "screens", return_value=beside), \
+                patch.object(desktop_windows, "taskbar_top", side_effect=lambda bottom, display: bottom):
+            self.assertEqual(field_display(None, 5).left, 0, "the primary display is not always the first from the left")
+            self.assertEqual(field_display(None, 0).left, -1080)
 
 
 class KeyColourTests(unittest.TestCase):
@@ -185,9 +228,11 @@ class FieldCase(unittest.TestCase):
         self.root.withdraw()
         self.addCleanup(self.root.destroy)
         self.fullscreen = self.idle = None
-        for target, name, value in ((pet_field, "primary_display", lambda window: DISPLAY),
+        for target, name, value in ((pet_field, "field_display", lambda window, choice: DISPLAY),
+                                    (desktop_platform, "screens", lambda: []),
                                     (desktop_windows, "WindowWatcher", Watcher),
-                                    (desktop_windows, "foreground_is_fullscreen", lambda: bool(self.fullscreen)),
+                                    (desktop_windows, "foreground_is_fullscreen",
+                                     lambda display=None: bool(self.fullscreen)),
                                     (desktop_windows, "seconds_since_input", lambda: float(self.idle or 0.0))):
             patcher = patch.object(target, name, value)
             patcher.start()
@@ -282,6 +327,25 @@ class FieldCase(unittest.TestCase):
         rows = self.app.tooltip.text.splitlines()
         self.field.canvas.event_generate("<Leave>")
         return rows
+
+    def button(self, kind: str) -> tuple[int, int]:
+        """The middle of a buy button, in canvas pixels."""
+        left, top, right, bottom = self.field.paint.button_boxes[kind]
+        return (left + right) // 2, (top + bottom) // 2
+
+    def click(self, x: int, y: int) -> None:
+        self.field.canvas.event_generate("<ButtonPress-1>", x=x, y=y)
+        self.field.canvas.event_generate("<ButtonRelease-1>", x=x, y=y)
+
+    def bright(self, kind: str) -> bool:
+        """Whether a buy button on show has its icon lit."""
+        return button_look(self.field.paint, kind)[2]
+
+    def rim(self, kind: str) -> str:
+        return button_look(self.field.paint, kind)[0]
+
+    def plate(self, kind: str) -> str:
+        return button_look(self.field.paint, kind)[1]
 
     def standing(self) -> tuple[int, int, int]:
         """A goblin on the ground and a canvas point on its body where it is the one in front."""
@@ -400,7 +464,7 @@ class PointerTests(FieldCase):
         canvas, world = self.field.canvas, self.field.world
         goblin, x, y = self.standing()
         canvas.event_generate("<ButtonPress-1>", x=x, y=y)
-        self.assertEqual((world.held.id, str(canvas.cget("cursor"))), (goblin, "fleur"))
+        self.assertEqual(([held.id for held in world.held], str(canvas.cget("cursor"))), ([goblin], "fleur"))
         for step in range(1, 11):
             canvas.event_generate("<B1-Motion>", x=x + (500 - x) * step // 10, y=y + (150 - y) * step // 10)
             self.run_frames(0.05)
@@ -409,7 +473,7 @@ class PointerTests(FieldCase):
         self.assertAlmostEqual(draw.x, 500, delta=2)
         self.run_frames(0.5)
         canvas.event_generate("<ButtonRelease-1>", x=500, y=150)
-        self.assertIsNone(world.held)
+        self.assertEqual(world.held, [])
         self.assertEqual(str(canvas.cget("cursor")), "")
         self.run_frames(1.0)
         landed = world.goblins[goblin]
@@ -431,7 +495,7 @@ class PointerTests(FieldCase):
         canvas.event_generate("<ButtonPress-1>", x=450, y=60)
         canvas.event_generate("<ButtonRelease-1>", x=450, y=60)
         self.assertEqual(len(self.app.menus), 2, "nothing is there to click")
-        self.assertIsNone(self.field.world.held)
+        self.assertEqual(self.field.world.held, [])
 
     def test_hovering_names_the_goblin_and_the_pill_explains_itself(self):
         self.open_game(size=6, coins=64)
@@ -458,6 +522,204 @@ class PointerTests(FieldCase):
         self.field.toggle_goblins()
         self.run_frames(0.1)
         self.assertEqual(len(self.field.paint.items), 6)
+
+
+class BuyButtonTests(FieldCase):
+    """Every purchase is one click away, on a button beside the pill."""
+
+    def test_each_purchase_has_a_button_right_of_the_pill_lit_when_it_can_be_bought(self):
+        self.run_frames(0.1)
+        self.assertEqual(self.field.paint.button_boxes, {}, "no game, so nothing to buy")
+        self.assertEqual(self.shown(self.field.paint.button_row, "image"), "")
+        self.open_game(coins=64, size=5, scrap=3)
+        boxes = self.field.paint.button_boxes
+        self.assertEqual(tuple(boxes), PURCHASES)
+        pill = self.field.paint.hud_box
+        lefts = [boxes[kind][0] for kind in PURCHASES]
+        self.assertEqual(lefts, sorted(lefts))
+        self.assertGreater(lefts[0], pill[2], "the row starts where the pill ends")
+        self.assertLessEqual(boxes["grip"][2], DISPLAY.width - 16)
+        self.assertEqual({(top, bottom) for _left, top, _right, bottom in boxes.values()}, {(pill[1], pill[3])}, "as tall as the pill")
+        self.assertEqual({right - left for left, _top, right, _bottom in boxes.values()}, {pill[3] - pill[1]}, "and square")
+        self.assertEqual({kind: self.bright(kind) for kind in PURCHASES},
+                         {"recruit": True, "level": False, "gear": False, "hoard": True, "training": True, "grip": True},
+                         "64 coins buy a goblin, hoard, training or grip, and 30 XP and 3 scrap buy nothing")
+        self.open_game(coins=20, size=5, scrap=40)
+        self.assertEqual([kind for kind in PURCHASES if self.bright(kind)], ["gear"])
+
+    def test_the_buttons_stay_where_they_are_when_the_pill_grows(self):
+        self.open_game(coins=24, size=5)
+        before, pill = dict(self.field.paint.button_boxes), self.field.paint.hud_box
+        self.pay(Work(12, 1), coins=36, size=5)
+        self.assertEqual(self.ticker(), "+12")
+        self.assertLess(self.field.paint.hud_box[0], pill[0], "the pill grew to the left")
+        self.assertEqual(self.field.paint.button_boxes, before)
+
+    def test_a_click_on_a_lit_button_buys_and_a_press_that_slides_off_does_not(self):
+        self.open_game(coins=64, size=5)
+        self.viewer.buy_reply = {"ok": True, "reason": "", "game": read_game(game(coins=23, size=6))}
+        self.assertTrue(self.bright("hoard") and self.bright("training"))
+        x, y = self.button("hoard")
+        self.field.canvas.event_generate("<ButtonPress-1>", x=x, y=y)
+        self.field.canvas.event_generate("<ButtonRelease-1>", x=x, y=y - 60)
+        self.field.canvas.event_generate("<ButtonPress-1>", x=x, y=y)
+        self.field.canvas.event_generate("<ButtonRelease-1>", x=self.button("training")[0], y=y)
+        self.assertEqual(self.viewer.buys, [], "let go anywhere else, a press buys nothing")
+        self.click(*self.button("recruit"))
+        self.run_frames(0.2)
+        self.assertEqual((self.viewer.buys, self.pill()), (["recruit"], "◉ 23   6 goblins"))
+        self.assertEqual(self.app.menus, [], "a button opens no menu")
+        self.assertEqual(self.field.world.held, [], "and it picks up no goblin")
+
+    def test_a_click_on_a_button_that_cannot_be_bought_says_why_and_asks_nothing(self):
+        self.open_game(coins=30, size=5, scrap=3, training=None)
+        for kind, lacks in (("recruit", "coins"), ("gear", "scrap"), ("level", "xp"), ("training", "maxed")):
+            self.click(*self.button(kind))
+            self.run_frames(0.1)
+            self.assertIn(reason_line(lacks), self.texts(), kind)
+        self.assertEqual(self.viewer.buys, [])
+        for _ in range(3):
+            self.click(*self.button("recruit"))
+        self.run_frames(0.1)
+        self.assertEqual(self.texts().count(reason_line("coins")), 1, "said again, it is still one line")
+
+    def test_a_maxed_purchase_keeps_its_place_and_looks_done(self):
+        self.open_game(coins=45, size=5, training=None)
+        rims = {kind: self.rim(kind) for kind in PURCHASES}
+        self.assertEqual(len({rims["training"], rims["recruit"], rims["hoard"]}), 3,
+                         "one rim for what is maxed, one for what the coins do not reach, one for what they buy")
+        self.assertTrue(self.bright("training"))
+        self.assertEqual(tuple(self.field.paint.button_boxes), PURCHASES)
+
+    def test_hovering_a_button_says_what_it_buys_and_lights_it(self):
+        self.open_game(coins=64, size=5)
+        canvas = self.field.canvas
+        plain = self.plate("grip")
+        canvas.event_generate("<Motion>", x=self.button("grip")[0], y=self.button("grip")[1])
+        self.run_frames(0.1)
+        self.assertEqual(self.app.tooltip.text, buy_tip(self.field.game, "grip"))
+        self.assertEqual(str(canvas.cget("cursor")), "hand2")
+        self.assertNotEqual(self.plate("grip"), plain)
+        canvas.event_generate("<Motion>", x=self.button("level")[0], y=self.button("level")[1])
+        self.run_frames(0.1)
+        self.assertEqual(self.plate("grip"), plain)
+        self.assertEqual(self.plate("level"), plain, "one that cannot be bought does not light")
+        self.assertIn("Level up to 3", self.app.tooltip.text)
+        canvas.event_generate("<Leave>")
+        self.assertEqual(self.app.tooltip.text, "")
+
+    def test_the_buttons_work_with_the_goblins_hidden(self):
+        self.open_game(coins=64, size=5)
+        self.field.toggle_goblins()
+        self.run_frames(0.1)
+        self.viewer.buy_reply = {"ok": True, "reason": "", "game": read_game(game(coins=4, size=5))}
+        self.click(*self.button("hoard"))
+        self.assertEqual(self.viewer.buys, ["hoard"])
+
+    def test_a_purchase_during_a_battle_shows_at_once_and_the_winnings_still_do_not(self):
+        self.open_game(coins=64, size=20, cleared=2)
+        self.fight(WIN, coins=118, size=20, cleared=3)
+        self.run_frames(1.0, fps=10)
+        self.assertEqual(self.pill(), "Pebblebrute   ◉ 64   20 goblins")
+        self.assertTrue(self.bright("hoard"))
+        self.viewer.buy_reply = {"ok": True, "reason": "", "game": read_game(game(coins=58, size=20, cleared=3))}
+        self.click(*self.button("hoard"))
+        self.run_frames(0.5, fps=10)
+        self.assertEqual(self.pill(), "Pebblebrute   ◉ 4   20 goblins", "the 60 coins are gone from the 64 it showed")
+        self.assertFalse(self.bright("recruit"), "four coins on show do not buy a goblin")
+        self.click(*self.button("recruit"))
+        self.assertEqual(self.viewer.buys, ["hoard"], "so the viewer, who holds the winnings, is not asked")
+        self.run_frames(0.2, fps=10)
+        self.assertIn(reason_line("coins"), self.texts())
+        self.assertEqual(self.pill_tip()[0], "Coins 4")
+        self.fight_out()
+        self.assertEqual((self.pill(), self.ticker()), ("◉ 58   20 goblins", "+54"))
+        self.assertTrue(self.bright("recruit"))
+
+
+class HandTests(FieldCase):
+    def test_a_hand_with_grip_picks_up_that_many_more_goblins(self):
+        self.open_game(size=40, grip=2)
+        goblin, x, y = self.standing()
+        canvas, world = self.field.canvas, self.field.world
+        canvas.event_generate("<ButtonPress-1>", x=x, y=y)
+        self.assertEqual(len(world.held), 3)
+        self.assertEqual(world.held[0].id, goblin, "the one under the pointer first")
+        for step in range(1, 6):
+            canvas.event_generate("<B1-Motion>", x=x, y=y - 30 * step)
+            self.run_frames(0.05)
+        grabbed = [draw for draw in world.frame().draws if draw.action == "grabbed"]
+        self.assertEqual(len(grabbed), 3)
+        self.assertTrue(all(abs(draw.x - x) < 30 and draw.y < DISPLAY.ground - 80 for draw in grabbed))
+        canvas.event_generate("<ButtonRelease-1>", x=x, y=y - 150)
+        self.assertEqual((world.held, str(canvas.cget("cursor"))), ([], ""))
+
+    def test_a_goblin_dropped_on_the_boss_shows_its_blow_in_large_gold_numbers(self):
+        self.open_game(size=30, cleared=2)
+        self.fight(WIN, size=30, cleared=3)
+        world, canvas = self.field.world, self.field.canvas
+        while world.frame().phase != "swarm":
+            self.run_frames(0.1, fps=10)
+        boss = world.frame().boss
+        far = max((draw for draw in world.frame().draws if draw.action in ("idle", "run")), key=lambda draw: abs(draw.x - boss.x))
+        canvas.event_generate("<ButtonPress-1>", x=round(far.x), y=round(far.y) - 5 * self.field.unit)
+        self.assertEqual(len(world.held), 1)
+        for _ in range(4):
+            boss = world.frame().boss
+            canvas.event_generate("<B1-Motion>", x=round(boss.x), y=round(boss.y - boss.height_px / 2))
+            self.run_frames(1 / 30)
+        canvas.event_generate("<ButtonRelease-1>", x=round(boss.x), y=round(boss.y - boss.height_px / 2))
+        self.run_frames(4 / 30)
+        self.assertIn("-25", self.pop_texts())
+        blow = next(label for label in self.pops() if self.shown(label) == "-25")
+        hits = [label for label in self.pops() if self.shown(label) != "-25"]
+        tall = tkfont.nametofont(canvas.itemcget(blow, "font"), root=self.root).metrics("linespace")
+        self.assertGreater(tall, self.field.paint.line)
+        if hits:
+            self.assertNotEqual(canvas.itemcget(blow, "fill"), canvas.itemcget(hits[0], "fill"))
+
+
+class ScreenChoiceTests(FieldCase):
+    """With two displays the menu offers both, and the horde goes to the one picked and stays there."""
+
+    def setUp(self):
+        super().setUp()
+        self.chosen = []
+        self.app.screen_chosen = self.chosen.append
+        patcher = patch.object(desktop_platform, "screens", return_value=SCREENS)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_menu_offers_a_choice_only_with_more_than_one_display(self):
+        with patch.object(desktop_platform, "screens", return_value=SCREENS[:1]):
+            self.assertEqual(self.field.screen_rows(), [])
+        self.assertTrue(any(label == "Move to screen" for label, _action, _enabled in self.field.menu_rows()))
+
+    def test_each_display_is_a_row_and_the_one_the_horde_is_on_cannot_be_picked(self):
+        self.assertEqual(self.field.screen_rows(), [("Screen 1, 2560 x 1440 (main)", ("screen", 0), False),
+                                                    ("Screen 2, 1080 x 1920", ("screen", 1), True)])
+        self.field.screen = 1
+        self.assertEqual([row[2] for row in self.field.screen_rows()], [True, False])
+        self.field.screen = 9
+        self.assertEqual([row[2] for row in self.field.screen_rows()], [False, True], "a gone display is the primary")
+
+    def test_moving_refits_the_field_and_tells_the_widget_to_remember_it(self):
+        self.field.move_to(1)
+        self.assertEqual(self.field.screen, 1)
+        self.assertEqual(self.chosen, [1])
+        shown = []
+        with patch.object(pet_field, "field_display", lambda window, choice: shown.append(choice) or DISPLAY):
+            self.field.fit()
+        self.assertEqual(shown, [1], "the one-second look keeps to the chosen display")
+
+    def test_a_goblin_in_hand_is_put_down_when_the_horde_moves(self):
+        self.open_game(size=6)
+        goblin, x, y = self.standing()
+        self.field.canvas.event_generate("<ButtonPress-1>", x=x, y=y)
+        self.assertTrue(self.field.holding())
+        self.field.move_to(1)
+        self.assertFalse(self.field.holding())
+        self.assertEqual(self.field.world.held, [])
 
 
 class IncomeTests(FieldCase):
@@ -653,6 +915,24 @@ class BattleTests(FieldCase):
         self.assertEqual(self.pill(), "◉ 118   20 goblins")
         self.assertIn(result_line(True, WIN["rewards"]), self.texts())
         self.assertIn("Victory +54 coins, +4 scrap", self.texts())
+
+    def test_a_boss_from_the_pills_side_stands_clear_of_the_pill_and_its_buttons(self):
+        self.open_game(coins=64, size=20, cleared=2)
+        world = self.field.world
+        start = world.start_battle
+        with patch.object(world, "start_battle", lambda _side, *rest: start("right", *rest)):
+            self.fight(WIN, coins=118, size=20, cleared=3)
+        seen = 0
+        for _ in range(400):
+            if self.field.battle is None:
+                break
+            self.run_frames(0.1, fps=10)
+            boss = world.frame().boss
+            if boss is not None and world.frame().phase in ("swarm", "finish"):
+                seen += 1
+                self.assertEqual(self.pill(), "Pebblebrute   ◉ 64   20 goblins")
+                self.assertLessEqual(boss.x + world.battle.boss.reach * world.unit, self.field.paint.hud_box[0] + 1)
+        self.assertGreater(seen, 20)
 
     def test_a_lost_fight_says_so_plainly(self):
         self.open_game(size=20, cleared=2)
@@ -882,6 +1162,54 @@ class CanvasTests(unittest.TestCase):
         first = self.paint.words[0][1]
         self.assertEqual(tkfont.nametofont(canvas.itemcget(first, "font"), root=self.root).metrics("linespace"), tall[1],
                          "a pool item that showed a gain shows other words at their own size")
+
+    def test_a_thrown_goblins_blow_is_gold_and_large_with_no_coin(self):
+        pops = (Pop("crit", 300.0, 200.0, "-125", 0.1, 0.9), Pop("hit", 600.0, 200.0, "-7", 0.1, 0.5))
+        self.paint.crowd(Frame((), self.boss(), pops, "swarm", 0.0))
+        (_shadow, blow), (_under, hit) = self.paint.words[:2]
+        self.assertEqual((self.canvas.itemcget(blow, "text"), self.canvas.itemcget(hit, "text")), ("-125", "-7"))
+        self.assertNotEqual(self.canvas.itemcget(blow, "fill"), self.canvas.itemcget(hit, "fill"))
+        tall = [tkfont.nametofont(self.canvas.itemcget(item, "font"), root=self.root).metrics("linespace") for item in (blow, hit)]
+        self.assertGreaterEqual(tall[0], 1.4 * tall[1])
+        self.assertEqual(self.sprites(), [])
+        self.assertEqual(self.canvas.coords(blow), [300.0, 200.0])
+
+    def test_buy_buttons_are_plates_with_icons_in_a_row_that_ends_where_the_pill_used_to(self):
+        self.paint.hud("◉ 36   5 goblins")
+        alone = self.paint.hud_box
+        buttons = (("recruit", ""), ("level", "xp"), ("gear", "maxed"))
+        self.paint.hud("◉ 36   5 goblins", buttons=buttons, lit="recruit")
+        boxes = self.paint.button_boxes
+        self.assertEqual(list(boxes), ["recruit", "level", "gear"])
+        self.assertEqual(boxes["gear"][2], alone[2] - 1, "the row ends at the field's margin")
+        self.assertLess(self.paint.hud_box[2], boxes["recruit"][0])
+        for kind, (left, top, right, bottom) in boxes.items():
+            self.assertEqual((right - left, bottom - top), (bottom - top, alone[3] - alone[1]), "a square as tall as the pill")
+            self.assertEqual(self.paint.button_at((left + right) / 2, (top + bottom) / 2), kind)
+        looks = {kind: button_look(self.paint, kind) for kind in boxes}
+        self.assertEqual([lit for _rim, _plate, lit in looks.values()], [True, False, True])
+        self.assertEqual(len({rim for rim, _plate, _lit in looks.values()}), 3, "a rim for each: buy it, cannot yet, done")
+        self.assertNotEqual(looks["recruit"][1], looks["level"][1], "the one pointed at has a lighter plate")
+        self.assertEqual(len(self.canvas.find_withtag(self.paint.button_row)), 1, "the whole row is one item")
+        self.assertEqual(self.canvas.bbox(self.paint.button_row), (boxes["recruit"][0], boxes["recruit"][1],
+                                                                   boxes["gear"][2] + 1, boxes["gear"][3] + 1))
+        picture = next(iter(self.paint.rows.values()))
+        between = boxes["recruit"][2] + 2 - boxes["recruit"][0]
+        self.assertTrue(picture.transparency_get(between, 5), "clear between two buttons, so a click there falls through")
+        self.assertIsNone(self.paint.button_at(boxes["recruit"][2] + 2, boxes["recruit"][1] + 2), "the gap between two is nothing")
+        self.assertIsNone(self.paint.button_at(*self.paint.hud_box[:2]))
+        self.paint.hud("◉ 36   5 goblins")
+        self.assertEqual((self.paint.button_boxes, self.paint.hud_box), ({}, alone))
+        self.assertEqual(self.canvas.itemcget(self.paint.button_row, "state"), "hidden")
+
+    def test_no_icon_pixel_is_the_see_through_colour(self):
+        key = desktop_platform.WINDOWS_KEY
+        for kind in pet_art.ICONS:
+            for dim in (None, "#1b2a22"):
+                icon = pet_art.icon_pixels(kind, dim)
+                self.assertEqual((icon.width, icon.height, len(icon.rows)), (pet_art.ICON_SIZE,) * 3)
+                self.assertNotIn(key, {colour for row in icon.rows for colour in row})
+                self.assertGreater(sum(colour is not None for row in icon.rows for colour in row), 20, kind)
 
     def test_more_pops_than_the_pools_hold_are_left_out_not_piled_up(self):
         gain = (Pop("gain", 60.0, 300.0, "+12", 0.1, 2.0),)

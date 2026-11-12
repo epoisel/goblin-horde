@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { goblinStateDir } from "../lib/paths.mjs";
+import { defaultStateDir } from "../lib/paths.mjs";
 import { startRig } from "../scripts/dev/pets-rig.mjs";
 import { hasSqlite } from "./helpers/t3-fixture.mjs";
 
@@ -14,7 +14,7 @@ const needsSqlite = { skip: !hasSqlite && "this Node.js has no node:sqlite", tim
 const RIG = fileURLToPath(new URL("../scripts/dev/pets-rig.mjs", import.meta.url));
 
 // The places a rig must leave alone: the home folder, T3's folder, and Goblin Horde's real state folder.
-const REAL = [homedir(), join(homedir(), ".t3"), process.env.LOCALAPPDATA, goblinStateDir({ env: { ...process.env, GOBLIN_HORDE_STATE_DIR: "" } })].filter(Boolean);
+const REAL = [homedir(), join(homedir(), ".t3"), process.env.LOCALAPPDATA, defaultStateDir({ env: { ...process.env, GOBLIN_HORDE_STATE_DIR: "" } })].filter(Boolean);
 // Names only, since other programs rewrite their files there all the time, and without the half-written
 // .tmp files that come and go between two listings.
 const names = (dir) => (existsSync(dir) ? readdirSync(dir).filter((name) => !name.endsWith(".tmp")).sort() : null);
@@ -69,8 +69,10 @@ test("give and seed change the saved game and bring the viewer back on the same 
 
     await rig.give(500);
     assert.deepEqual(numbers(await pets(rig.port)), { ...paid, coins: paid.coins + 500 });
-    await rig.seed({ horde: 12, bosses: 2 });
-    assert.deepEqual(numbers(await pets(rig.port)), { horde: 12, bosses: 2, coins: paid.coins + 500 });
+    await rig.seed({ horde: 12, bosses: 2, grip: 3 });
+    const seeded = await pets(rig.port);
+    assert.deepEqual(numbers(seeded), { horde: 12, bosses: 2, coins: paid.coins + 500 });
+    assert.equal(seeded.game.state.upgrades.grip, 3);
 
     rig.turn();
     assert.ok(numbers(await paidAbove(rig.port, paid.coins + 500, 10_000)).coins > paid.coins + 500, "a turn still pays after the restarts");
@@ -82,6 +84,7 @@ test("give and seed change the saved game and bring the viewer back on the same 
 test("a seed outside the game's range is refused by name before anything starts", needsSqlite, async () => {
   await assert.rejects(startRig({ bosses: 999 }), /bosses/);
   await assert.rejects(startRig({ horde: "many" }), /horde/);
+  await assert.rejects(startRig({ grip: 99 }), /grip/);
 });
 
 test("the command line seeds from its flags, answers stdin commands, and deletes its folder on quit", needsSqlite, async () => {

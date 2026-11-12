@@ -1,9 +1,10 @@
-"""The pet field: the horde loose along the taskbar, in a see-through window over the primary display.
+"""The pet field: the horde loose along the taskbar, in a see-through window over the chosen display.
 
 A borderless, always-on-top window whose empty pixels let the pointer through, so the desktop under
 the goblins stays usable. The field owns the game's flow: it steps the world, feeds it the tops of
 the open windows, polls the viewer, stirs the horde when AI work pays and shows the coins on the
-pill and over a goblin, sends it to a boss, and holds the result back until the battle is over. The
+pill and over a goblin, buys what a button beside the pill is clicked for, lets the pointer carry
+goblins, sends the horde to a boss, and holds the result back until the battle is over. The
 simulation is pet_world's, the drawing pet_field_canvas's, the words pets_text's, and the viewer is
 reached through pets_feed on the app's worker threads.
 """
@@ -18,15 +19,15 @@ from typing import NamedTuple
 
 import desktop_platform
 import desktop_windows
-from desktop_platform import bind_context, float_window, make_transparent, screen_geometry
+from desktop_platform import float_window, make_transparent, screen_geometry
 from goblin_look import unlocked_tiers
 from horde_theme import Theme
 from pet_field_canvas import FieldCanvas
 from pet_platform import window_platforms
 from pet_world import Frame, Pop, World
-from pets_feed import WAITING, Game, Launch, PetsFeed, Work
-from pets_text import (TROUBLE_MARK, boss_title, bought_line, gain_text, goblin_tip, hud_line, hud_tip, launch_line,
-                       pets_menu, reason_line, result_line)
+from pets_feed import PURCHASES, WAITING, Game, Launch, PetsFeed, Work
+from pets_text import (TROUBLE_MARK, boss_title, bought_line, buy_tip, gain_text, goblin_tip, hud_line, hud_tip,
+                       launch_line, pets_menu, reason_line, result_line)
 
 # Milliseconds between frames, by what the field is doing: 30 frames a second, 10 under reduced
 # motion, 12 while nobody is at the machine, and one look a second while a full-screen app hides it.
@@ -48,8 +49,7 @@ NO_CROWD = Frame((), None, (), "roam", 0.0)
 
 
 class Display(NamedTuple):
-    """The part of the primary display the field covers, in screen pixels, and how far down it the
-    ground is."""
+    """The part of a display the field covers, in screen pixels, and how far down it the ground is."""
     left: int
     top: int
     width: int
@@ -57,19 +57,34 @@ class Display(NamedTuple):
     ground: int
 
 
-def supported() -> bool:
-    """Whether this system can show the field: only Windows lets the pointer through a keyed colour."""
-    return desktop_platform.system() == "win32"
+def place_of(choice: int, shown: list) -> int:
+    """Which display the player's choice stands for, by its place from the left: the choice itself, or
+    the primary display when that place is gone because a display was unplugged."""
+    if 0 <= choice < len(shown):
+        return choice
+    return next((place for place, screen in enumerate(shown) if screen.primary), 0)
 
 
-def primary_display(window) -> Display:
-    """The primary display, taskbar included, with the taskbar's top edge as the ground. The work
-    area cannot say where the ground is: on some desktops it runs under the taskbar. The field stops
-    a row short of the bottom, because Windows takes a window that covers a whole display for a
-    full-screen app, hides the taskbar behind whatever is maximized, and holds notifications back."""
-    width, height = window.winfo_screenwidth(), window.winfo_screenheight() - 1
-    work_bottom = desktop_platform.primary_work_area(window)[3]
-    return Display(0, 0, width, height, min(max(desktop_windows.taskbar_top(work_bottom), 1), height))
+def field_display(window, choice: int) -> Display:
+    """The display the field stands on, taskbar included, with the taskbar's top edge as the ground.
+    The work area cannot say where the ground is: on some desktops it runs under the taskbar. The
+    field stops a row short of the bottom, because Windows takes a window that covers a whole display
+    for a full-screen app, hides the taskbar behind whatever is maximized, and holds notifications
+    back. When the displays cannot be listed it is the primary one, as Tk sees it."""
+    shown = desktop_platform.screens()
+    if not shown:
+        width, height = window.winfo_screenwidth(), window.winfo_screenheight() - 1
+        work_bottom = desktop_platform.primary_work_area(window)[3]
+        return Display(0, 0, width, height, min(max(desktop_windows.taskbar_top(work_bottom), 1), height))
+    screen = shown[place_of(choice, shown)]
+    height = screen.bottom - screen.top - 1
+    taskbar = desktop_windows.taskbar_top(screen.work_bottom, (screen.left, screen.top, screen.right, screen.bottom))
+    return Display(screen.left, screen.top, screen.right - screen.left, height, min(max(taskbar - screen.top, 1), height))
+
+
+def screen_label(number: int, screen: desktop_platform.Screen) -> str:
+    """How the menu names a display: 'Screen 2, 1080 x 1920'."""
+    return f"Screen {number}, {screen.right - screen.left} x {screen.bottom - screen.top}" + (" (main)" if screen.primary else "")
 
 
 def unit_for(scale: float) -> int:
@@ -77,13 +92,17 @@ def unit_for(scale: float) -> int:
     return max(2, round(2 * scale))
 
 
+class Button(NamedTuple):
+    """What target() answers for a buy button."""
+    purchase: str
+
+
 @dataclass
 class Fight:
-    """One trip to a boss: asked of the viewer, then played out by the world. ``held`` is the game from
-    before it, which the pill and the looks keep showing so the result is not given away early;
-    ``reply`` is the viewer's answer, None until it comes."""
+    """One trip to a boss: asked of the viewer, then played out by the world. ``start`` is the game from
+    before it and ``reply`` the viewer's answer, None until it comes."""
     boss: int
-    held: Game
+    start: Game
     reply: dict | None = None
 
 
@@ -141,12 +160,13 @@ class Income:
 
 
 class PetField:
-    """The pets surface. ``app`` provides root, executor, when_done, api, tooltip, reduced_motion and
-    show_pets_menu."""
+    """The pet game on the desktop. ``app`` provides root, executor, when_done, api, tooltip,
+    reduced_motion, closing, show_pets_menu and screen_chosen."""
 
-    def __init__(self, app, theme: Theme) -> None:
+    def __init__(self, app, theme: Theme, screen: int = 0) -> None:
         self.app = app
         self.theme = theme
+        self.screen = screen  # The display the player chose, by its place from the left.
         self.window = tk.Toplevel(app.root)
         self.window.withdraw()
         self.window.title("Goblin Horde")
@@ -166,12 +186,14 @@ class PetField:
         self.game: Game | None = None
         self.status = WAITING["opening"]  # Why there are no numbers to show; "" while the game is open.
         self.trouble = ""  # Why finished work is not being counted, when it is not.
+        self.update_version = ""  # The version of a verified update the viewer keeps for the next start, or "".
         self.battle: Fight | None = None
         self.income = Income()
         self.gains: list[Gain] = []  # The "+N"s that are up, oldest first.
         self.goblins_hidden = False
         self.notices: list[tuple[str, float]] = []
         self.hover: int | None = None
+        self.lit = ""  # The purchase whose buy button the pointer is on.
         self.pressed = None  # What the left button went down on.
         self.epoch = 0  # Counts purchases and fights, so a poll from before one cannot bring its old numbers back.
         self.polling = False
@@ -184,7 +206,7 @@ class PetField:
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
         self.canvas.bind("<Motion>", self.on_motion)
         self.canvas.bind("<Leave>", self.on_leave)
-        bind_context(self.canvas, self.on_context)
+        self.canvas.bind("<Button-3>", self.on_context)
         # Alt+F4 on the field leaves it where it is; Quit lives in the menu.
         self.window.protocol("WM_DELETE_WINDOW", lambda: None)
 
@@ -227,9 +249,9 @@ class PetField:
         self.app.tooltip.hide()
 
     def fit(self, force: bool = False) -> None:
-        """Cover the primary display, taskbar and all: the horde's feet rest a few pixels below the
+        """Cover the chosen display, taskbar and all: the horde's feet rest a few pixels below the
         taskbar's top edge. Asked again every second, since a display can change."""
-        display = primary_display(self.window)
+        display = field_display(self.window, self.screen)
         if display == self.display and not force:
             return
         self.display = display
@@ -255,7 +277,9 @@ class PetField:
         full-screen app is in front, which puts the window away until it is not."""
         self.fit()
         self.away = desktop_windows.seconds_since_input() >= AWAY_AFTER
-        covered = desktop_windows.foreground_is_fullscreen()
+        display = self.display
+        covered = desktop_windows.foreground_is_fullscreen(
+            (display.left, display.top, display.left + display.width, display.top + display.height + 1))
         if covered == self.covered:
             return
         self.covered = covered
@@ -266,6 +290,24 @@ class PetField:
         else:
             self.window.deiconify()
             self.window.lift()
+
+    def screen_rows(self) -> list:
+        """The menu's choice of display, one row for each and the one the horde is on turned off; none
+        while there is only one display to choose."""
+        shown = desktop_platform.screens()
+        if len(shown) < 2:
+            return []
+        here = place_of(self.screen, shown)
+        return [(screen_label(place + 1, screen), ("screen", place), place != here)
+                for place, screen in enumerate(shown)]
+
+    def move_to(self, place: int) -> None:
+        """Send the horde to another display, and tell the widget so it is still there next time."""
+        self.let_go()
+        self.app.tooltip.hide()
+        self.screen = place
+        self.fit(force=True)
+        self.app.screen_chosen(place)
 
     def toggle_goblins(self) -> None:
         """Hide the horde and leave only the pill, or bring the horde back."""
@@ -316,15 +358,35 @@ class PetField:
         shake = (0, 0) if still else (0, round(frame.quake * math.sin(now * SHAKE_RATE)))
         self.paint.crowd(frame, still, shake)
         self.paint.banners(self.notice_lines(now))
-        self.paint.hud(*self.hud())
+        self.paint.hud(*self.hud(), buttons=self.buttons(), lit=self.lit)
         self.watch_hover()
         self.canvas.update_idletasks()
+
+    def seen(self) -> Game | None:
+        """The game as the pill, the looks and the buy buttons show it. While a battle runs that is
+        the game without what the battle paid and what work paid during it, so the result is not
+        given away early, and with everything bought meanwhile."""
+        battle, game = self.battle, self.game
+        if battle is None or game is None:
+            return game
+        if battle.reply is None:
+            return battle.start
+        rewards = battle.reply["rewards"]
+        return game.before(battle.start, self.income.held, rewards["scrap"], rewards["xp"])
+
+    def buttons(self) -> tuple:
+        """The buy buttons: each purchase and why it cannot be made now, "" when it can. No buttons
+        while there is no game to buy in."""
+        game = self.seen()
+        if game is None or self.status:
+            return ()
+        return tuple((kind, game.lacks(kind)) for kind in PURCHASES)
 
     def hud(self) -> tuple:
         """The pill's parts: its line, a mark while finished work is not being counted, and the gain
         on show with how far it has faded. The line is the game's numbers, or why there are none.
-        While a battle runs they are the numbers from before it, with no gain."""
-        game = self.battle.held if self.battle else self.game
+        While a battle runs they are the numbers as seen() has them, with no gain."""
+        game = self.seen()
         if game is None or self.status:
             return (self.status,)
         boss = boss_title(self.battle.boss) if self.battle and self.battle.reply else ""
@@ -340,8 +402,10 @@ class PetField:
                          gain_text(gain.coins), now - gain.born, POP_LIFE) for gain in self.gains)
 
     def say(self, text: str) -> None:
-        """Put a banner up over the horde."""
+        """Put a banner up over the horde. A line said again while it is up stays one line, and its
+        time starts again."""
         if text:
+            self.notices = [notice for notice in self.notices if notice[0] != text]
             self.notices.append((text, self.last))
 
     def notice_lines(self, now: float) -> tuple:
@@ -362,6 +426,7 @@ class PetField:
         self.polling = False
         if feed is not None:
             self.status = feed.message
+            self.update_version = feed.update
             if feed.ready:
                 self.income.opened(self.last)
                 self.trouble = "" if feed.source["ok"] else feed.source["message"]
@@ -382,7 +447,7 @@ class PetField:
         self.sync_looks()
 
     def sync_looks(self) -> None:
-        game = self.battle.held if self.battle else self.game
+        game = self.seen()
         if game is not None:
             self.paint.set_unlocked(unlocked_tiers({"bosses": {"cleared": game.cleared}}))
 
@@ -419,7 +484,7 @@ class PetField:
         """The menu's rows for the game as it stands."""
         open_ = self.game is not None and not self.status
         return pets_menu(self.game if open_ else None, battling=self.battle is not None, hidden=self.goblins_hidden,
-                         status=self.status)
+                         status=self.status, screens=self.screen_rows())
 
     def ask(self, call, value, done) -> None:
         """Run a purchase or a fight on a worker thread and hand its answer to ``done``."""
@@ -433,6 +498,16 @@ class PetField:
 
     def buy(self, kind: str) -> None:
         self.ask(self.feed.buy, kind, lambda reply: self.take_purchase(kind, reply))
+
+    def click(self, kind: str) -> None:
+        """A buy button was clicked. What the game on show cannot pay for is said here, not asked of
+        the viewer, whose answer could give a running battle's winnings away."""
+        game = self.seen()
+        lacks = game.lacks(kind) if game is not None else ""
+        if lacks:
+            self.say(reason_line(lacks))
+        else:
+            self.buy(kind)
 
     def take_purchase(self, kind: str, reply: dict) -> None:
         self.take_game(reply["game"])
@@ -456,14 +531,17 @@ class PetField:
             return
         self.take_game(reply["game"])
         self.income.pay(reply["rewards"]["coins"], self.last, hold=True)
+        if not reply["reason"]:
+            # The pill as it will read through the fight, so the boss can be kept out from under it.
+            battle.reply = reply
+            self.paint.hud(*self.hud(), buttons=self.buttons(), lit=self.lit)
+            self.world.keep_clear(right=self.display.width - self.paint.hud_box[0])
         # The boss comes on from either side, as the world picks.
         if reply["reason"] or not self.world.start_battle(None, battle.boss, reply["won"], reply["ratio"]):
             self.battle = None
             self.income.release(self.last)
             self.sync_looks()
             self.say(reason_line(reply["reason"]))
-            return
-        battle.reply = reply
 
     def end_fight(self, _result: dict) -> None:
         battle, self.battle = self.battle, None
@@ -474,21 +552,26 @@ class PetField:
 
     # Pointer ------------------------------------------------------------------------------------
     def target(self, x: float, y: float):
-        """What a canvas point is on: HUD, a goblin's id, or None for the boss and the pops. (The
-        desktop under an empty pixel never gets here: the window lets the pointer through.)"""
+        """What a canvas point is on: HUD, a buy button, a goblin's id, or None for the boss and the
+        pops. (The desktop under an empty pixel never gets here: the window lets the pointer through.)"""
         if self.paint.in_hud(x, y):
             return HUD
+        purchase = self.paint.button_at(x, y)
+        if purchase is not None:
+            return Button(purchase)
         if self.goblins_hidden:
             return None
         goblin = self.world.goblin_at(x, y)
         return goblin if goblin is not None else self.paint.goblin_under(x, y)
 
     def tip(self, target) -> str:
-        if target != HUD:
+        game = None if self.status else self.seen()
+        if isinstance(target, int):
             return goblin_tip(target, self.paint.unlocked)
-        game = self.battle.held if self.battle else self.game
+        if isinstance(target, Button):
+            return buy_tip(game, target.purchase) if game is not None else ""
         income = self.income
-        return hud_tip(None if self.status else game, income.earned, income.quiet_minutes(self.last), self.trouble)
+        return hud_tip(game, income.earned, income.quiet_minutes(self.last), self.trouble)
 
     def holding(self) -> bool:
         return isinstance(self.pressed, int)
@@ -500,10 +583,11 @@ class PetField:
         self.pressed = None
 
     def on_press(self, event) -> None:
-        """A goblin is picked up by the scruff; the pill waits for the button to come up."""
+        """A goblin is picked up by the scruff, with as many of its neighbours as the hand carries.
+        The pill and a buy button wait for the button to come up."""
         target = self.target(event.x, event.y)
-        if target is not None and target != HUD:
-            if not self.world.grab(target):
+        if isinstance(target, int):
+            if not self.world.grab(target, self.game.carry if self.game is not None else 1):
                 return
             self.world.move_grabbed(event.x, event.y)
             self.hover = None
@@ -520,6 +604,8 @@ class PetField:
         self.let_go()
         if pressed == HUD:
             self.open_menu(event)
+        elif isinstance(pressed, Button) and self.target(event.x, event.y) == pressed:
+            self.click(pressed.purchase)
 
     def on_context(self, event) -> None:
         if self.target(event.x, event.y) is not None:
@@ -534,7 +620,8 @@ class PetField:
             return
         target = self.target(event.x, event.y)
         self.canvas.configure(cursor="hand2" if target is not None else "")
-        self.hover = None if target in (None, HUD) else target
+        self.hover = target if isinstance(target, int) else None
+        self.lit = target.purchase if isinstance(target, Button) else ""
         if target is None:
             self.app.tooltip.hide()
         else:
@@ -542,6 +629,7 @@ class PetField:
 
     def on_leave(self, _event=None) -> None:
         self.hover = None
+        self.lit = ""
         self.app.tooltip.hide()
 
     def watch_hover(self) -> None:

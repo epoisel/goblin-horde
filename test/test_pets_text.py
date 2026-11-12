@@ -5,7 +5,7 @@ from dataclasses import replace
 
 from goblin_look import look_for, name_for, title_for, unlocked_tiers
 from pets_feed import FAILED, read_game
-from pets_text import (DIVIDER, REASONS, REFUSED, TASK_VIEW_LABEL, boss_label, goblin_tip, hud_line, hud_tip,
+from pets_text import (DIVIDER, HINTS, REASONS, REFUSED, boss_label, bought_line, buy_tip, goblin_tip, hud_line, hud_tip,
                        launch_line, pets_menu, reason_line, result_line)
 
 try:
@@ -13,7 +13,7 @@ try:
 except ImportError:
     from test.test_pets_feed import game
 
-RICH = read_game(game(coins=12_840, size=37, cleared=5, scrap=80))
+RICH = read_game(game(coins=12_840, size=37, cleared=5, scrap=80, grip=2))
 RICH = replace(RICH, xp=900)
 POOR = read_game(game(coins=20, size=3, cleared=0, scrap=0))
 
@@ -74,23 +74,39 @@ class HudTests(unittest.TestCase):
 class MenuTests(unittest.TestCase):
     def test_every_purchase_is_listed_with_its_level_and_cost(self):
         labels = [label for label, _action, _enabled in pets_menu(RICH)]
-        self.assertEqual(labels[:6], [
+        self.assertEqual(labels[:7], [
             "Recruit a goblin (41 coins)", "Level up to 3 (21 coins, 52 XP)", "Gear tier 2 (36 scrap)",
-            "Hoard 2, more coins from work (60 coins)", "Training 1, more XP from work (30 coins)", ""],
-            "the five purchases, then a divider: there is no vault to buy")
+            "Hoard 2, more coins from work (60 coins)", "Training 1, more XP from work (30 coins)",
+            "Grip 3, pick up 4 goblins at once (50 coins)", ""],
+            "the six purchases, then a divider: there is no vault to buy")
+        self.assertEqual(pets_menu(replace(RICH, prices={**RICH.prices, "grip": None}))[5][0], "Grip 2, pick up 3 goblins at once (maxed)")
         self.assertEqual(pets_menu(replace(RICH, prices={**RICH.prices, "hoard": None}))[3][0], "Hoard 1 (maxed)")
         self.assertEqual(pets_menu(replace(RICH, prices={**RICH.prices, "recruit": {"coins": 1234}}))[0][0],
                          "Recruit a goblin (1,234 coins)")
 
     def test_what_the_player_can_afford_is_enabled_and_nothing_else(self):
         rich, poor = rows_by_action(pets_menu(RICH)), rows_by_action(pets_menu(POOR))
-        for kind in ("recruit", "level", "gear", "hoard", "training"):
+        for kind in ("recruit", "level", "gear", "hoard", "training", "grip"):
             self.assertTrue(rich[("buy", kind)][1], kind)
             self.assertFalse(poor[("buy", kind)][1], kind)
         maxed = rows_by_action(pets_menu(replace(RICH, prices={**RICH.prices, "hoard": None})))
         self.assertFalse(maxed[("buy", "hoard")][1], "a maxed upgrade is locked")
         short_on_xp = replace(RICH, xp=51)
         self.assertFalse(rows_by_action(pets_menu(short_on_xp))[("buy", "level")][1], "the coins alone do not buy a level")
+
+    def test_a_buy_buttons_tip_is_its_menu_row_and_what_the_purchase_is_for(self):
+        self.assertEqual(buy_tip(RICH, "recruit"), "Recruit a goblin (41 coins)")
+        self.assertEqual(buy_tip(RICH, "level").splitlines(), ["Level up to 3 (21 coins, 52 XP)", HINTS["level"]])
+        self.assertEqual(buy_tip(RICH, "grip").splitlines(),
+                         ["Grip 3, pick up 4 goblins at once (50 coins)", "Drop goblins on a boss to end the fight sooner."])
+        self.assertEqual(buy_tip(replace(RICH, prices={**RICH.prices, "gear": None}), "gear").splitlines()[0], "Gear tier 1 (maxed)")
+        for hint in HINTS.values():
+            self.assertRegex(hint, r"^[A-Z][A-Za-z ,.]+\.$")
+
+    def test_a_first_grip_is_one_goblin_in_the_singular(self):
+        new = replace(RICH, upgrades={**RICH.upgrades, "grip": 0})
+        self.assertEqual(bought_line(new, "grip"), "Grip 0, pick up 1 goblin at once")
+        self.assertEqual(bought_line(RICH, "grip"), "Grip 2, pick up 3 goblins at once")
 
     def test_the_next_boss_and_the_newest_cleared_ones_can_be_fought(self):
         rows = pets_menu(replace(RICH, cleared=12, next_boss=12))
@@ -107,6 +123,13 @@ class MenuTests(unittest.TestCase):
         self.assertIn(("Every boss is beaten", None, False), done)
         self.assertEqual(len(next(row for row in done if isinstance(row[1], list))[1]), 8)
 
+    def test_a_choice_of_screen_is_offered_only_when_there_is_more_than_one(self):
+        self.assertFalse(any(label == "Move to screen" for label, _action, _enabled in pets_menu(RICH)))
+        screens = [("Screen 1, 2560 x 1440 (main)", ("screen", 0), False), ("Screen 2, 1080 x 1920", ("screen", 1), True)]
+        rows = pets_menu(RICH, screens=screens)
+        self.assertIn(("Move to screen", screens, True), rows)
+        self.assertEqual([row[0] for row in rows[-2:]], ["Hide the goblins", "Move to screen"])
+
     def test_no_fight_starts_during_a_battle_but_buying_goes_on(self):
         rows = pets_menu(RICH, battling=True)
         actions = rows_by_action(rows)
@@ -116,17 +139,14 @@ class MenuTests(unittest.TestCase):
         self.assertFalse(any(row[2] for row in reruns))
         self.assertTrue(actions[("buy", "recruit")][1])
 
-    def test_the_rows_end_with_the_ways_out(self):
-        tail = pets_menu(RICH)[-4:]
-        self.assertEqual(tail, [DIVIDER, (TASK_VIEW_LABEL, ("task",), True), ("Hide the goblins", ("goblins",), True),
-                                ("Back to the Horde window", ("window",), True)])
-        self.assertIn(("Show the goblins", ("goblins",), True), pets_menu(RICH, hidden=True))
+    def test_the_rows_end_with_hiding_the_goblins(self):
+        self.assertEqual(pets_menu(RICH)[-2:], [DIVIDER, ("Hide the goblins", ("goblins",), True)])
+        self.assertEqual(pets_menu(RICH, hidden=True)[-1], ("Show the goblins", ("goblins",), True))
 
-    def test_without_a_game_the_menu_says_why_and_keeps_the_ways_out(self):
+    def test_without_a_game_the_menu_says_why_and_still_hides_the_goblins(self):
         rows = pets_menu(None, status="Goblin Horde is opening your saved game.")
-        self.assertEqual(rows[0], ("Goblin Horde is opening your saved game.", None, False))
-        self.assertFalse(any(isinstance(action, tuple) and action[0] in ("buy", "fight") for _l, action, _e in rows))
-        self.assertEqual(rows[-1][0], "Back to the Horde window")
+        self.assertEqual(rows, [("Goblin Horde is opening your saved game.", None, False), DIVIDER,
+                                ("Hide the goblins", ("goblins",), True)])
 
 
 class BannerTests(unittest.TestCase):

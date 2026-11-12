@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,9 +29,10 @@ test("the team package holds exactly the allowlist, byte for byte", () => {
     assert.deepEqual(entries.map((entry) => entry.name), manifest.map((file) => `GoblinHorde/${file}`));
     for (const entry of entries) assert.deepEqual(entry.data, readFileSync(join(sourceDir, entry.name.slice("GoblinHorde/".length))), entry.name);
     assert.equal(result.files.length, manifest.length);
-    // Everything needed to install and run on any platform is present.
-    for (const needed of ["goblin.mjs", "server.mjs", "claude-hook.mjs", "lib/manager.mjs", "lib/extension.mjs", "public/index.html", "EXTENSIONS.md", "manage.ps1"])
+    // Everything needed to install and run is present, and nothing of the agent monitor is.
+    for (const needed of ["goblin.mjs", "server.mjs", "desktop_widget.py", "lib/manager.mjs", "lib/old-hooks.mjs", "manage.ps1", "launch.cmd"])
       assert.ok(manifest.includes(needed), needed);
+    for (const name of manifest) assert.doesNotMatch(name, /^public\/|^claude-hook\.mjs$|^EXTENSIONS\.md$|^lib\/(?:claude|orca|codex|phone|transcript|tasks?|feed|links|watch|dismiss|extension)/);
     // Nothing local, generated, or test-only: no tests, working notes, design drafts, dev scripts, or saved games.
     for (const name of manifest) assert.doesNotMatch(name, /^(test|dist|\.git|\.audit)\/|^docs\/(?!(?:SETUP-PROMPT|SHARED-PETS|SHARED-HOST-PROMPT|SHARED-JOIN-PROMPT)\.md$)|^scripts\/(?!package\.mjs$)|pairing-code|goblins\.json|pets\.json|\.jsonl$|\.ndjson$|\.log$|\.png$|__pycache__|REVIEW\.md$/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -76,7 +77,7 @@ const isSourceFile = (file) => { try { return statSync(join(sourceDir, file)).is
 test("every module and data file the shipped code imports or names ships with it", () => {
   const manifest = readManifest(sourceDir);
   assert.deepEqual(missingFromPackage(manifest, readSource, isSourceFile), []);
-  // The scan sees the pet game: these are found as needs of the widget and the viewer, not assumed.
+  // The scan sees the pet game: these are found as needs of the widget and the server, not assumed.
   const widget = new Set();
   for (let pending = ["desktop_widget.py"]; pending.length;) {
     const file = pending.pop();
@@ -93,6 +94,19 @@ test("every module and data file the shipped code imports or names ships with it
   // The shared game's commands and its Tailscale helpers are reached from the manager and the listener.
   assert.ok(needs("goblin.mjs", readSource("goblin.mjs"), isSourceFile).includes("lib/shared-manager.mjs"));
   assert.ok(needs("lib/shared.mjs", readSource("lib/shared.mjs"), isSourceFile).includes("lib/tailscale.mjs"));
+});
+
+test("every Node module that ships is reached from the manager, the server, or the packager, and nothing else lies in lib", () => {
+  const manifest = readManifest(sourceDir);
+  const reached = new Set();
+  for (let pending = ["goblin.mjs", "server.mjs", "scripts/package.mjs"]; pending.length;) {
+    const file = pending.pop();
+    if (reached.has(file)) continue;
+    reached.add(file);
+    pending.push(...needs(file, readSource(file), isSourceFile).filter((other) => other.endsWith(".mjs")));
+  }
+  assert.deepEqual(manifest.filter((file) => file.endsWith(".mjs") && !reached.has(file)), [], "no module ships that nothing runs");
+  assert.deepEqual(readdirSync(join(sourceDir, "lib")).filter((name) => !manifest.includes(`lib/${name}`)), [], "and every module in lib ships");
 });
 
 test("a module or data file left out of package-files.json is named by the check", () => {

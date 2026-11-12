@@ -1,11 +1,12 @@
-"""The pet field's drawing: the goblins, the boss, pops, banners and the pill as items on one
-see-through canvas.
+"""The pet field's drawing: the goblins, the boss, pops, banners, the pill and its buy buttons as
+items on one see-through canvas.
 
 Two budgets shape it, both measured on a 2560 by 1440 display.
 
 Redraw. Tk redraws every item inside the box that changed, and with goblins along the whole taskbar
 that box holds the whole horde: about 0.06 ms an item a frame. So the item count is the budget: one
-image item a goblin, one for the boss, and small fixed pools for everything else.
+image item a goblin, one for the boss, one for the whole row of buy buttons, and small fixed pools
+for everything else.
 
 Handles. Windows gives a process 10,000 GDI handles. Tk spends one on every image and one more
 while a canvas item holds it, and a goblin switched to an image that no item holds costs 0.15 ms
@@ -41,14 +42,29 @@ GAIN_FONT = ("MS Sans Serif", 14)  # A raster face too, half as tall again, for 
 GOLD = "#fad048"
 
 TEXT_POPS, EFFECT_POPS, BANNERS = 6, 18, 3  # Pool sizes: what can be on show at once.
+
+
+class PopLook(NamedTuple):
+    ink: str
+    large: bool = False  # In the larger face.
+    coin: bool = False  # After a coin seen face on.
+
+
 # A text pop of any other kind is not drawn. The world's own "+N" is one: the field shows its "gain" instead.
-POP_INKS = {"gain": GOLD, "hit": IVORY, "banner": IVORY}
+POP_LOOKS = {"gain": PopLook(GOLD, True, True), "crit": PopLook(GOLD, True), "hit": PopLook(IVORY),
+             "banner": PopLook(IVORY)}
 GAIN_COIN_GAP = 2  # Sprite pixels between a gain's coin and its number.
 EFFECT_FPS = {"coin": 10.0, "alert": 5.0, "dust": 0.0, "star": 0.0}  # 0 plays the frames once over the pop's life.
 BANNER_RISE = 76  # Sprite pixels from the ground to the lowest banner: over the heads of hopping goblins.
 HUD_MARGIN, HUD_RISE, HUD_MAX = 16, 30, 620  # Design pixels from the right edge and widest; sprite pixels up.
 # The pill's gain is a block on its right end: (the block, its number) when bright, then at two steps of fading.
 HUD_GAIN_LOOKS = ((GOLD, INK), ("#a48a35", INK), ("#55522b", GOLD))
+BUTTON_GAP = 4  # Design pixels between two buy buttons, and between the pill and the first.
+ROWS_KEPT = 48  # Pictures of the button row kept: one for each mix of what can be bought and what is pointed at.
+# A buy button's rim and whether its icon is lit, by why the purchase cannot be made: "" when it can.
+# Any other reason is a currency the player is short of.
+BUTTON_LOOKS = {"": (IVORY, True), "maxed": (GOLD, True)}
+BUTTON_SHORT = (LINE, False)
 HP_INKS = ((0.5, "#7cba4a"), (0.25, "#e8a024"), (0.0, "#e23c32"))
 HP_BAR = {"gap": 7, "height": 3, "share": 0.45, "least": 40}  # Sprite pixels, and its share of the boss's height.
 BOSS_AHEAD_EVERY = 3  # Frames between boss images built ahead: the largest takes 44 ms.
@@ -164,6 +180,9 @@ class FieldCanvas:
         self.hud_gain = c.create_text(0, 0, font=theme.title, state="hidden", tags=OVER)
         self.hud_view: tuple | None = None
         self.hud_box = (0, 0, 0, 0)
+        self.button_row = c.create_image(0, 0, anchor="nw", state="hidden", tags=OVER)
+        self.rows: dict[tuple, object] = {}
+        self.button_boxes: dict[str, tuple] = {}
         for kind, frames in pet_art.EFFECT_FRAMES.items():
             for frame in range(frames):
                 self.effect_art.put((kind, frame), self.sprites.effect(kind, frame, unit))
@@ -376,27 +395,28 @@ class FieldCanvas:
     def _pops(self, pops, shake: tuple, named: str) -> None:
         """Text pops as words with a one pixel shadow, the others as their small sprites, each from
         a fixed pool. A gain is larger words after a coin seen face on, the pair centred on the
-        pop's point. ``named`` is the boss's name, which its plate already shows."""
+        pop's point, and a thrown goblin's blow is larger words alone. ``named`` is the boss's
+        name, which its plate already shows."""
         c, shade = self.canvas, self.shade
         ox, oy = shake
         words = effects = 0
         for pop in pops:
             x, y = round(pop.x) + ox, round(pop.y) + oy
             if pop.text:
-                if words == TEXT_POPS or pop.kind not in POP_INKS or pop.text == named:
+                look = POP_LOOKS.get(pop.kind)
+                if words == TEXT_POPS or look is None or pop.text == named:
                     continue
-                gain = pop.kind == "gain"
-                if gain:
+                if look.coin:
                     coin, gap = self.gain_coin
                     if effects < EFFECT_POPS:
                         self._sprite(effects, "gain", 0, x - (gap + self._width(pop.text, True)) // 2, y)
                         effects += 1
                     x += (coin + gap) // 2
                 under, label = self.words[words]
-                view = (pop.text, POP_INKS[pop.kind], gain)
+                view = (pop.text, look.ink, look.large)
                 if view != self.word_views[words]:
                     self.word_views[words] = view
-                    font = self.gain_font if gain else self.font
+                    font = self.gain_font if look.large else self.font
                     c.itemconfigure(under, text=pop.text, font=font, state="normal")
                     c.itemconfigure(label, text=pop.text, font=font, fill=view[1], state="normal")
                 c.coords(under, x + shade, y + shade)
@@ -447,23 +467,30 @@ class FieldCanvas:
             c.itemconfigure(label, text=lines[index], state="normal")
 
     # The pill -----------------------------------------------------------------------------------
-    def hud(self, text: str, mark: str = "", gain: str = "", dim: int = 0) -> None:
+    def hud(self, text: str, mark: str = "", gain: str = "", dim: int = 0, buttons: tuple = (), lit: str = "") -> None:
         """Show ``text`` on the pill over the horde's bottom right corner. ``mark`` goes before it in
         amber, with an amber rim. ``gain`` is larger, on a gold block that ends the pill, ``dim``
-        steps faded, and the pill's rim matches it, twice as thick while the gain is bright."""
-        if (text, mark, gain, dim) == self.hud_view:
+        steps faded, and the pill's rim matches it, twice as thick while the gain is bright.
+        ``buttons`` is a row of buy buttons right of the pill, in a place that never moves as the
+        pill grows: (purchase, why it cannot be made) for each, "" when it can. ``lit`` is the
+        purchase the pointer is on."""
+        if (text, mark, gain, dim, buttons, lit) == self.hud_view:
             return
-        self.hud_view = (text, mark, gain, dim)
+        self.hud_view = (text, mark, gain, dim, buttons, lit)
         c, theme, px = self.canvas, self.theme, self.theme.px
         font = theme.small_strong
+        tall, gap = theme.line_height(font) + px(10), px(BUTTON_GAP)
+        side = tall + 1  # A button is as tall as the pill, rim and all.
+        row = len(buttons) * (side + gap)
         before = font.measure(mark) + px(6) if mark else 0
         block = theme.title.measure(gain) + px(16) if gain else 0
-        room = max(px(80), min(px(HUD_MAX), self.size[0] - px(2 * HUD_MARGIN + 20))) - before - block
+        room = max(px(80), min(px(HUD_MAX), self.size[0] - row - px(2 * HUD_MARGIN + 20))) - before - block
         shown = text if font.measure(text) <= room else fit_text(font, text, room)
-        right, bottom = self.size[0] - px(HUD_MARGIN), self.ground - HUD_RISE * self.unit
+        right, bottom = self.size[0] - px(HUD_MARGIN) - row, self.ground - HUD_RISE * self.unit
         left = right - block - px(20) - font.measure(shown) - before
-        top = bottom - theme.line_height(font) - px(10)
+        top = bottom - tall
         middle = (top + bottom) // 2
+        self._buttons(buttons, lit, right + gap, top, side, gap)
         fill, ink = HUD_GAIN_LOOKS[dim]
         self.hud_box = (left, top, right, bottom)
         c.coords(self.hud_back, left, top, right, bottom)
@@ -477,13 +504,57 @@ class FieldCanvas:
         c.coords(self.hud_gain, right - block // 2, middle)
         c.itemconfigure(self.hud_gain, text=gain, fill=ink, state="normal" if gain else "hidden")
 
+    def _buttons(self, buttons: tuple, lit: str, left: int, top: int, side: int, gap: int) -> None:
+        """Lay the buy buttons out from ``left``, each ``side`` pixels square: a plate with the
+        purchase's icon, bright when it can be bought."""
+        c = self.canvas
+        self.button_boxes = {kind: (left + index * (side + gap), top, left + index * (side + gap) + side - 1, top + side - 1)
+                             for index, (kind, _lacks) in enumerate(buttons)}
+        if not buttons:
+            c.itemconfigure(self.button_row, state="hidden", image="")
+            return
+        key = (buttons, lit, side, gap)
+        row = self.rows.get(key)
+        if row is None:
+            if len(self.rows) >= ROWS_KEPT:
+                self.rows.clear()
+            row = self.rows[key] = self.sprites.picture(key, lambda: self._row(buttons, lit, side, gap))
+        c.coords(self.button_row, left, top)
+        c.itemconfigure(self.button_row, image=row, state="normal")
+
+    def _row(self, buttons: tuple, lit: str, side: int, gap: int) -> pet_art.Pixels:
+        """The whole row as one picture, clear between the plates: one item to redraw where a plate
+        and an icon for each button would be twelve."""
+        unit = self.unit
+        inset = (side - pet_art.ICON_SIZE * unit) // 2
+        width = len(buttons) * (side + gap) - gap
+        grid: list[list] = [[None] * width for _ in range(side)]
+        for index, (kind, lacks) in enumerate(buttons):
+            left = index * (side + gap)
+            rim, bright = BUTTON_LOOKS.get(lacks, BUTTON_SHORT)
+            fill = LINE if kind == lit and not lacks else PANEL
+            for y in range(side):
+                grid[y][left:left + side] = [rim] * side if y in (0, side - 1) else [rim, *[fill] * (side - 2), rim]
+            for row, line in enumerate(pet_art.icon_pixels(kind, None if bright else PANEL).rows):
+                for column, colour in enumerate(line):
+                    if colour:
+                        x = left + inset + column * unit
+                        for y in range(inset + row * unit, inset + (row + 1) * unit):
+                            grid[y][x:x + unit] = [colour] * unit
+        return pet_art.Pixels(width, side, tuple(map(tuple, grid)), (0, 0))
+
     def in_hud(self, x: float, y: float) -> bool:
         left, top, right, bottom = self.hud_box
         return left <= x <= right and top <= y <= bottom
 
+    def button_at(self, x: float, y: float) -> str | None:
+        """The purchase whose buy button covers canvas point x, y."""
+        return next((kind for kind, (left, top, right, bottom) in self.button_boxes.items()
+                     if left <= x <= right and top <= y <= bottom), None)
+
     def destroy(self) -> None:
         """Let go of every image (on the Tk thread, before the window closes)."""
-        for images in (self.held.entries, self.effect_art.entries, self.shown, self.boss_images):
+        for images in (self.held.entries, self.effect_art.entries, self.shown, self.boss_images, self.rows):
             images.clear()
         self.sprites.clear()
         self.bosses.clear()

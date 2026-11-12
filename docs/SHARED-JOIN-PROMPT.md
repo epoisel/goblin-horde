@@ -13,17 +13,17 @@ Work in the unzipped GoblinHorde folder. Read AGENTS.md and docs/SHARED-PETS.md 
    for the path of a text file with the host's pairing code. Do not open, print, or copy that file.
 4. Run: pets-join --host <address>:<port> --code-file "<path>"
    If it prints a problem, report the problem as worded and stop. It saved nothing on this computer.
-5. Run: stop, then start --surface pets. A viewer picks its own game or the host's when
-   it starts, so one that is already running must be stopped first.
+5. Run: stop, then start. Goblin Horde picks its own game or the host's when it
+   starts, so one that is already running must be stopped first.
 6. Read http://127.0.0.1:43917/api/pets and report ready, the coins, and the number of goblins.
    They are the host's numbers, and I will compare them with the host's report. If ready is
    false, report the message as worded.
 7. Tell me to delete the text file with the code, and to look at the taskbar for the goblins.
 Never print or send the pairing code, remote-code.txt, a token, or chat text. Copy no file
-between computers, change no other setting, and do not turn on phone access.
-To undo this later: pets-join --off, then stop, then start --surface pets.
+between computers, and change no other setting.
+To undo this later: pets-join --off, then stop, then start.
 ```
 
-A `pets-join` that prints a problem has saved nothing on this computer. Its check pairs with the host, so a check that got as far as pairing leaves this computer a session on the host. That session ends after a day, or sooner when the host turns sharing off or makes a new pairing code.
+A `pets-join` that prints a problem has saved nothing on this computer. Its check pairs with the host, so a check that got as far as pairing leaves this computer a session on the host. That session ends after a day, or sooner when the host turns sharing off.
 
 The pairing code goes from this computer to the host's Tailscale address when it pairs, and nowhere else. It is kept in `remote-code.txt` in this computer's state folder, which only your account can read. If Goblin Horde says that file could not be made private, it shows no game: run `pets-join` again, which writes the file anew.

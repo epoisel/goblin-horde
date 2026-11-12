@@ -17,7 +17,7 @@ import { doctor, readManifest, stateFiles } from "../lib/manager.mjs";
 import { LOCK_FILE, createPetsLock } from "../lib/pets-lock.mjs";
 import { REMOTE_CODE_FILE, REMOTE_FILE, readRemoteSetting, writeRemoteSetting } from "../lib/pets-remote.mjs";
 import { createPetsStore } from "../lib/pets-store.mjs";
-import { CODE_FILE, savePairingCode } from "../lib/phone.mjs";
+import { CODE_FILE, savePairingCode } from "../lib/pairing.mjs";
 import { createRewardEngine } from "../lib/reward-engine.mjs";
 import { SHARED_FILE, readSharedSetting, writeSharedSetting } from "../lib/shared.mjs";
 import { petsAdopt, petsHost, petsJoin } from "../lib/shared-manager.mjs";
@@ -165,7 +165,7 @@ test("pets-host enable saves this computer's Tailscale address, says how to join
   assert.equal(await main(["pets-host", "enable", ...box.argv], box.ctx), 0);
   assert.deepEqual(readSharedSetting(box.stateDir), { enabled: true, address: "100.101.102.103" });
   const said = box.said();
-  assert.match(box.lines[0], new RegExp(`^Shared game host: on for 100\\.101\\.102\\.103:${box.flags.port}\\. Nothing listens until Goblin Horde runs: node .* start --surface pets$`));
+  assert.match(box.lines[0], new RegExp(`^Shared game host: on for 100\\.101\\.102\\.103:${box.flags.port}\\. Nothing listens until Goblin Horde runs: node .* start$`));
   assert.ok(said.includes(`pets-join --host 100.101.102.103:${box.flags.port} --code-file`), said);
   assert.match(said, /Login check: on\. A caller must be signed in to the same Tailscale account as this computer\./);
   assert.match(said, /Saved game: none yet\./);
@@ -423,7 +423,7 @@ test("pets-join takes the code from a file or standard input only, checks the ho
   assert.equal(await main(["pets-join", "--host", where, "--code-file", join(box.root, "code.txt"), ...box.argv], box.ctx), 0);
   assert.deepEqual(readRemoteSetting(box.stateDir, { env: box.ctx.env }), { name: "127.0.0.1", port: host.port, origin: `http://${where}`, code: CODE });
   assert.match(box.lines[0], /^Joined\. This computer now shows the shared game on 127\.0\.0\.1, and its own saved game is left as it is\.$/);
-  assert.match(box.lines[1], /^Start Goblin Horde to see it: node .* start --surface pets$/);
+  assert.match(box.lines[1], /^Start Goblin Horde to see it: node .* start$/);
   assert.ok(!PARTS.some((part) => box.said().includes(part)), box.said());
 
   const piped = await computer(t, { env: { GOBLIN_SHARED_LOOPBACK: "45123" } });
@@ -491,12 +491,9 @@ test("doctor's shared group is quiet on a computer that shares nothing, and prin
     [["shared-tailscale", "optional"], ["shared-address", "optional"], ["shared-whois", "optional"], ["shared-host", "none"], ["shared-remote", "none"]]);
   assert.equal(await main(["doctor", ...box.argv], box.ctx), 0);
   const heading = box.lines.indexOf("  Shared game (pets-host, pets-join):");
-  assert.ok(heading > box.lines.indexOf("  Pet game (start --surface pets):"), box.said());
+  assert.ok(heading > box.lines.indexOf("  Pet game:"), box.said());
   assert.deepEqual(box.lines.slice(heading + 1, heading + 6).map((line) => line.trim().split(/\s+/).slice(0, 2).join(" ")),
     ["· shared-tailscale", "· shared-address", "· shared-whois", "· shared-host", "· shared-remote"]);
-  box.lines.length = 0;
-  await main(["doctor", "--report", ...box.argv], box.ctx);
-  assert.match(box.lines[0], /shared-tailscale optional · shared-address optional · shared-whois optional · shared-host none · shared-remote none/);
 });
 
 test("doctor says whether Tailscale is signed in, this computer's address, and whether the login check works, without the login", async (t) => {
@@ -636,7 +633,7 @@ test("the host prompt checks before it changes, keeps a saved game, proves a pai
   const lines = prompt.split(/\r?\n/);
   assert.ok(lines.length <= 20, `${lines.length} lines`);
   const order = ["Change nothing yet", "node goblin.mjs status", "node goblin.mjs pets-host status", "node goblin.mjs doctor", "counts only", "another Goblin Horde holds the saved game, stop",
-    "node goblin.mjs install --no-start", "Never run uninstall", "--remove-settings", "Only if step 1 found no saved game", "pets-adopt", "pets-host enable", "start --surface pets",
+    "node goblin.mjs install --no-start", "Never run uninstall", "--remove-settings", "Only if step 1 found no saved game", "pets-adopt", "pets-host enable", "then start",
     "http://127.0.0.1:43917/api/pets", "finish one turn in T3 Code on this computer", "/api/pets?after=", "\"work\" event whose coins", "above 0", "10 seconds apart", "risen once and stayed",
     "Tailscale address and port", "Never print, open, or send the pairing code"];
   let at = 0;
@@ -647,7 +644,6 @@ test("the host prompt checks before it changes, keeps a saved game, proves a pai
   }
   assert.match(prompt, /I read the code myself with pets-host code\./, "the owner reads the code, not the agent");
   assert.doesNotMatch(prompt, /--replace/, "the prompt never replaces a saved game");
-  assert.doesNotMatch(prompt, /claude-hooks/, "an update leaves the Claude Code connection as it is");
   // The words the prompt waits for are the ones the manager prints.
   assert.match(readFileSync(fileURLToPath(new URL("../lib/shared-manager.mjs", import.meta.url)), "utf8"), /Another Goblin Horde on this computer holds the saved game/);
 });
@@ -655,9 +651,8 @@ test("the host prompt checks before it changes, keeps a saved game, proves a pai
 test("the join prompt installs, joins with a code file it never opens, and reports the host's numbers", () => {
   const prompt = promptBlock("docs/SHARED-JOIN-PROMPT.md");
   assert.ok(prompt.split(/\r?\n/).length <= 20);
-  assert.doesNotMatch(prompt, /claude-hooks/, "an update leaves the Claude Code connection as it is");
   const order = ["node goblin.mjs doctor", "node goblin.mjs install --no-start", "host's Tailscale address and port", "Do not open, print, or copy that file",
-    "pets-join --host <address>:<port> --code-file", "report the problem as worded and stop", "Run: stop, then start --surface pets", "http://127.0.0.1:43917/api/pets", "the host's numbers",
+    "pets-join --host <address>:<port> --code-file", "report the problem as worded and stop", "Run: stop, then start", "http://127.0.0.1:43917/api/pets", "the host's numbers",
     "delete the text file", "Never print or send the pairing code", "pets-join --off"];
   let at = 0;
   for (const needed of order) {
@@ -665,6 +660,6 @@ test("the join prompt installs, joins with a code file it never opens, and repor
     assert.ok(found >= 0, `"${needed}" is missing or out of order`);
     at = found;
   }
-  // A viewer chooses its game when it starts, so the prompt must stop one that runs before it starts the pet game.
-  assert.match(prompt, /5\. Run: stop, then start --surface pets\. A viewer picks its own game or the host's when\s+it starts/);
+  // Goblin Horde chooses its game when it starts, so the prompt must stop one that runs before it starts it again.
+  assert.match(prompt, /5\. Run: stop, then start\. Goblin Horde picks its own game or the host's when\s+it\s+starts/);
 });

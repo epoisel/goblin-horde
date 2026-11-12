@@ -14,7 +14,7 @@ A computer is a host or a display, never both. No T3 Code database, sign-in, or 
 
 No sentence crosses. A display says each code in its own words, and a sentence a host sends is never shown. For an answer with a sentence and no code, as a host of an older version sends, a display shows its own plain sentence and none of the host's words. The host cuts each answer down to those fields before it sends it, and a display cuts it down again before it shows it. An answer that holds the pairing code is not sent and not shown, however the code is spelled in it: with spaces or dashes between its letters, in small letters, or run on across fields that follow one another.
 
-Both computers need Tailscale, signed in to the same account, and the same version of Goblin Horde. The host needs Node.js 22.13 or newer, and it needs the `tailscale` program that Tailscale installs, because that program is what tells the host its own Tailscale address and who is calling. A display needs Windows, because the pet game draws there.
+Both computers need Windows, Tailscale signed in to the same account, and the same version of Goblin Horde. The host needs Node.js 22.13 or newer, and it needs the `tailscale` program that Tailscale installs, because that program is what tells the host its own Tailscale address and who is calling.
 
 ## Set up the host
 
@@ -22,7 +22,7 @@ Run these with the installed manager, on the computer where T3 Code runs. To hav
 
 1. To start from a saved game made on another computer, copy that `pets.json` here yourself and run `pets-adopt <path>` before the game first starts here. Skip this step to keep the host's own game or to begin a new one.
 2. Run `pets-host enable`. If it says Tailscale's program was not found, or that Tailscale is not connected, fix that first: the host does not listen until Tailscale itself names the address.
-3. Run `start --surface pets`. On a host with no screen, `start --ui none` runs the game without goblins.
+3. Run `start`.
 4. Run `pets-host status`. It prints the address and port that displays join at.
 5. Run `pets-host code` in a terminal yourself. It prints the pairing code.
 
@@ -31,15 +31,15 @@ Run these with the installed manager, on the computer where T3 Code runs. To hav
 To have a coding agent do it, give it [SHARED-JOIN-PROMPT.md](SHARED-JOIN-PROMPT.md).
 
 1. Save the pairing code in a text file. The code is never typed on a command line.
-2. Run `pets-join --host <address>:<port> --code-file <file>`. Write the address as Tailscale shows it, four plain numbers such as 100.101.102.103, or give the host's MagicDNS name. It asks the host for a health check and a pairing first. If either fails it says why and saves nothing on this computer. The check pairs with the host, so a check that got as far as pairing leaves this computer a session on the host. That session ends after a day, or sooner when the host turns sharing off or makes a new pairing code.
-3. Run `stop`, then `start --surface pets`. A viewer chooses between its own game and a host's when it starts, so a viewer that was already running keeps its own game until you stop it. The goblins are now the host's.
+2. Run `pets-join --host <address>:<port> --code-file <file>`. Write the address as Tailscale shows it, four plain numbers such as 100.101.102.103, or give the host's MagicDNS name. It asks the host for a health check and a pairing first. If either fails it says why and saves nothing on this computer. The check pairs with the host, so a check that got as far as pairing leaves this computer a session on the host. That session ends after a day, or sooner when the host turns sharing off.
+3. Run `stop`, then `start`. Goblin Horde chooses between its own game and a host's when it starts, so a Goblin Horde that was already running keeps its own game until you stop it. The goblins are now the host's.
 4. Delete the text file.
 
 ## What the host checks
 
 The shared listener is a server of its own. It is off until `pets-host enable`, and it listens on the host's Tailscale address only, never on Wi-Fi and never on every address. The host's own `tailscale` program must name that address. Without the program, or while it does not answer, nothing listens: no adapter's name or address is taken for Tailscale's.
 
-The address is asked for when the listener opens, which every start of Goblin Horde does, and again every 60 seconds while the listener is open. It is not watched in between. If Tailscale gives the computer another address, the listener closes at the next check, the viewer's log says why, and `pets-host status` says to run `pets-host enable` again. For up to a minute after such a change the listener is still bound to the old address.
+The address is asked for when the listener opens, which every start of Goblin Horde does, and again every 60 seconds while the listener is open. It is not watched in between. If Tailscale gives the computer another address, the listener closes at the next check, the log in the state folder's `run` folder says why, and `pets-host status` says to run `pets-host enable` again. For up to a minute after such a change the listener is still bound to the old address.
 
 Each request must pass all of these checks, or the host refuses it.
 
@@ -47,7 +47,7 @@ Each request must pass all of these checks, or the host refuses it.
 |---|---|
 | Network | The caller's address, as its connection reports it, is in Tailscale's range (100.64.0.0/10 or fd7a:115c:a1e0::/48). A forwarded-for header is never read. |
 | Address asked for | The request names the host by its Tailscale address or MagicDNS name. A web page that reaches the host under another name is refused. |
-| Route | Only five routes exist here: pair, read the game, buy, fight, and a health check. Chats, tasks, agents, phone access, settings, and quit do not. A route is the request's path exactly as it was sent, so no other spelling of a path reaches one. |
+| Route | Only five routes exist here: pair, read the game, buy, fight, and a health check. No other route of the local server does. A route is the request's path exactly as it was sent, so no other spelling of a path reaches one. |
 | Tailscale account | `tailscale whois` says the caller is signed in to the same account as the host. A shared-in or tagged device fails. Every request is checked, and a lookup that fails is a refusal. |
 | Page | A request that changes anything comes from the listener's own address, so a web page cannot buy goblins for you. |
 | Pairing | The caller holds a session it earned with the pairing code. Five wrong codes from one address close pairing to that address for ten minutes. One address holds one session. A computer that is signed in and gives the code again is answered the session it has, so every program on that computer shares one session, and a join check never signs a running display out. |
@@ -56,10 +56,9 @@ A display that passes can read the game, buy, and fight. It can do nothing else.
 
 Know these limits:
 
-- The host shares only while Goblin Horde runs there. To share again after the host restarts without starting it yourself, run `autostart on` on the host, or choose **Start with Windows** in the Horde window's menu. If Tailscale connects after Goblin Horde starts, the listener opens by itself within half a minute.
-- The pairing code is the one phone access uses. Its sessions are separate from a phone's. **New pairing code** in the Horde window signs every display out, and each display must join again with the new code.
+- The host shares only while Goblin Horde runs there. After the host restarts, run `start` on it again. If Tailscale connects after Goblin Horde starts, the listener opens by itself within half a minute.
 - The pairing code leaves a computer in one way only: a display sends it to its host when it pairs, and only to an address it has checked is on your tailnet. Nothing the host sends to another computer holds the code, and no log does.
-- The pairing code is shown on a screen in two places only, both on the host itself. `pets-host code` prints it in a terminal there with you at it. The other place is the phone pairing page that Goblin Horde already had: the Horde window and the viewer's own page show the code when you turn phone access on, while phone access is on, and when you make a new code. That page answers the host computer only.
+- The pairing code is shown on a screen in one place only, on the host itself. `pets-host code` prints it in a terminal there with you at it.
 - The files that hold the code and the switch are private to your account: `pairing-code.txt` and `shared.json` in the host's state folder, and `remote-code.txt` in a display's. A file that an older version or another program left readable by other accounts is made private before the host's listener opens, and before a display reads its code. If a file cannot be made private, the host does not listen and the display shows no game, and each names the file.
 - The host needs the `tailscale` program. Without it `pets-host enable` refuses, a listener that was turned on earlier stays closed, and `pets-host status` and `doctor` say why.
 - The listener speaks plain HTTP. Tailscale encrypts the traffic between your computers. Do not put a proxy or a port forward in front of the listener.
@@ -100,9 +99,8 @@ This is not a lock of the operating system. A writer that is frozen for more tha
 
 ## Undo it
 
-- On a display, run `pets-join --off`, then `stop` and `start --surface pets`. The display opens its own saved game again.
-- On the host, run `pets-host disable`. The game goes on as an ordinary pet game on that computer.
-- To lock out a computer that has the code, choose **New pairing code** in the Horde window's menu on the host.
+- On a display, run `pets-join --off`, then `stop` and `start`. The display opens its own saved game again.
+- On the host, run `pets-host disable`. It signs every display out, and the game goes on as an ordinary pet game on that computer.
 - To go back to the saved game from before an adoption, stop Goblin Horde and run `pets-adopt` with the `pets.json.before-adopt-<time>` file and `--replace`.
 
 See [SECURITY.md](../SECURITY.md) for what is in scope for a security report.

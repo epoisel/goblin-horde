@@ -20,8 +20,8 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-echo This removes Goblin Horde: the app, its Start menu entry, its sign-in shortcut,
-echo its manager skills, and its Claude Code hook entries. Your settings and saved pet game stay.
+echo This removes Goblin Horde: the app, its Start menu entry, its manager skills, and any
+echo Claude Code hook entries an earlier version added. Your settings and saved pet game stay.
 echo.
 choice /c YN /m "Remove Goblin Horde now"
 if errorlevel 2 (
@@ -31,7 +31,7 @@ if errorlevel 2 (
   exit /b 0
 )
 set "GH_RESET="
-choice /c YN /n /m "Also remove its saved pet game, layout, phone pairing code, and recorded activity? [Y/N] "
+choice /c YN /n /m "Also remove its saved pet game, its settings, and the shared game's pairing code? [Y/N] "
 if not errorlevel 2 set "GH_RESET=--remove-settings"
 rem One block, read before it runs: uninstall may delete this very file.
 (

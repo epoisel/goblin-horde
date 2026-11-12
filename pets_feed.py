@@ -8,8 +8,9 @@ answer's shape is checked here, once, so the window can trust every field of a G
 from __future__ import annotations
 
 import math
+import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from http.client import HTTPException
 from typing import NamedTuple
 
@@ -20,8 +21,8 @@ POLL_MS = 900  # The viewer pays finished work every 1000 ms.
 BACKOFF_MS = (POLL_MS, 2000, 4000, 8000)
 STALE_MS = 60_000  # An event older than this was for a window that was not looking.
 MESSAGE_MAX = 160
-PURCHASES = ("recruit", "level", "gear", "hoard", "training")
-UPGRADES = ("hoard", "training")
+PURCHASES = ("recruit", "level", "gear", "hoard", "training", "grip")
+UPGRADES = ("hoard", "training", "grip")
 CURRENCIES = ("coins", "scrap", "xp")
 NO_REWARDS = {"coins": 0, "scrap": 0, "xp": 0}
 FAILED = "failed"  # The reason for a purchase or a fight the viewer never answered.
@@ -34,6 +35,8 @@ WAITING = {
     "opening": "Goblin Horde is opening your saved game.",
 }
 NOT_COUNTING = "The viewer cannot read finished work right now."
+# A release version as the viewer reports one, digits only, so only numbers from it ever reach the screen.
+VERSION = re.compile(r"(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})")
 # What a failed read means, by the error it raised; the first match wins and anything else is garbled.
 TROUBLE = ((AttributeError, "old"), (OSError, "offline"), (HTTPException, "offline"))
 
@@ -42,7 +45,8 @@ TROUBLE = ((AttributeError, "old"), (OSError, "offline"), (HTTPException, "offli
 class Game:
     """The game's numbers as the viewer reported them. lifetime is every coin ever paid, spent or not.
     A price is {currency: amount}, or None once that purchase is maxed. next_boss is the boss to clear
-    next (None when every boss is beaten) and next_need the power it takes."""
+    next (None when every boss is beaten) and next_need the power it takes. The grip upgrade's level is
+    how many more goblins than one the player's hand carries."""
     coins: int
     lifetime: int
     scrap: int
@@ -61,10 +65,29 @@ class Game:
         """How much of a currency the player has to spend."""
         return {"coins": self.coins, "scrap": self.scrap, "xp": self.xp}[currency]
 
+    @property
+    def carry(self) -> int:
+        """How many goblins the hand picks up at once."""
+        return 1 + self.upgrades["grip"]
+
+    def lacks(self, kind: str) -> str:
+        """Why a purchase would not go through now, in the viewer's word for it: "maxed", or a currency
+        that is short. "" when it would."""
+        price = self.prices[kind]
+        if price is None:
+            return "maxed"
+        return next((currency for currency, amount in price.items() if self.held(currency) < amount), "")
+
     def affords(self, kind: str) -> bool:
         """Whether a purchase would go through now: it has a price, and every part of it is held."""
-        price = self.prices[kind]
-        return price is not None and all(self.held(currency) >= amount for currency, amount in price.items())
+        return not self.lacks(kind)
+
+    def before(self, start: Game, coins: int, scrap: int, xp: int) -> Game:
+        """This game with that much taken back out and the bosses as ``start`` had them: how the game
+        stands to a player who has not seen a fight's result yet. Whatever was bought since still shows."""
+        return replace(self, coins=max(0, self.coins - coins), lifetime=max(0, self.lifetime - coins),
+                       scrap=max(0, self.scrap - scrap), xp=max(0, self.xp - xp),
+                       cleared=start.cleared, next_boss=start.next_boss, next_need=start.next_need)
 
 
 class Work(NamedTuple):
@@ -81,12 +104,14 @@ class Launch(NamedTuple):
 
 class Feed(NamedTuple):
     """One poll's answer for the window: a game and its events, or a sentence saying why there is none.
-    source is {"ok": True}, or {"ok": False, "message"} while the viewer cannot read finished work."""
+    source is {"ok": True}, or {"ok": False, "message"} while the viewer cannot read finished work. update
+    is the version of a verified update the viewer keeps for the next start, or ""."""
     ready: bool
     message: str = ""
     events: tuple = ()
     game: Game | None = None
     source: dict | None = None
+    update: str = ""
 
 
 def _number(value) -> float:
@@ -158,6 +183,12 @@ def _source(raw) -> dict:
     return {"ok": True}
 
 
+def _update(raw) -> str:
+    """The waiting update's version, from the answer's ``update`` ({"version"} or null), or ""."""
+    version = raw.get("version") if isinstance(raw, dict) else None
+    return version if isinstance(version, str) and VERSION.fullmatch(version) else ""
+
+
 def _trouble(error: Exception) -> str:
     if isinstance(error, ApiError):
         return "old" if error.missing else "refused"
@@ -200,12 +231,12 @@ class PetsFeed:
         if answer.get("ready") is True and answer["boot"] != self.boot and self.seq:
             answer = self._ask(0)  # Another run of the viewer numbers its events from 1 again.
         if answer.get("ready") is not True:
-            return Feed(False, _line(answer.get("message")) or WAITING["opening"])
+            return Feed(False, _line(answer.get("message")) or WAITING["opening"], update=_update(answer.get("update")))
         boot, seq = answer["boot"], _count(answer["seq"])
         if not isinstance(boot, str):
             raise ValueError("boot")
         feed = Feed(True, "", read_events(answer.get("events"), self.now() * 1000), read_game(answer["game"]),
-                    _source(answer.get("source")))
+                    _source(answer.get("source")), _update(answer.get("update")))
         self.boot, self.seq = boot, seq
         return feed
 

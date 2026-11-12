@@ -231,6 +231,17 @@ test("an answer that holds the pairing code is not passed on, and any other answ
     assert.deepEqual(await createRemotePets(setting(45000), { ask: scripted(() => ({ status: 200, data, session: "" })) }).get(0), garbled, JSON.stringify(data).slice(0, 80));
 });
 
+test("an older host's answer, which names no grip, reads as grip 0 with nothing to buy", () => {
+  const { grip: _level, ...upgrades } = GAME.state.upgrades;
+  const { grip: _price, ...quotes } = GAME.quotes;
+  const older = { ...READY, game: { ...GAME, state: { ...GAME.state, upgrades }, quotes } };
+  const read = readAnswer("GET /api/pets", 200, older, { code: CODE });
+  assert.deepEqual(read.game.state.upgrades, { ...upgrades, grip: 0 });
+  assert.deepEqual(read.game.quotes, { ...quotes, grip: null });
+  const wordy = { ...older, game: { ...older.game, state: { ...older.game.state, upgrades: { ...upgrades, grip: "many" } } } };
+  assert.equal(readAnswer("GET /api/pets", 200, wordy, { code: CODE }), null, "a grip that is there and is not a number is still refused");
+});
+
 const SENTENCE = /^[A-Z][A-Za-z0-9 ,.:'_-]{10,160}\.$/;
 const PROSE = ["Goblin Horde is opening your saved game.", "Customer meeting notes are copied here.", "\u001b[31mred", "line one\nline two", "<img src=x onerror=alert(1)>", "x".repeat(400), "",
   "C:\\Users\\someone\\pets.json", "caf\u00e9 \u2603", "EPERM: operation not permitted, open '\u2026'"];
@@ -287,7 +298,7 @@ test("a display says each code in its own words, and has a sentence for every re
     { ok: false, reason: "save", message: "The shared game's computer could not save the game, so finished work is not paid yet." });
   assert.deepEqual(shown("GET /api/pets", 200, { ...READY, source: { ok: false, reason: "unheard-of" } }).source, { ok: false, reason: "error", message: "The shared game's computer cannot read finished work right now." });
   assert.deepEqual(shown("GET /api/pets", 200, READY), READY, "an answer with nothing to say is passed on as it is");
-  assert.deepEqual(shown("POST /api/pets/buy", 400, { reason: "invalid", error: "x" }), { error: "Choose what to buy: recruit, level, gear, hoard, or training." });
+  assert.deepEqual(shown("POST /api/pets/buy", 400, { reason: "invalid", error: "x" }), { error: "Choose what to buy: recruit, level, gear, hoard, training, or grip." });
   assert.deepEqual(shown("POST /api/pets/fight", 400, { reason: "invalid" }), { error: "Choose a boss by its number, a whole number from 0 up." });
   assert.deepEqual(shown("POST /api/pets/buy", 503, { reason: "locked" }), { error: "Another Goblin Horde on the shared game's computer already runs the game." });
   assert.deepEqual(shown("POST /api/pets/fight", 503, { reason: "sideways", error: "The fight could not be saved." }), { error: "The shared game could not do that." });
