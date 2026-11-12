@@ -173,6 +173,12 @@ test("the widget opens its window unless the sign-in start asks for the strip", 
     const signIn = fakeSpawn({ output: `${WIDGET_READY}\n` });
     await launchWidget(makeContext({ platform: "win32", env: {}, spawn: signIn.spawn }), box.loc, "C:\\Python\\pythonw.exe", "i", { waitMs: 2000, surface: "strip" });
     assert.deepEqual(signIn.calls[0].args.slice(1), ["--port", "43999", "--surface", "strip"]);
+    const pets = fakeSpawn({ output: `${WIDGET_READY}\n` });
+    await launchWidget(makeContext({ platform: "win32", env: {}, spawn: pets.spawn }), box.loc, "C:\\Python\\pythonw.exe", "i", { waitMs: 2000, surface: "pets" });
+    assert.deepEqual(pets.calls[0].args.slice(1), ["--port", "43999", "--surface", "pets"], "the pet game is asked for by name");
+    const named = fakeSpawn({ output: `${WIDGET_READY}\n` });
+    await launchWidget(makeContext({ platform: "win32", env: {}, spawn: named.spawn }), box.loc, "C:\\Python\\pythonw.exe", "i", { waitMs: 2000, surface: "window" });
+    assert.deepEqual(named.calls[0].args.slice(1), ["--port", "43999"], "asking for the window is the same as asking for nothing");
   } finally { box.cleanup(); }
 });
 
@@ -288,6 +294,55 @@ test("start with only the py launcher on PATH launches the desktop goblins with 
     assert.equal(spawned.length, 1);
     assert.match(again.messages.join("\n"), /already running; they will come to the front/);
     assert.ok(existsSync(join(flags.stateDir, "run", SHOW_REQUEST)));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("start --surface pets launches the widget on the pet field and adds no sign-in shortcut", { skip: process.platform !== "win32" }, async () => {
+  const root = mkdtempSync(join(tmpdir(), "goblin-pets-start-"));
+  try {
+    const home = join(root, "home");
+    const flags = { installDir: join(root, "app"), stateDir: join(root, "state"), port: 43995, skipSkill: true };
+    const env = { PATH: process.env.PATH, Path: process.env.Path, PATHEXT: process.env.PATHEXT, SystemRoot: process.env.SystemRoot,
+      LOCALAPPDATA: join(root, "local"), APPDATA: join(root, "roaming"), CLAUDE_CONFIG_DIR: join(home, "claude-config"), CODEX_HOME: join(home, "codex-home") };
+    const startup = join(env.APPDATA, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", "Goblin Horde.lnk");
+    // The viewer is listed as already running, so start launches only the widget; ids are far above real ones.
+    const procs = [{ pid: 999_999_971, command: `"${process.execPath}" "${join(flags.installDir, "server.mjs")}"`, started: "s" }];
+    const spawned = [];
+    const shortcuts = [];
+    const base = windows({ onPath: { py: PY_LAUNCHER } }).ctx;
+    const ctx = makeContext({
+      ...base, env, home, sourceDir, nodePath: process.execPath,
+      listProcesses: () => procs.slice(), openUrl: () => {},
+      // A stand-in for the Windows shortcut writer: a file that names its target, as a real .lnk does.
+      writeShortcut: (link, spec) => {
+        shortcuts.push(spec.args);
+        mkdirSync(dirname(link), { recursive: true });
+        writeFileSync(link, Buffer.from(`${spec.target} ${spec.args}`, "utf16le"));
+      },
+      exists: (path) => base.exists(path) || existsSync(path),
+      spawn: (command, args, options) => {
+        spawned.push({ command, args });
+        writeSync(options.stdio[1], `${WIDGET_READY}\n`);
+        procs.push({ pid: 999_999_972, command: `"${command}" "${args[0]}" ${args.slice(1).join(" ")}`, started: "w" });
+        const child = new EventEmitter();
+        child.pid = 999_999_972;
+        child.unref = () => {};
+        return child;
+      },
+    });
+    await install(ctx, { ...flags, noStart: true });
+    const result = await start(ctx, { ...flags, surface: "pets" });
+    assert.equal(result.ui, "widget");
+    assert.deepEqual(spawned.map((call) => [call.command, ...call.args.slice(1)]), [[REAL_PYTHONW, "--port", "43995", "--surface", "pets"]]);
+    assert.doesNotMatch(result.messages.join("\n"), /pet game did not start|Windows only/);
+    assert.equal(existsSync(startup), false, "the pet game is never made a sign-in start");
+    assert.equal(shortcuts.length, 1, "only install's Start menu entry was written");
+    assert.doesNotMatch(shortcuts[0], /--surface/);
+    // Asking again leaves the running widget alone: no second widget, and no request to open the window.
+    const again = await start(ctx, { ...flags, surface: "pets" });
+    assert.equal(spawned.length, 1);
+    assert.match(again.messages.join("\n"), /choose "Goblin pets"/);
+    assert.equal(existsSync(join(flags.stateDir, "run", SHOW_REQUEST)), false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

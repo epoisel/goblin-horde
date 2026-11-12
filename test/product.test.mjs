@@ -11,10 +11,11 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MARKER, autostart, install, makeContext, readManifest, start, status } from "../lib/manager.mjs";
+import { MARKER, autostart, install, makeContext, managerCommand, readManifest, start, status } from "../lib/manager.mjs";
 import { ownsShortcut, setSignInStart, shortcutSpec, writeShortcut } from "../lib/shortcuts.mjs";
 import { OrcaReader } from "../lib/orca.mjs";
-import { finishLine, main } from "../goblin.mjs";
+import { finishLine, main, parseArgs } from "../goblin.mjs";
+import { PACKAGE_NAME } from "../scripts/package.mjs";
 
 const sourceDir = join(dirname(fileURLToPath(import.meta.url)), "..");
 const windowsOnly = { skip: process.platform !== "win32" && "Windows shortcuts" };
@@ -25,8 +26,9 @@ function sandbox() {
   const claudeDir = join(home, "claude-config");
   mkdirSync(claudeDir, { recursive: true });
   writeFileSync(join(claudeDir, "settings.json"), "{}\n");
+  // The loopback stand-in keeps doctor, which setup runs, from running this computer's own tailscale program.
   const env = { PATH: process.env.PATH, Path: process.env.Path, PATHEXT: process.env.PATHEXT, SystemRoot: process.env.SystemRoot,
-    LOCALAPPDATA: join(root, "local"), APPDATA: join(root, "roaming"), CLAUDE_CONFIG_DIR: claudeDir, CODEX_HOME: join(home, "codex-home") };
+    LOCALAPPDATA: join(root, "local"), APPDATA: join(root, "roaming"), CLAUDE_CONFIG_DIR: claudeDir, CODEX_HOME: join(home, "codex-home"), GOBLIN_SHARED_LOOPBACK: "45123" };
   const lines = [];
   const written = [];
   // A stand-in for the Windows shortcut writer: a file that names its target, as a real .lnk does.
@@ -151,8 +153,117 @@ test("start brings a running widget's window forward, but the sign-in start leav
     assert.equal(existsSync(request), false, "signing in does not pop the window open");
     await start(ctx, box.flags);
     assert.equal(existsSync(request), true, "the Start menu or `start` opens the window");
-    await assert.rejects(start(ctx, { ...box.flags, surface: "corner" }), /--surface must be window or strip/);
+    await assert.rejects(start(ctx, { ...box.flags, surface: "corner" }), /--surface must be window, strip, or pets/);
   } finally { box.cleanup(); }
+});
+
+test("start --surface pets leaves a running widget as it is and says how to switch to the pet game", async () => {
+  const box = sandbox();
+  try {
+    await install(box.ctx, box.flags);
+    const { installDir, stateDir } = box.flags;
+    const running = [
+      { pid: 990001, argv: ["pythonw.exe", join(installDir, "desktop_widget.py"), "--port", "43993"], command: "", started: "1" },
+      { pid: 990002, argv: ["node.exe", join(installDir, "server.mjs")], command: "", started: "1" },
+    ];
+    const result = await start({ ...box.ctx, listProcesses: () => running }, { ...box.flags, surface: "pets" });
+    assert.equal(result.ui, "widget");
+    assert.equal(result.widget, 990001);
+    assert.equal(existsSync(join(stateDir, "run", "show-widget")), false, "the Horde window is not popped open");
+    const said = result.messages.join("\n");
+    assert.match(said, /already running/);
+    assert.match(said, /choose "Goblin pets"/);
+    assert.ok(said.includes(`${managerCommand(box.ctx, installDir)} stop, then ${managerCommand(box.ctx, installDir)} start --surface pets`), said);
+  } finally { box.cleanup(); }
+});
+
+test("start --surface pets without the desktop goblins says the pet game did not start", async () => {
+  const box = sandbox();
+  try {
+    await install(box.ctx, box.flags);
+    const opened = [];
+    // The viewer is listed as running, so nothing is started; no Python is found, so no widget can be.
+    const running = [{ pid: 990002, argv: ["node.exe", join(box.flags.installDir, "server.mjs")], command: "", started: "1" }];
+    const ctx = { ...box.ctx, listProcesses: () => running, which: () => "", exists: () => false, probe: () => "", openUrl: (url) => opened.push(url) };
+    const result = await start(ctx, { ...box.flags, surface: "pets" });
+    assert.equal(result.widget, null);
+    assert.equal(result.ui, "browser");
+    assert.equal(opened.length, 1);
+    assert.match(result.messages.join("\n"), process.platform === "win32" ? /The pet game did not start: it runs in the desktop goblins/
+      : /The pet field runs on Windows only for now\. Goblin Horde started as the agent monitor instead\./);
+    // The same start without --surface pets says nothing about the pet game.
+    assert.doesNotMatch((await start(ctx, box.flags)).messages.join("\n"), /pet (game|field)/);
+  } finally { box.cleanup(); }
+});
+
+test("manage.ps1 passes -Surface to the manager, which accepts pets and refuses anything unknown", { ...windowsOnly, timeout: 60_000 }, async () => {
+  const box = sandbox();
+  // Something else holds the port, so an accepted start stops there, before anything is started.
+  const blocker = createServer((socket) => socket.destroy());
+  await new Promise((resolvePromise) => blocker.listen(0, "127.0.0.1", resolvePromise));
+  try {
+    await install(box.ctx, box.flags);
+    const run = (surface) => new Promise((resolvePromise) => {
+      const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", join(sourceDir, "manage.ps1"),
+        "-Action", "Start", "-InstallRoot", box.flags.installDir, "-Port", String(blocker.address().port), "-Surface", surface],
+      { env: { ...process.env, ...box.env }, stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+      let said = "";
+      child.stderr.setEncoding("utf8").on("data", (chunk) => { said += chunk; });
+      child.on("close", (status) => resolvePromise({ status, said }));
+    });
+    const unknown = await run("corner");
+    assert.equal(unknown.status, 1, unknown.said);
+    assert.match(unknown.said, /--surface must be window, strip, or pets/);
+    const pets = await run("pets");
+    assert.equal(pets.status, 3, pets.said);
+    assert.match(pets.said, /already used by another program/);
+  } finally {
+    blocker.close();
+    box.cleanup();
+  }
+});
+
+const AGENT_DOCS = ["AGENTS.md", "docs/SETUP-PROMPT.md", "skills/goblin-horde-manager/SKILL.md"];
+const readDoc = (file) => readFileSync(join(sourceDir, file), "utf8");
+
+test("the pet game install command the documents give installs without touching Claude Code, and its surface starts", async () => {
+  const documented = (file) => readDoc(file).match(/node goblin\.mjs (install [^\n`]*--surface pets)/)?.[1];
+  const command = documented("docs/SETUP-PROMPT.md");
+  assert.ok(command, "the setup prompt gives the install command");
+  for (const file of ["AGENTS.md", "README.md"]) assert.equal(documented(file), command, `${file} gives the same command`);
+  const box = sandbox();
+  try {
+    const argv = [...command.split(" "), ...box.argv];
+    assert.equal(await main(argv, box.ctx), 0);
+    assert.deepEqual(JSON.parse(readFileSync(join(box.claudeDir, "settings.json"), "utf8")), {}, "Claude Code's settings are untouched");
+    assert.equal(box.marker().claudeHooks.installed, false);
+    assert.equal(existsSync(box.startup), false, "nothing starts at sign-in");
+    const running = [
+      { pid: 990001, argv: ["pythonw.exe", join(box.flags.installDir, "desktop_widget.py"), "--port", "43993"], command: "", started: "1" },
+      { pid: 990002, argv: ["node.exe", join(box.flags.installDir, "server.mjs")], command: "", started: "1" },
+    ];
+    const started = await start({ ...box.ctx, listProcesses: () => running }, { ...box.flags, surface: parseArgs(argv).flags.surface });
+    assert.equal(started.ui, "widget");
+  } finally { box.cleanup(); }
+});
+
+test("the agent documents name only options the manager has, in plain punctuation", () => {
+  for (const file of AGENT_DOCS) {
+    const options = new Set(readDoc(file).match(/--[a-z][a-z-]*/g));
+    assert.ok(options.size > 0, file);
+    for (const option of options) assert.doesNotThrow(() => parseArgs(["doctor", option, "value"]), `${file} names ${option}`);
+  }
+  for (const file of ["AGENTS.md", "docs/SETUP-PROMPT.md"]) assert.doesNotMatch(readDoc(file), /[–—]/, `${file} has a long dash`);
+});
+
+test("the setup prompt is one block of at most 15 lines that says where the package is and what to run", () => {
+  const blocks = [...readDoc("docs/SETUP-PROMPT.md").matchAll(/```\r?\n([\s\S]*?)\r?\n```/g)].map((match) => match[1]);
+  assert.equal(blocks.length, 1);
+  const lines = blocks[0].split(/\r?\n/);
+  assert.ok(lines.length <= 15, `${lines.length} lines`);
+  for (const needed of ["https://github.com/epoisel/goblin-horde", "goblin-pets", PACKAGE_NAME, "AGENTS.md", "node goblin.mjs doctor"])
+    assert.ok(blocks[0].includes(needed), needed);
+  assert.ok(readManifest(sourceDir).includes("docs/SETUP-PROMPT.md"), "the prompt ships in the package");
 });
 
 test("setup --yes --no-claude-hooks never connects Claude Code", async () => {
@@ -274,7 +385,7 @@ test("POST /api/quit stops the viewer, only from this computer's own page", { ti
   // have, so no phone listener opens on a real network.
   const env = { ...process.env, PORT: String(port), GOBLIN_HORDE_STATE_DIR: join(root, "state"), LOCALAPPDATA: join(root, "local"),
     CLAUDE_CONFIG_DIR: join(root, "claude"), CODEX_HOME: join(root, "codex"), CODEX_CLI_PATH: join(root, "no-codex.exe"),
-    ORCA_CLI_COMMAND: join(root, "no-orca"), LAN_IP: "10.255.255.254" };
+    ORCA_CLI_COMMAND: join(root, "no-orca"), LAN_IP: "10.255.255.254", GOBLIN_T3_DB: join(root, "no-t3.sqlite") };
   const child = spawn(process.execPath, [join(sourceDir, "server.mjs")], { env, stdio: "ignore", windowsHide: true });
   const exited = new Promise((resolvePromise) => child.once("exit", (code) => resolvePromise(code)));
   const base = `http://127.0.0.1:${port}`;

@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PACKAGE_NAME, buildPackage, scanFile } from "../scripts/package.mjs";
 import { readManifest } from "../lib/manager.mjs";
@@ -32,9 +32,82 @@ test("the team package holds exactly the allowlist, byte for byte", () => {
     // Everything needed to install and run on any platform is present.
     for (const needed of ["goblin.mjs", "server.mjs", "claude-hook.mjs", "lib/manager.mjs", "lib/extension.mjs", "public/index.html", "EXTENSIONS.md", "manage.ps1"])
       assert.ok(manifest.includes(needed), needed);
-    // Nothing local, generated, or test-only.
-    for (const name of manifest) assert.doesNotMatch(name, /^(test|dist|\.git)\/|pairing-code|goblins\.json|\.jsonl$|\.ndjson$|\.log$|\.png$|__pycache__|REVIEW\.md$/);
+    // Nothing local, generated, or test-only: no tests, working notes, design drafts, dev scripts, or saved games.
+    for (const name of manifest) assert.doesNotMatch(name, /^(test|dist|\.git|\.audit)\/|^docs\/(?!(?:SETUP-PROMPT|SHARED-PETS|SHARED-HOST-PROMPT|SHARED-JOIN-PROMPT)\.md$)|^scripts\/(?!package\.mjs$)|pairing-code|goblins\.json|pets\.json|\.jsonl$|\.ndjson$|\.log$|\.png$|__pycache__|REVIEW\.md$/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+const CODE = /\.(py|mjs|js)$/;
+const RUNTIME_FILE = /\.(py|mjs|js|json|ico|cmd|html|css|svg)$/;
+
+/**
+ * The files one shipped source file needs beside it when it runs: the local Python modules it imports, the
+ * files a Node or browser module imports by relative path, and any code or data file it names in a string.
+ * `isFile` says whether a package path is a file in the source folder, so the standard library is left out.
+ */
+function needs(file, text, isFile) {
+  const found = new Set();
+  const local = (path) => { if (path !== file && isFile(path)) found.add(path); };
+  if (file.endsWith(".py")) {
+    for (const [, module] of text.matchAll(/^[ \t]*from[ \t]+([A-Za-z_]\w*)[\w.]*[ \t]+import\b/gm)) local(`${module}.py`);
+    for (const [, list] of text.matchAll(/^[ \t]*import[ \t]+([^\n#;]+)/gm))
+      for (const item of list.split(",")) local(`${item.trim().split(/[ \t.]/)[0]}.py`);
+  } else {
+    for (const [, target] of text.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)["'](\.{1,2}\/[^"']+)["']/g)) local(posix.join(posix.dirname(file), target));
+  }
+  for (const [, , name] of text.matchAll(/(["'`])([\w][\w./ -]*)\1/g)) {
+    if (!RUNTIME_FILE.test(name)) continue;
+    local(name);
+    local(posix.join(posix.dirname(file), name));
+  }
+  return [...found];
+}
+
+/** Every "file needs other" where `other` is not in the package, over the code that is. */
+function missingFromPackage(files, read, isFile) {
+  const shipped = new Set(files);
+  return files.filter((file) => CODE.test(file))
+    .flatMap((file) => needs(file, read(file), isFile).filter((other) => !shipped.has(other)).map((other) => `${file} needs ${other}`));
+}
+
+const readSource = (file) => readFileSync(join(sourceDir, file), "utf8");
+const isSourceFile = (file) => { try { return statSync(join(sourceDir, file)).isFile(); } catch { return false; } };
+
+test("every module and data file the shipped code imports or names ships with it", () => {
+  const manifest = readManifest(sourceDir);
+  assert.deepEqual(missingFromPackage(manifest, readSource, isSourceFile), []);
+  // The scan sees the pet game: these are found as needs of the widget and the viewer, not assumed.
+  const widget = new Set();
+  for (let pending = ["desktop_widget.py"]; pending.length;) {
+    const file = pending.pop();
+    if (widget.has(file)) continue;
+    widget.add(file);
+    pending.push(...needs(file, readSource(file), isSourceFile).filter((other) => other.endsWith(".py")));
+  }
+  for (const module of ["pet_field.py", "pet_field_canvas.py", "pet_world.py", "pet_behaviors.py", "pet_battle.py", "pet_art.py", "pet_boss.py", "pet_boss_ogre.py",
+    "pet_platform.py", "desktop_windows.py", "goblin_look.py", "pets_feed.py", "pets_text.py"]) assert.ok(widget.has(module), `${module} is reached from desktop_widget.py`);
+  const viewer = needs("server.mjs", readSource("server.mjs"), isSourceFile);
+  for (const file of ["game_config.json", "lib/t3-source.mjs", "lib/pets-store.mjs", "lib/pets-service.mjs", "lib/pets-routes.mjs", "lib/reward-engine.mjs", "lib/rewards.mjs",
+    "lib/pets-lock.mjs", "lib/pets-remote.mjs", "lib/shared.mjs"])
+    assert.ok(viewer.includes(file), `${file} is needed by server.mjs`);
+  // The shared game's commands and its Tailscale helpers are reached from the manager and the listener.
+  assert.ok(needs("goblin.mjs", readSource("goblin.mjs"), isSourceFile).includes("lib/shared-manager.mjs"));
+  assert.ok(needs("lib/shared.mjs", readSource("lib/shared.mjs"), isSourceFile).includes("lib/tailscale.mjs"));
+});
+
+test("a module or data file left out of package-files.json is named by the check", () => {
+  const manifest = readManifest(sourceDir);
+  const without = (...gone) => missingFromPackage(manifest.filter((file) => !gone.includes(file)), readSource, isSourceFile);
+  assert.deepEqual(without("pet_boss_ogre.py"), ["pet_boss.py needs pet_boss_ogre.py"]);
+  assert.ok(without("goblin_look.py").includes("pet_field.py needs goblin_look.py"));
+  assert.ok(without("desktop_windows.py").includes("pet_field.py needs desktop_windows.py"));
+  assert.deepEqual(without("game_config.json"), ["server.mjs needs game_config.json"]);
+  assert.ok(without("lib/t3-source.mjs").includes("server.mjs needs lib/t3-source.mjs"));
+  // Every way Python spells an import, and nothing from the standard library.
+  const tree = new Set(["a.py", "pet_one.py", "pet_two.py", "pet_three.py", "pet_four.py", "art.json"]);
+  const source = ["import json, pet_one", "from pet_two import Thing", "    import pet_three as three  # inside a function", "from pet_four.part import x",
+    "import os.path", "DATA = \"art.json\""].join("\n");
+  assert.deepEqual(needs("a.py", source, (file) => tree.has(file)).sort(), ["art.json", "pet_four.py", "pet_one.py", "pet_three.py", "pet_two.py"]);
 });
 
 test("every link in a shipped document to another file points at a file that ships too", () => {

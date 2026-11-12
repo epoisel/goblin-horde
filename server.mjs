@@ -20,8 +20,8 @@ import { diagnosticReport } from "./lib/diagnostics.mjs";
 import { ownsShortcut, setSignInStart, shortcutPaths } from "./lib/shortcuts.mjs";
 import { claudeConfigDir } from "./lib/paths.mjs";
 import { CODEX_NOT_FOUND, codexCommand, codexSourceState } from "./lib/codex-bin.mjs";
-import { Pairing, sessionCookie } from "./lib/pairing.mjs";
-import { PhoneAccess, errorText, loadPairingCode, localOnlyRefusal, mobileStatus, requestAnswer } from "./lib/phone.mjs";
+import { Pairing, answerPair, sessionCookie } from "./lib/pairing.mjs";
+import { PhoneAccess, errorText, localOnlyRefusal, mobileStatus, requestAnswer, startingPairingCode } from "./lib/phone.mjs";
 import { publicRequests, publicView } from "./lib/public-view.mjs";
 import { AgentDetailService, ClaudeDesktopIndex, agentRoutes } from "./lib/agent-detail.mjs";
 import { ClaudeDetailReader, ClaudeSessionIndex, ClaudeTitleReader } from "./lib/claude-detail.mjs";
@@ -30,6 +30,15 @@ import { TaskService, appVersion, taskRoutes } from "./lib/task-service.mjs";
 import { TaskMemory } from "./lib/tasks.mjs";
 import { ClaudeTranscripts, CodexTranscripts } from "./lib/transcript.mjs";
 import { openAppWindow } from "./lib/app-window.mjs";
+import { loadConfig } from "./lib/rewards.mjs";
+import { createPetsStore } from "./lib/pets-store.mjs";
+import { t3Source } from "./lib/t3-source.mjs";
+import { createRewardEngine } from "./lib/reward-engine.mjs";
+import { createPetsService } from "./lib/pets-service.mjs";
+import { petsRoutes } from "./lib/pets-routes.mjs";
+import { createPetsLock } from "./lib/pets-lock.mjs";
+import { createRemotePets, remotePetsRoutes, startingRemoteSetting } from "./lib/pets-remote.mjs";
+import { SharedAccess } from "./lib/shared.mjs";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const publicDir = resolve(here, "public");
@@ -40,7 +49,7 @@ const version = JSON.parse(readFileSync(join(here, "package.json"), "utf8")).ver
 const instance = /^[a-f0-9]{16,64}$/.test(process.env.GOBLIN_HORDE_INSTANCE || "") ? process.env.GOBLIN_HORDE_INSTANCE : "";
 const stateDir = goblinStateDir();
 // Phone access is off until the person turns it on (phone.json); see lib/phone.mjs.
-const pairing = new Pairing({ code: loadPairingCode(stateDir) });
+const pairing = new Pairing({ code: startingPairingCode(stateDir) });
 const phone = new PhoneAccess({ stateDir, port, pairing, handler: (request, response) => safeHandler(request, response) });
 const defaultThreadId = process.env.CODEX_VIEWER_THREAD_ID || "all";
 
@@ -677,6 +686,32 @@ const taskService = new TaskService({
 });
 const taskRoute = taskRoutes(taskService, { open: ({ taskId, agentId }) => openAppWindow({ port, taskId, agentId, stateDir }), version: appVersion(publicDir) });
 
+// The pet game: finished T3 Code work pays coins, for this computer only (see lib/pets-service.mjs).
+// GOBLIN_T3_DB names another T3 database, so a test or an isolated viewer never reads the real one.
+// The engine holds pets.lock, so a second viewer on this state folder never loads or saves the game.
+function petsEngine() {
+  try {
+    const config = loadConfig(join(here, "game_config.json"));
+    return createRewardEngine({ config, store: createPetsStore({ dir: stateDir, config }),
+      source: t3Source(process.env.GOBLIN_T3_DB || undefined), lock: createPetsLock({ dir: stateDir, port }) });
+  } catch (error) {
+    console.error(`The pet game is off: ${error.message}`);
+    return null;
+  }
+}
+// A display (pets-join left remote.json) shows another computer's game: it makes no engine and never opens
+// pets.json, and its pets routes forward to that host (see lib/pets-remote.mjs). The file with the host's code is
+// made private before the code is read, and a display that cannot do that shows no game and says why.
+const remote = startingRemoteSetting(stateDir);
+const petsService = remote ? null : createPetsService({ engine: petsEngine() });
+const petsRoute = remote ? remotePetsRoutes(createRemotePets(remote)) : petsRoutes(petsService);
+// The shared game on this computer's Tailscale address, only once pets-host turned it on (see lib/shared.mjs).
+// Its sessions are its own: the pairing code is the phone's, but neither kind of session opens the other listener.
+// A Tailscale address is one computer, so each address holds one session, and pairing again replaces it.
+const sharedPairing = new Pairing({ code: pairing.code, onePerPeer: true });
+const shared = new SharedAccess({ stateDir, port, pairing: sharedPairing, display: Boolean(remote),
+  routes: { pair: (request, response, origin) => handlePair(request, response, origin, sharedPairing), pets: petsRoute, json, readBody } });
+
 // The task view's own files (public/app), the only ones served under /app/.
 const APP_FILES = /^(index\.html|app\.css|app\.js|adapter\.js|transcript\.js|markdown\.js|diff\.js|demo-data\.js|manifest\.json|icon\.svg)$/;
 const mime = { ".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8",
@@ -711,25 +746,9 @@ async function serveFile(response, file, folder = publicDir) {
   createReadStream(path).on("error", () => response.destroy()).pipe(response);
 }
 
-async function handlePair(request, response, origin) {
-  const ip = request.socket.remoteAddress || "unknown";
-  // Counted before anything is read, so parallel guesses cannot all slip past the limit.
-  if (!pairing.allow(ip)) return json(response, 429, { error: "Too many attempts. Wait ten minutes and try again." });
-  if (request.headers.origin !== origin || !String(request.headers["content-type"] || "").startsWith("application/json"))
-    return json(response, 403, { error: "Open the pairing page on your phone first." });
-  let input = "";
-  try {
-    for await (const chunk of request) {
-      input += chunk;
-      if (input.length > 256) return json(response, 413, { error: "Invalid pairing request" });
-    }
-  } catch { return response.destroy(); } // The client hung up mid-body; there is no one to answer.
-  let code = "";
-  try { code = String(JSON.parse(input).code || ""); } catch { /* handled below */ }
-  const sessionToken = pairing.pair(ip, code);
-  if (!sessionToken) return json(response, 401, { error: "That pairing code did not match." });
-  response.writeHead(200, { ...commonHeaders, "Content-Type": "application/json; charset=utf-8", "Set-Cookie": `goblin_horde_session=${sessionToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400` });
-  response.end(JSON.stringify({ paired: true }));
+/** Answer POST /api/pair for `codes`: the phones' pairing, or the shared game's. */
+function handlePair(request, response, origin, codes = pairing) {
+  return answerPair(codes, request, response, { origin, json, headers: commonHeaders });
 }
 
 const BODY_LIMIT = 12_000;
@@ -813,23 +832,32 @@ const handler = async (request, response) => {
   }
   if (await agentRoute(request, response, { url, local: isLocal(request), origin, json, readBody, fail })) return;
   if (await taskRoute(request, response, { url, local: isLocal(request), origin, json, readBody, fail })) return;
-  if (["/api/reconnect", "/api/connect-claude", "/api/autostart", "/api/phone", "/api/phone/reset", "/api/quit"].includes(url.pathname)
+  if (await petsRoute(request, response, { url, local: isLocal(request), origin, json, readBody, fail })) return;
+  if (["/api/reconnect", "/api/connect-claude", "/api/autostart", "/api/phone", "/api/phone/reset", "/api/shared", "/api/quit"].includes(url.pathname)
     && request.method === "POST") {
-    // Only this computer may restart a source, change Claude Code's settings, turn phone access on, or quit; never a paired phone.
+    // Only this computer may restart a source, change Claude Code's settings, turn phone access or the shared game on, or quit; never a paired phone.
     const refusal = localOnlyRefusal({ local: isLocal(request), origin, headers: request.headers });
     if (refusal) return json(response, refusal.status, { error: refusal.error });
     try {
       const data = await readBody(request);
       if (url.pathname === "/api/quit") {
         // The widget's "Quit Goblin Horde": answer first, then stop Codex and exit like a stop would.
-        response.on("finish", () => setTimeout(() => { reader.close(); process.exit(0); }, 50));
+        response.on("finish", () => setTimeout(async () => { await stopGame(); reader.close(); process.exit(0); }, 50));
         return json(response, 200, { quitting: true });
       }
+      // What `pets-host enable` and `disable` ask of a running viewer. The answer never holds the pairing code.
+      // It names this viewer's state folder, so a manager knows the answer is about the folder it asked for.
+      if (url.pathname === "/api/shared") return json(response, 200, { shared: await shared.setEnabled(data.enabled), stateDir });
       if (url.pathname === "/api/phone") {
         const state = await phone.setEnabled(data.enabled, { address: typeof data.address === "string" ? data.address : "" });
         return json(response, 200, { phone: state, ...(state.listening ? { code: pairing.code } : {}) });
       }
-      if (url.pathname === "/api/phone/reset") return json(response, 200, { phone: phone.resetPairing(), code: pairing.code });
+      if (url.pathname === "/api/phone/reset") {
+        const state = phone.resetPairing();
+        // The shared game pairs with the same code, so its computers are signed out with the phones.
+        sharedPairing.reset(pairing.code);
+        return json(response, 200, { phone: state, code: pairing.code });
+      }
       if (url.pathname === "/api/autostart") {
         const paths = installed ? shortcutPaths() : null;
         if (!paths) return json(response, 409, { error: "Starting at sign-in needs an installed copy on Windows." });
@@ -916,6 +944,11 @@ const handler = async (request, response) => {
     if (url.pathname === "/api/health") {
       if (!isLocal(request)) return json(response, 404, { error: "Not found" });
       return json(response, 200, { product: "GoblinHorde", version, pid: process.pid, installDir: here.replace(/[\\/]+$/, ""), instance });
+    }
+    // Local only: `pets-host status` and doctor read the shared listener's state here.
+    if (url.pathname === "/api/shared") {
+      if (!isLocal(request)) return json(response, 404, { error: "Not found" });
+      return json(response, 200, { shared: shared.state(), stateDir });
     }
     if (url.pathname === "/api/capabilities") return json(response, 200, await capabilities());
     if (url.pathname === "/api/requests") {
@@ -1004,8 +1037,33 @@ localServer.on("error", (error) => {
   reader.close();
   process.exit(error.code === "EADDRINUSE" ? 3 : 1);
 });
-localServer.listen(port, host, () => console.log(`Goblin Horde: http://${host}:${port}`));
+localServer.listen(port, host, () => {
+  console.log(`Goblin Horde: http://${host}:${port}`);
+  // Only the copy that holds the port opens the saved game, so a copy that exits on a busy port never writes it.
+  petsService?.begin();
+  if (remote) console.log(remote.problem || `The pet game here shows the shared game on ${remote.name}.`);
+  // The Tailscale listener only when pets-host turned the shared game on, and only beside a viewer that holds its port.
+  shared.apply().then((state) => { if (state.problem) console.error(`Shared game: ${state.problem}`); }, (error) => console.error(`Shared game: ${error.message}`));
+});
 // The Wi-Fi listener only when the person turned phone access on.
 phone.apply().then((state) => { if (state.problem) console.error(state.problem); }, (error) => console.error(`Phone access: ${error.message}`));
-// Browsers hold keep-alive connections open, so exit right after stopping Codex instead of waiting for them.
-for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => { reader.close(); localServer.close(); phone.close(); process.exit(0); });
+/**
+ * Stop the pet game before this process exits, and wait for it: the saved game's lock is given up only once the
+ * save on its way has landed. A save that hangs is waited on for five seconds. After that the process exits with
+ * the lock still in place, and the lock's stopped heartbeat frees it for the next Goblin Horde.
+ */
+function stopGame() {
+  const stopped = Promise.resolve(petsService?.stop()).catch(() => {});
+  return Promise.race([stopped, new Promise((resolve) => { setTimeout(resolve, 5000).unref(); })]);
+}
+// Browsers hold keep-alive connections open, so exit right after stopping Codex and the game instead of waiting for them.
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, async () => {
+    reader.close();
+    localServer.close();
+    phone.close();
+    shared.close();
+    await stopGame();
+    process.exit(0);
+  });
+}

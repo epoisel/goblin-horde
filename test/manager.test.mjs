@@ -17,6 +17,9 @@ import { DismissStore } from "../lib/dismiss.mjs";
 import { LinkStore } from "../lib/links.mjs";
 import { CODE_FILE, PHONE_FILE } from "../lib/phone.mjs";
 import { claudeConfigDir } from "../lib/paths.mjs";
+import { createPetsStore } from "../lib/pets-store.mjs";
+import { createState, loadConfig } from "../lib/rewards.mjs";
+import { initialWatermark } from "../lib/t3-source.mjs";
 import { WatchList } from "../lib/watch.mjs";
 import { MARKER, SKILL_MARKER, autostart, childEnv, install, locate, makeContext, managerCommand, readManifest, start, stateFiles, status, stop, uninstall, versionBefore } from "../lib/manager.mjs";
 import { isAlive, listProcesses, stopPid } from "../lib/processes.mjs";
@@ -38,8 +41,9 @@ function sandbox() {
   mkdirSync(codexDir, { recursive: true });
   writeFileSync(join(claudeDir, "settings.json"), JSON.stringify(userSettings, null, 2));
   // A minimal environment: PATH for Node itself, and every Goblin Horde location pointed at the sandbox.
+  // The loopback stand-in keeps doctor from running this computer's own tailscale program.
   const env = { PATH: process.env.PATH, Path: process.env.Path, PATHEXT: process.env.PATHEXT, SystemRoot: process.env.SystemRoot,
-    LOCALAPPDATA: join(root, "local"), CLAUDE_CONFIG_DIR: claudeDir, CODEX_HOME: codexDir };
+    LOCALAPPDATA: join(root, "local"), CLAUDE_CONFIG_DIR: claudeDir, CODEX_HOME: codexDir, GOBLIN_SHARED_LOOPBACK: "45123" };
   const lines = [];
   const opened = [];
   const ctx = makeContext({ env, home, sourceDir, log: (line) => lines.push(line), listProcesses: () => [], openUrl: (url) => opened.push(url) });
@@ -241,6 +245,44 @@ test("a full reset knows every file the viewer's stores keep in the state folder
   const stores = [new WatchList({ dir }).file, new DismissStore({ dir }).file, new LinkStore({ dir }).file];
   for (const file of [...stores, join(dir, PHONE_FILE), join(dir, CODE_FILE), join(claudeActivityDir({ env: { GOBLIN_HORDE_STATE_DIR: dir } }), "activity.jsonl")])
     assert.ok(named.has(basename(file)), basename(file));
+});
+
+test("uninstall keeps the saved pet game, and a full reset removes it with its backup", async () => {
+  const box = sandbox();
+  try {
+    const config = loadConfig(join(sourceDir, "game_config.json"));
+    const record = { schema: 1, state: createState(config, "2026-01-01"), sources: { t3: initialWatermark(0) }, lastSeenAt: 0 };
+    const saveTwice = async () => {
+      const store = createPetsStore({ dir: box.flags.stateDir });
+      await store.save(record);
+      await store.save(record); // The second save keeps the first as the backup.
+    };
+    await install(box.ctx, box.flags);
+    await saveTwice();
+    const saved = readdirSync(box.flags.stateDir).sort();
+    assert.ok(saved.length >= 2, saved.join(", "));
+    const kept = await uninstall(box.ctx, box.flags);
+    assert.deepEqual(readdirSync(box.flags.stateDir).sort(), saved, "a plain uninstall keeps the saved game");
+    assert.ok(kept.messages.some((line) => /Kept settings, the saved pet game/.test(line)), kept.messages.join("\n"));
+    await install(box.ctx, box.flags);
+    const reset = await uninstall(box.ctx, { ...box.flags, removeSettings: true });
+    assert.equal(existsSync(box.flags.stateDir), false, "nothing of the saved game is left, so the state folder goes too");
+    assert.ok(reset.messages.some((line) => /the saved pet game/.test(line)), reset.messages.join("\n"));
+  } finally { box.cleanup(); }
+});
+
+test("uninstall run from inside the app folder still removes the folder", { timeout: 60_000 }, async () => {
+  const box = sandbox();
+  try {
+    await install(box.ctx, { ...box.flags, skipSkill: true });
+    const { installDir, stateDir } = box.flags;
+    // Its own process, standing in the app folder as someone who changed into it would be.
+    const run = spawnSync(process.execPath, [join(installDir, "goblin.mjs"), "uninstall", "--install-dir", installDir, "--state-dir", stateDir],
+      { cwd: installDir, env: box.env, encoding: "utf8", windowsHide: true });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(existsSync(installDir), false, run.stdout);
+    assert.doesNotMatch(run.stdout, /remain in/);
+  } finally { box.cleanup(); }
 });
 
 test("upgrading from 0.5 with Claude Code connected says once what the hook now records", async () => {

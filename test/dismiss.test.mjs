@@ -149,7 +149,7 @@ test("POST /api/dismiss quiets the alert on the next poll, survives a restart, a
   const port = await freePort();
   // No Codex, no Orca, every folder temporary, and a Wi-Fi address this computer does not have.
   const env = { ...process.env, PORT: String(port), GOBLIN_HORDE_STATE_DIR: state, LOCALAPPDATA: join(root, "local"), CLAUDE_CONFIG_DIR: join(root, "claude"),
-    CODEX_HOME: join(root, "codex"), CODEX_CLI_PATH: join(root, "no-codex.exe"), ORCA_CLI_COMMAND: join(root, "no-orca"), LAN_IP: "10.255.255.254" };
+    CODEX_HOME: join(root, "codex"), CODEX_CLI_PATH: join(root, "no-codex.exe"), ORCA_CLI_COMMAND: join(root, "no-orca"), LAN_IP: "10.255.255.254", GOBLIN_T3_DB: join(root, "no-t3.sqlite") };
   const server = join(fileURLToPath(new URL("..", import.meta.url)), "server.mjs");
   const url = `http://127.0.0.1:${port}`;
   const start = async () => {

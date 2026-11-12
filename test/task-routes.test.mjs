@@ -162,6 +162,7 @@ test("an isolated viewer serves tasks, transcripts, and the app window from synt
   const port = await freePort();
   const env = { ...process.env, PORT: String(port), GOBLIN_HORDE_STATE_DIR: state, LOCALAPPDATA: join(root, "local"), APPDATA: join(root, "roaming"), CLAUDE_CONFIG_DIR: config,
     CODEX_HOME: join(root, "codex"), CODEX_CLI_PATH: join(root, "no-codex.exe"), ORCA_CLI_COMMAND: join(root, "no-orca"), LAN_IP: "10.255.255.254",
+    GOBLIN_T3_DB: join(root, "no-t3.sqlite"),
     // A harmless program stands in for the browser: it is started with the app-window flags and exits.
     GOBLIN_HORDE_APP_BROWSER: process.execPath };
   const server = join(fileURLToPath(new URL("..", import.meta.url)), "server.mjs");

@@ -4,9 +4,12 @@
  *
  *   node goblin.mjs doctor                  Check what this computer has; changes nothing.
  *   node goblin.mjs install [--claude-hooks | --no-claude-hooks]
- *   node goblin.mjs start | stop | status | open [--compact] | app [--task ID] [--agent ID]
+ *   node goblin.mjs start [--surface pets] | stop | status | open [--compact] | app [--task ID] [--agent ID]
  *   node goblin.mjs uninstall [--remove-settings]
  *   node goblin.mjs hooks install | remove | status
+ *   node goblin.mjs pets-host enable | disable | status | code      Share this computer's pet game on Tailscale.
+ *   node goblin.mjs pets-join --host ADDRESS[:PORT] --code-file FILE | --off
+ *   node goblin.mjs pets-adopt PATH [--replace]
  *   node goblin.mjs emit --feed NAME [--check] [--record '{...}']   (or NDJSON on stdin)
  *
  * Common options: --install-dir DIR, --state-dir DIR, --claude-config-dir DIR, --codex-home DIR,
@@ -24,9 +27,10 @@ if (major < 20) {
 const { ManagerError, autostart, doctor, getLocalJson, hooksInstall, hooksRemove, hooksStatus, install, locate, makeContext, managerCommand, start, status, stop, uninstall } = await import("./lib/manager.mjs");
 const { claudeSettingsPath } = await import("./lib/claude-hooks.mjs");
 const { appendExtensionRecord, extensionFeedDir, validateExtensionRecord } = await import("./lib/extension.mjs");
+const { petsAdopt, petsHost, petsHostCode, petsJoin } = await import("./lib/shared-manager.mjs");
 
-const BOOLEAN = new Set(["json", "no-start", "skip-skill", "remove-settings", "claude-hooks", "no-claude-hooks", "check", "no-browser", "compact", "help", "report", "yes"]);
-const VALUE = new Set(["install-dir", "state-dir", "claude-config-dir", "codex-home", "codex-skill-dir", "port", "ui", "surface", "feed", "record", "task", "agent"]);
+const BOOLEAN = new Set(["json", "no-start", "skip-skill", "remove-settings", "claude-hooks", "no-claude-hooks", "check", "no-browser", "compact", "help", "report", "yes", "off", "replace", "code-stdin"]);
+const VALUE = new Set(["install-dir", "state-dir", "claude-config-dir", "codex-home", "codex-skill-dir", "port", "ui", "surface", "feed", "record", "task", "agent", "host", "code-file"]);
 
 export function parseArgs(argv) {
   const positional = [];
@@ -56,7 +60,8 @@ function managerFlags(flags) {
 
 const HELP = `Goblin Horde manager
 
-  node goblin.mjs doctor            Check prerequisites, feeds, and the port. Changes nothing.
+  node goblin.mjs doctor            Check prerequisites, feeds, the port, and what the pet game needs.
+                                    Changes nothing.
   node goblin.mjs setup             Guided install: checks this computer, asks two questions, installs, opens.
   node goblin.mjs autostart on|off  Start Goblin Horde when you sign in to Windows, or stop.
   node goblin.mjs doctor --report   A short report safe to paste into a bug report: states, counts, and
@@ -68,13 +73,27 @@ const HELP = `Goblin Horde manager
   node goblin.mjs start             Start the viewer (and desktop goblins on Windows and macOS).
       --ui auto|widget|browser|none --no-browser
       --surface strip               Start with only the goblin strip (what signing in to Windows does).
+      --surface pets                Start the pet game: the horde loose along the taskbar (Windows only).
   node goblin.mjs open [--compact]  Open the viewer in your browser.
   node goblin.mjs app [--task ID]   Open the task view in its own window (Edge or Chrome, else your browser).
   node goblin.mjs stop              Stop only this installation's own processes.
   node goblin.mjs status            Show what is installed and running.
   node goblin.mjs uninstall         Remove the app, its skills, and its Claude Code hooks.
-      --remove-settings             Also remove settings, the pairing code, and recorded activity.
+      --remove-settings             Also remove settings, the saved pet game, the pairing code, and recorded activity.
   node goblin.mjs hooks install|remove|status
+  node goblin.mjs pets-host enable  Share this computer's pet game with your other computers on Tailscale. It
+                                    listens on this computer's Tailscale address only, and a caller needs the
+                                    pairing code. This computer keeps the one saved game and pays the coins.
+      disable | status              Stop sharing and sign every computer out, or show the address to join.
+      code                          Show the pairing code, only in a terminal on this computer.
+  node goblin.mjs pets-join --host ADDRESS[:PORT] --code-file FILE
+                                    Show the game of the computer at that Tailscale address here. Then
+                                    "start --surface pets" shows its horde. --code-stdin reads the code from
+                                    standard input. The code is never taken from the command line.
+      --off                         Go back to this computer's own game.
+  node goblin.mjs pets-adopt PATH   On a host with no saved game: start from a pets.json brought from another
+                                    computer. Earlier work here is not paid. --replace keeps a copy of the
+                                    present saved game and replaces it.
   node goblin.mjs emit --feed NAME  Validate and record extension-feed events (NDJSON on stdin,
       or --record '{"v":1,...}'). --check validates without recording. See EXTENSIONS.md.
 
@@ -82,9 +101,14 @@ Options: --install-dir DIR --state-dir DIR --claude-config-dir DIR --codex-home 
 Environment: GOBLIN_HORDE_INSTALL_DIR, GOBLIN_HORDE_STATE_DIR, CLAUDE_CONFIG_DIR, CODEX_HOME.`;
 
 function printDoctor(report, log) {
-  const marks = { ok: "✓", missing: "✗", error: "✗", conflict: "✗", optional: "·", none: "·", unsupported: "·" };
+  const marks = { ok: "✓", missing: "✗", error: "✗", conflict: "✗", warning: "!", optional: "·", none: "·", unsupported: "·" };
+  const line = (check) => log(`  ${marks[check.state] || "·"} ${check.name.padEnd(16)} ${check.detail}`);
   log(`Goblin Horde check (${report.platform})`);
-  for (const check of report.checks) log(`  ${marks[check.state] || "·"} ${check.name.padEnd(16)} ${check.detail}`);
+  report.checks.filter((check) => !check.group).forEach(line);
+  log("  Pet game (start --surface pets):");
+  report.checks.filter((check) => check.group === "pets").forEach(line);
+  log("  Shared game (pets-host, pets-join):");
+  report.checks.filter((check) => check.group === "shared").forEach(line);
   log(`  Install folder: ${report.installDir}`);
   log(`  State folder:   ${report.stateDir}`);
 }
@@ -335,6 +359,24 @@ export async function main(argv = process.argv.slice(2), ctx = makeContext({ sou
         return 0;
       }
       throw new ManagerError("Use: node goblin.mjs hooks install|remove|status");
+    }
+    case "pets-host": {
+      if (sub === "code") {
+        petsHostCode(ctx, options);
+        return 0;
+      }
+      out(await petsHost(ctx, options, sub || "status"), (data) => { for (const line of data.messages) log(line); });
+      return 0;
+    }
+    case "pets-join": {
+      const result = await petsJoin(ctx, options, { host: flags.host, codeFile: flags["code-file"], off: Boolean(flags.off),
+        ...(flags["code-stdin"] ? { codeText: await readStdin() } : {}) });
+      out(result, (data) => { for (const line of data.messages) log(line); });
+      return 0;
+    }
+    case "pets-adopt": {
+      out(await petsAdopt(ctx, options, { path: sub, replace: Boolean(flags.replace) }), (data) => { for (const line of data.messages) log(line); });
+      return 0;
     }
     case "emit": {
       const result = await emit(ctx, flags);
