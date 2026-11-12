@@ -128,7 +128,7 @@ node scripts/release.mjs build
 node scripts/release.mjs publish
 ```
 
-`build` packs and signs `dist/release/GoblinHorde-Team.zip` and `dist/release/update.json`, then checks both with the same verification every installed copy runs, and removes them if they fail. It refuses a version that is not newer than the newest `v*` tag, unless you add `--force-version`. `--key` names another private key file. `publish` prints the `gh release create` command that puts both files on a release of the current commit. Run that command yourself, or run `publish --run`, which first checks `gh auth status`.
+`build` packs and signs `dist/release/GoblinHorde-Team.zip` and `dist/release/update.json`, then checks both with the same verification every installed copy runs, and removes them if they fail. It refuses a version that is not newer than the newest `v*` tag, unless you add `--force-version`. `--key` names another private key file. `publish` prints the `gh` commands that put both files on a `v<version>` pre-release of the current commit, which keeps each build, and on the rolling `pets-latest` pre-release, which is the one installed copies read. Both are pre-releases, so the repository's "Latest" release stays the earlier monitor app's. Run the commands yourself, or run `publish --run`, which first checks `gh auth status`.
 
 ## Contributing, security, license
 

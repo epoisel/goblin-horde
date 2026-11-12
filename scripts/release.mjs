@@ -21,7 +21,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { createPrivateFile } from "../lib/private-file.mjs";
-import { MANIFEST_NAME, ZIP_NAME, compareVersions, folderSources, isVersion, sha256Of, signedText, verifyRelease } from "../lib/updater.mjs";
+import { MANIFEST_NAME, ROLLING_TAG, ZIP_NAME, compareVersions, folderSources, isVersion, sha256Of, signedText, verifyRelease } from "../lib/updater.mjs";
 import { buildPackage } from "./package.mjs";
 
 const KEY_LINE = /^export const UPDATE_KEY = "([A-Za-z0-9+/=]*)";(\r?)$/m;
@@ -132,14 +132,22 @@ export async function publish({ sourceDir, run = false, exec = execFileSync }) {
   if (!verdict.ok) throw new Error(`dist/release does not hold a release that passes the check every installation makes (${verdict.message}). Run build first.`);
   if (verdict.release.version !== version) throw new Error(`dist/release holds ${verdict.release.version}, but package.json says ${version}. Run build again.`);
   const commit = String(exec("git", ["rev-parse", "HEAD"], { cwd: sourceDir, encoding: "utf8", windowsHide: true })).trim();
-  const args = ["release", "create", `v${version}`, `dist/release/${ZIP_NAME}`, `dist/release/${MANIFEST_NAME}`, "--target", commit,
-    "--title", `Goblin Horde ${version}`, "--notes", `Goblin Horde ${version}. Installed copies find it and check its signature by themselves.`];
-  const command = `gh ${args.map(quoted).join(" ")}`;
+  const files = [`dist/release/${ZIP_NAME}`, `dist/release/${MANIFEST_NAME}`];
+  const notes = `Goblin Horde ${version}. Installed copies find it and check its signature by themselves.`;
+  const keep = ["release", "create", `v${version}`, ...files, "--prerelease", "--target", commit, "--title", `Goblin Horde ${version}`, "--notes", notes];
+  const rolling = ["release", "create", ROLLING_TAG, "--prerelease", "--target", commit, "--title", "Goblin Horde pets (current)",
+    "--notes", "The release installed copies look at. It always holds the newest signed build. Releases named v<version> keep each build."];
+  const upload = ["release", "upload", ROLLING_TAG, ...files, "--clobber"];
+  const show = (args) => `gh ${args.map(quoted).join(" ")}`;
+  const command = `${show(keep)}\n(first time only) ${show(rolling)}\n${show(upload)}`;
   if (!run) return { command, ran: false };
-  try { exec("gh", ["auth", "status"], { cwd: sourceDir, stdio: "inherit", windowsHide: true }); } catch {
+  const gh = (args, stdio = "inherit") => exec("gh", args, { cwd: sourceDir, stdio, windowsHide: true });
+  try { gh(["auth", "status"]); } catch {
     throw new Error("gh auth status did not pass, so nothing was published. Sign in with: gh auth login");
   }
-  exec("gh", args, { cwd: sourceDir, stdio: "inherit", windowsHide: true });
+  gh(keep);
+  try { gh(["release", "view", ROLLING_TAG], "ignore"); } catch { gh(rolling); }
+  gh(upload);
   return { command, ran: true };
 }
 

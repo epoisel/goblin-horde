@@ -127,8 +127,14 @@ test("publish prints the gh command for the checked release, and runs it only wi
   };
   const printed = await publish({ sourceDir: box.sourceDir, exec: exec(true) });
   assert.equal(printed.ran, false);
-  assert.equal(printed.command, "gh release create v0.6.1 dist/release/GoblinHorde-Team.zip dist/release/update.json --target 0123456789abcdef0123456789abcdef01234567"
-    + " --title \"Goblin Horde 0.6.1\" --notes \"Goblin Horde 0.6.1. Installed copies find it and check its signature by themselves.\"");
+  const commit = "0123456789abcdef0123456789abcdef01234567";
+  assert.deepEqual(printed.command.split("\n"), [
+    `gh release create v0.6.1 dist/release/GoblinHorde-Team.zip dist/release/update.json --prerelease --target ${commit}`
+      + " --title \"Goblin Horde 0.6.1\" --notes \"Goblin Horde 0.6.1. Installed copies find it and check its signature by themselves.\"",
+    `(first time only) gh release create pets-latest --prerelease --target ${commit} --title \"Goblin Horde pets (current)\" --notes`
+      + " \"The release installed copies look at. It always holds the newest signed build. Releases named v<version> keep each build.\"",
+    "gh release upload pets-latest dist/release/GoblinHorde-Team.zip dist/release/update.json --clobber"]);
+  assert.doesNotMatch(printed.command, /--latest/, "the repository's Latest release belongs to the monitor app and is never taken");
   assert.deepEqual(ran, ["git rev-parse HEAD"], "without --run, gh is not run");
 
   ran.length = 0;
@@ -136,7 +142,22 @@ test("publish prints the gh command for the checked release, and runs it only wi
   assert.deepEqual(ran, ["git rev-parse HEAD", "gh auth status"]);
   ran.length = 0;
   assert.equal((await publish({ sourceDir: box.sourceDir, run: true, exec: exec(true) })).ran, true);
-  assert.equal(ran.at(-1).startsWith("gh release create v0.6.1 dist/release/GoblinHorde-Team.zip dist/release/update.json --target 0123"), true);
+  assert.deepEqual(ran.map((line) => line.split(" ").slice(0, 4).join(" ")),
+    ["git rev-parse HEAD", "gh auth status", "gh release create v0.6.1", "gh release view pets-latest", "gh release upload pets-latest"],
+    "the rolling release already exists, so it is only given the new files");
+  assert.match(ran[2], /--prerelease/);
+
+  const fresh = [];
+  const exec2 = (program, args) => {
+    fresh.push([program, ...args].join(" "));
+    if (program === "git") return `${commit}\n`;
+    if (args[0] === "release" && args[1] === "view") throw new Error("release not found");
+    return "";
+  };
+  await publish({ sourceDir: box.sourceDir, run: true, exec: exec2 });
+  assert.deepEqual(fresh.map((line) => line.split(" ").slice(0, 4).join(" ")),
+    ["git rev-parse HEAD", "gh auth status", "gh release create v0.6.1", "gh release view pets-latest", "gh release create pets-latest", "gh release upload pets-latest"],
+    "the first publish makes the rolling release before it uploads");
 
   const zip = join(box.sourceDir, "dist", "release", ZIP_NAME);
   const changed = readFileSync(zip);
